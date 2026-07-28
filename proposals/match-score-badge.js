@@ -202,7 +202,14 @@
       e.stopPropagation();
       togglePanel(job, result);
     });
-    job.titleEl.appendChild(badge);
+    // Insert AFTER the h1 (not inside — inheriting h1 font-size/color would
+    // look weird, and the badge would become part of titleEl.textContent
+    // which breaks other extensions that scrape job titles).
+    if (job.titleEl.parentNode) {
+      job.titleEl.parentNode.insertBefore(badge, job.titleEl.nextSibling);
+    } else {
+      job.titleEl.appendChild(badge);
+    }
   }
 
   function togglePanel(job, result) {
