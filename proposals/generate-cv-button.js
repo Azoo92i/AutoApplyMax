@@ -43,9 +43,12 @@
     },
     'indeed.com': {
       titleSel: [
-        'h1.jobsearch-JobInfoHeader-title',
+        'h2[data-testid="simpler-jobTitle"]',
+        'h1[data-testid="simpler-jobTitle"]',
         'h2[data-testid="jobsearch-JobInfoHeader-title"]',
         'h1[data-testid="jobsearch-JobInfoHeader-title"]',
+        'h1.jobsearch-JobInfoHeader-title',
+        'h2.jobsearch-JobInfoHeader-title',
       ],
       jdSel: [
         '#jobDescriptionText',
@@ -53,6 +56,7 @@
       ],
       companySel: [
         'div[data-testid="inlineHeader-companyName"] a',
+        'div[data-company-name] a',
         '.jobsearch-InlineCompanyRating a',
       ],
     },
@@ -85,8 +89,22 @@
   }
 
   function extractJob() {
-    const titleEl = firstMatching(config.titleSel);
+    let titleEl = firstMatching(config.titleSel);
     const jdEl = firstMatching(config.jdSel);
+    // Heuristic fallback: walk up from JD to find nearest h1/h2. Survives
+    // DOM refactors on real sites (verified 2026-07-31 on Indeed).
+    if (!titleEl && jdEl) {
+      let scope = jdEl;
+      for (let i = 0; i < 5 && scope; i++) {
+        scope = scope.parentElement;
+        if (!scope) break;
+        const h = scope.querySelector('h1, h2');
+        if (h && h.textContent && h.textContent.trim().length >= 5 && h.textContent.trim().length <= 100) {
+          titleEl = h;
+          break;
+        }
+      }
+    }
     if (!titleEl || !jdEl) return null;
     const title = (titleEl.textContent || '').trim();
     const jd = (jdEl.textContent || '').trim();
