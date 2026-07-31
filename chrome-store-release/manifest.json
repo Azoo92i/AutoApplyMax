@@ -1,15 +1,23 @@
 {
   "manifest_version": 3,
   "name": "AutoApplyMax",
-  "version": "1.5.3",
-  "description": "Automate LinkedIn Easy Apply job applications - Works on /jobs/search/ and /jobs/collections/",
+  "version": "2.5.14",
+  "description": "Auto-apply & autofill job applications in one click. AI Resume & Cover Letter. ATS Checker. Track all your applications.",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs",
+    "alarms",
+    "notifications"
   ],
   "host_permissions": [
-    "https://www.linkedin.com/*"
+    "https://tgknaopmwbelterrhrnz.supabase.co/*",
+    "https://*/*",
+    "http://*/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -26,5 +34,43 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://smartapply.indeed.com/*"
+      ],
+      "js": [
+        "core/utils.js",
+        "core/job-board-strings.js",
+        "core/site-registry.js",
+        "adapters/base-adapter.js",
+        "core/ai-form.js",
+        "core/form-filler.js",
+        "adapters/indeed-adapter.js",
+        "core/engine.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://autoapplymax.com/*",
+        "https://www.autoapplymax.com/*"
+      ],
+      "js": ["content-marker.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "core/*.js",
+        "adapters/*.js",
+        "content-simple.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
 }

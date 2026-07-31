@@ -16,7 +16,7 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
 
   function pushDataToPage() {
     chrome.storage.local.get(
-      ['appliedJobs', 'appliedCount', 'skippedCount', 'aam_pending_jd'],
+      ['appliedJobs', 'appliedCount', 'skippedCount', 'aam_pending_jd', 'eam_session'],
       (local) => {
         chrome.storage.sync.get(
           [
@@ -30,6 +30,14 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
               appliedCount: local.appliedCount || 0,
               skippedCount: local.skippedCount || 0,
               aam_pending_jd: local.aam_pending_jd || null,
+              // Session bridge — page-side supabase-config.js reads this
+              // to adopt the extension's refresh_token when it's fresher
+              // than its own localStorage copy. Prevents refresh_token
+              // rotation ping-pong (~6h re-signin bug 2026-07-31).
+              eam_session: local.eam_session ? {
+                access_token: local.eam_session.access_token,
+                refresh_token: local.eam_session.refresh_token,
+              } : null,
               firstName: sync.firstName || '',
               lastName: sync.lastName || '',
               email: sync.email || '',
@@ -61,6 +69,16 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
 
   pushDataToPage();
   setInterval(pushDataToPage, 5000);
+
+  // React IMMEDIATELY to session rotation. Without this, the page
+  // waits up to 5s to see the fresh token — supabase-js may auto-refresh
+  // with its stale localStorage token in that window and invalidate
+  // the extension's fresh one via rotation. Fires whenever background.js
+  // writes chrome.storage.local.eam_session (either via alarm keep-alive
+  // or reactive 401 refresh).
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.eam_session) pushDataToPage();
+  });
 
   const ALLOWED_ORIGINS = [
     'https://autoapplymax.com',
