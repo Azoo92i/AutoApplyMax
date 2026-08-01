@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AutoApplyMax",
-  "version": "2.5.14",
-  "description": "Auto-apply & autofill job applications in one click. AI Resume & Cover Letter. ATS Checker. Track all your applications.",
+  "name": "AutoApplyMax: Auto Apply Jobs + ATS Checker",
+  "version": "2.5.16",
+  "description": "Auto-apply jobs on LinkedIn, ATS resume checker, AI CV & cover letter generator. Autofill on Indeed, Glassdoor, Workday.",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   },
@@ -59,6 +59,42 @@
       ],
       "js": ["content-marker.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.linkedin.com/jobs/*",
+        "https://*.indeed.com/*",
+        "https://*.glassdoor.com/*",
+        "https://*.glassdoor.co.uk/*",
+        "https://*.glassdoor.fr/*",
+        "https://*.glassdoor.de/*",
+        "https://*.glassdoor.ca/*",
+        "https://*.glassdoor.com.au/*",
+        "https://*.welcometothejungle.com/*"
+      ],
+      "exclude_matches": [
+        "https://smartapply.indeed.com/*"
+      ],
+      "js": [
+        "core/generate-cv-button.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://smartapply.indeed.com/*",
+        "https://boards.greenhouse.io/*",
+        "https://job-boards.greenhouse.io/*",
+        "https://jobs.lever.co/*",
+        "https://jobs.ashbyhq.com/*",
+        "https://*.myworkdayjobs.com/*"
+      ],
+      "js": [
+        "core/utils.js",
+        "core/ai-form.js",
+        "core/ai-draft-manual.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
