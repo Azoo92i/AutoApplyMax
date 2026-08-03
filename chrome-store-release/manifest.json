@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AutoApplyMax: Auto Apply Jobs + ATS Checker",
-  "version": "2.5.16",
+  "version": "2.5.24",
   "description": "Auto-apply jobs on LinkedIn, ATS resume checker, AI CV & cover letter generator. Autofill on Indeed, Glassdoor, Workday.",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
