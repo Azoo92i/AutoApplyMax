@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AutoApplyMax: Auto Apply Jobs + ATS Checker",
-  "version": "2.5.24",
-  "description": "Auto-apply jobs on LinkedIn, ATS resume checker, AI CV & cover letter generator. Autofill on Indeed, Glassdoor, Workday.",
+  "name": "AutoApplyMax - Auto Apply, Autofill, AI Tailor Resume, ATS Checker",
+  "version": "2.5.58",
+  "description": "Auto-apply on LinkedIn, AI resume tailoring per job, ATS checker. Universal autofill on Indeed, Glassdoor, Workday, Greenhouse.",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   },
@@ -70,7 +70,11 @@
         "https://*.glassdoor.de/*",
         "https://*.glassdoor.ca/*",
         "https://*.glassdoor.com.au/*",
-        "https://*.welcometothejungle.com/*"
+        "https://*.welcometothejungle.com/*",
+        "https://*.monster.com/*",
+        "https://*.monster.fr/*",
+        "https://*.monster.co.uk/*",
+        "https://*.monster.de/*"
       ],
       "exclude_matches": [
         "https://smartapply.indeed.com/*"
@@ -87,7 +91,9 @@
         "https://job-boards.greenhouse.io/*",
         "https://jobs.lever.co/*",
         "https://jobs.ashbyhq.com/*",
-        "https://*.myworkdayjobs.com/*"
+        "https://*.myworkdayjobs.com/*",
+        "https://jobs.smartrecruiters.com/*",
+        "https://careers.smartrecruiters.com/*"
       ],
       "js": [
         "core/utils.js",
@@ -105,7 +111,23 @@
         "content-simple.js"
       ],
       "matches": [
-        "<all_urls>"
+        "https://*.linkedin.com/*",
+        "https://*.indeed.com/*",
+        "https://smartapply.indeed.com/*",
+        "https://*.glassdoor.com/*",
+        "https://*.glassdoor.co.uk/*",
+        "https://*.glassdoor.fr/*",
+        "https://*.glassdoor.de/*",
+        "https://*.glassdoor.ca/*",
+        "https://*.glassdoor.com.au/*",
+        "https://*.welcometothejungle.com/*",
+        "https://boards.greenhouse.io/*",
+        "https://job-boards.greenhouse.io/*",
+        "https://jobs.lever.co/*",
+        "https://jobs.ashbyhq.com/*",
+        "https://*.myworkdayjobs.com/*",
+        "https://jobs.smartrecruiters.com/*",
+        "https://careers.smartrecruiters.com/*"
       ]
     }
   ]
