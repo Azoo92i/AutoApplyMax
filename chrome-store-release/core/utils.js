@@ -288,26 +288,82 @@
       el.setAttribute('data-eam-rate-limit-original', 'yes');
       // Store original in a data attribute (base64 to survive round-trips).
       try { el.dataset.eamOriginalHtml = btoa(unescape(encodeURIComponent(original)).slice(0, 32000)); } catch (_) {}
-      // Replace inner content with our friendly text — keep the LinkedIn
-      // container so styling/positioning match native artdeco toast/modal.
-      // Use minimal inline styles that inherit LinkedIn's typography.
-      el.innerHTML =
-        '<div data-eam-rate-limit-replacement="1" style="padding:14px 18px;font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,Inter,sans-serif;line-height:1.45;color:#0f172a;background:linear-gradient(135deg,#eff6ff,#dbeafe);border-radius:8px;">' +
-          '<div style="display:flex;gap:10px;align-items:flex-start">' +
-            '<span style="font-size:18px;line-height:1">⏳</span>' +
-            '<div style="flex:1">' +
-              '<div style="font-weight:600;color:#0f172a;margin-bottom:4px;font-size:14px">Short pause to protect your account</div>' +
-              '<div style="color:#334155;font-size:13px">Waiting a few minutes to avoid LinkedIn rate limit — this is a normal safety pause. Auto-apply will resume automatically. Keep this tab in the foreground for best results.</div>' +
-            '</div>' +
-          '</div>' +
-        '</div>';
+      // Clear existing content
+      el.innerHTML = '';
+
+      // v2.5.70: build DOM via createElement. LinkedIn's .artdeco-toast-item
+      // cascade uses descendant selectors that beat inline `!important` on
+      // inner divs. Solution: attach an isolated Shadow DOM to a fresh
+      // wrapper — shadow-scoped CSS is unreachable to the host page's
+      // stylesheets, so our layout renders as authored.
+      const host = document.createElement('div');
+      host.setAttribute('data-eam-rate-limit-replacement', '1');
+      host.style.cssText = 'display: block; width: 100%;';
+      let shadow;
+      try {
+        shadow = host.attachShadow({ mode: 'open' });
+      } catch (_) { shadow = null; }
+
+      const cssText = [
+        ':host { display: block; contain: layout style; }',
+        '.aam-rl-root { all: initial; display: block; padding: 14px 18px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif; line-height: 1.45; color: #0f172a; background: linear-gradient(135deg, #eff6ff, #dbeafe); border-radius: 8px; border: 1px solid #bfdbfe; box-shadow: 0 4px 14px rgba(10, 102, 194, 0.10); box-sizing: border-box; }',
+        '.aam-rl-root, .aam-rl-root * { box-sizing: border-box; }',
+        '.aam-rl-row { display: flex; gap: 10px; align-items: flex-start; }',
+        '.aam-rl-icon { font-size: 20px; line-height: 1; }',
+        '.aam-rl-col { flex: 1; display: block; min-width: 0; }',
+        '.aam-rl-title { display: block; font-weight: 700; color: #0f172a; margin: 0 0 5px 0; font-size: 15px; }',
+        '.aam-rl-body { display: block; color: #334155; font-size: 13px; margin: 0; }',
+      ].join('\n');
+
+      const root = document.createElement('div');
+      root.className = 'aam-rl-root';
+      const row = document.createElement('div');
+      row.className = 'aam-rl-row';
+      const icon = document.createElement('span');
+      icon.className = 'aam-rl-icon';
+      icon.textContent = '⏳';
+      const col = document.createElement('div');
+      col.className = 'aam-rl-col';
+      const title = document.createElement('div');
+      title.className = 'aam-rl-title';
+      title.textContent = 'Short pause to protect your account';
+      const body = document.createElement('div');
+      body.className = 'aam-rl-body';
+      body.textContent = 'Waiting a few minutes to avoid LinkedIn rate limit — this is a normal safety pause. Auto-apply will resume automatically. Keep this tab in the foreground for best results.';
+      col.appendChild(title); col.appendChild(body);
+      row.appendChild(icon); row.appendChild(col);
+      root.appendChild(row);
+
+      if (shadow) {
+        // Preferred: adoptedStyleSheets (Chrome 73+, all supported ext hosts)
+        try {
+          const sheet = new CSSStyleSheet();
+          sheet.replaceSync(cssText);
+          shadow.adoptedStyleSheets = [sheet];
+        } catch (_) {
+          // Fallback for older browsers: <style> element
+          const s = document.createElement('style');
+          s.textContent = cssText;
+          shadow.appendChild(s);
+        }
+        shadow.appendChild(root);
+        el.appendChild(host);
+      } else {
+        // No-shadow fallback: inline everything (partial CSS isolation only)
+        const s = document.createElement('style');
+        s.textContent = cssText;
+        host.appendChild(s);
+        host.appendChild(root);
+        el.appendChild(host);
+      }
+
       // Never let the replaced element be display:none — some LinkedIn CSS
       // hides `.artdeco-toast-item` after N seconds; keep ours visible for
       // the full pause window (up to 3 min per strike).
       el.style.setProperty('display', 'block', 'important');
       el.style.setProperty('visibility', 'visible', 'important');
       el.style.setProperty('opacity', '1', 'important');
-      return { replaced: true, mode: 'in-place' };
+      return { replaced: true, mode: shadow ? 'shadow-dom' : 'in-place-fallback' };
     } catch (e) {
       // Fall back to hide + banner if in-place replacement fails
       try {
