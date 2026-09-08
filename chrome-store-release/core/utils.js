@@ -255,6 +255,16 @@
       const sr = document.getElementById('interop-outlet')?.shadowRoot;
       if (sr) scopes.push(...collect(sr));
     } catch (e) {}
+    // Normalize Unicode quotes so patterns with straight apostrophes match
+    // LinkedIn's curly ones (U+2019 in "today's"). Also collapse whitespace.
+    // Bug caught 2026-09-08 (v2.5.70): daily-limit popup uses "today’s"
+    // (curly) but our patterns used "today's" (straight) → includes() failed
+    // → bot never stopped when Théo hit the daily cap.
+    const norm = (s) => s.toLowerCase()
+      .replace(/[‘’ʼ]/g, "'")
+      .replace(/[“”]/g, '"')
+      .replace(/\s+/g, ' ');
+    const normalizedPatterns = patterns.map(norm);
     for (const el of scopes) {
       // Visibility check via bounding rect — offsetParent is null for
       // position:fixed elements (per HTML5 spec), and LinkedIn's
@@ -264,9 +274,11 @@
       // remaining cards each with a 20s timeout.
       const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
       if (rect.width === 0 && rect.height === 0 && el !== document.body) continue;
-      const text = (el.textContent || '').toLowerCase();
-      for (const p of patterns) {
-        if (text.includes(p)) return returnElement ? { pattern: p, element: el } : p;
+      const text = norm(el.textContent || '');
+      for (let i = 0; i < normalizedPatterns.length; i++) {
+        if (text.includes(normalizedPatterns[i])) {
+          return returnElement ? { pattern: patterns[i], element: el } : patterns[i];
+        }
       }
     }
     return null;
