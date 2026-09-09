@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AutoApplyMax - Auto Apply, Autofill, AI Tailor Resume, ATS Checker",
-  "version": "2.5.71",
+  "version": "2.5.72",
   "description": "Auto-apply on LinkedIn, AI resume tailoring per job, ATS checker. Universal autofill on Indeed, Glassdoor, Workday, Greenhouse.",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"

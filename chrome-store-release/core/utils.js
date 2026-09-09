@@ -292,8 +292,26 @@
   // place — user sees a single friendly message in LinkedIn's own container,
   // preserving position and dismiss ergonomics. Falls back to hide+banner
   // if the container structure is unexpected.
-  function _replaceRateLimitContent(el) {
+  function _replaceRateLimitContent(el, mode) {
     if (!el) return { replaced: false };
+    // mode: 'rate' (default) shows friendly pause message; 'daily' shows
+    // terminal "come back tomorrow" message with matching UX (2026-09-09).
+    // Both live in the same shadow-DOM to survive LinkedIn's cascade.
+    const copy = mode === 'daily' ? {
+      icon: '🎯',
+      title: 'You hit today’s LinkedIn Easy Apply limit',
+      body: 'Great work today — you reached LinkedIn’s ~100/day cap. Auto-apply will resume automatically tomorrow. See you then!',
+      bg: 'linear-gradient(135deg, #ecfdf5, #d1fae5)',
+      border: '#a7f3d0',
+      shadow: 'rgba(5, 150, 105, 0.10)',
+    } : {
+      icon: '⏳',
+      title: 'Short pause to protect your account',
+      body: 'Waiting a few minutes to avoid LinkedIn rate limit — this is a normal safety pause. Auto-apply will resume automatically. Keep this tab in the foreground for best results.',
+      bg: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
+      border: '#bfdbfe',
+      shadow: 'rgba(10, 102, 194, 0.10)',
+    };
     try {
       // Preserve original outerHTML so we can restore on resume.
       const original = el.outerHTML;
@@ -318,7 +336,7 @@
 
       const cssText = [
         ':host { display: block; contain: layout style; }',
-        '.aam-rl-root { all: initial; display: block; padding: 14px 18px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif; line-height: 1.45; color: #0f172a; background: linear-gradient(135deg, #eff6ff, #dbeafe); border-radius: 8px; border: 1px solid #bfdbfe; box-shadow: 0 4px 14px rgba(10, 102, 194, 0.10); box-sizing: border-box; }',
+        `.aam-rl-root { all: initial; display: block; padding: 14px 18px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif; line-height: 1.45; color: #0f172a; background: ${copy.bg}; border-radius: 8px; border: 1px solid ${copy.border}; box-shadow: 0 4px 14px ${copy.shadow}; box-sizing: border-box; }`,
         '.aam-rl-root, .aam-rl-root * { box-sizing: border-box; }',
         '.aam-rl-row { display: flex; gap: 10px; align-items: flex-start; }',
         '.aam-rl-icon { font-size: 20px; line-height: 1; }',
@@ -333,15 +351,15 @@
       row.className = 'aam-rl-row';
       const icon = document.createElement('span');
       icon.className = 'aam-rl-icon';
-      icon.textContent = '⏳';
+      icon.textContent = copy.icon;
       const col = document.createElement('div');
       col.className = 'aam-rl-col';
       const title = document.createElement('div');
       title.className = 'aam-rl-title';
-      title.textContent = 'Short pause to protect your account';
+      title.textContent = copy.title;
       const body = document.createElement('div');
       body.className = 'aam-rl-body';
-      body.textContent = 'Waiting a few minutes to avoid LinkedIn rate limit — this is a normal safety pause. Auto-apply will resume automatically. Keep this tab in the foreground for best results.';
+      body.textContent = copy.body;
       col.appendChild(title); col.appendChild(body);
       row.appendChild(icon); row.appendChild(col);
       root.appendChild(row);
@@ -499,11 +517,19 @@
         "great effort applying today",
         "limit daily submissions",
       ];
-      const matched = _scanDialogsForPatterns(limitPatterns);
-      if (matched) {
+      const hit = _scanDialogsForPatterns(limitPatterns, true);
+      if (hit) {
+        const matched = typeof hit === 'string' ? hit : hit.pattern;
         log('DAILY LIMIT REACHED!');
         log(`   Pattern: "${matched}"`);
         log(`   Applied: ${appliedCount} | Skipped: ${skippedCount}`);
+        // Replace LinkedIn's scary "come back tomorrow" toast in place with
+        // our friendly terminal message (2026-09-09: Théo asked for this
+        // parity with rate-limit UI so users don't see LinkedIn's raw popup
+        // even at daily-cap).
+        try {
+          if (hit && hit.element) _replaceRateLimitContent(hit.element, 'daily');
+        } catch (_) {}
         return true;
       }
       return false;
