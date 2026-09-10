@@ -416,6 +416,18 @@
     // ── Job cards ───────────────────────────────────────────────────────
     getJobCards() {
       if (this._isNewSearchResults()) {
+        // VARIANT A0 (Sept 2026): the stable prefix `componentkey^="job-card-component-r"`
+        // ONLY matches real job cards (logos, main container, filters have different
+        // componentkey values). Previous selector (any [componentkey][role="button"][tabindex]
+        // + figure img filter) broke when LinkedIn added componentkey to non-card widgets.
+        try {
+          const stable = document.querySelectorAll('div[componentkey^="job-card-component-"][role="button"][tabindex]');
+          if (stable.length > 0) {
+            console.log('[EAM] getJobCards (variant A0 job-card-component-*):', stable.length, 'cards');
+            _emitDiag('scan_result', { cards_seen: stable.length, variant: 'A0' });
+            return stable;
+          }
+        } catch (e) { /* ignore */ }
         // VARIANT A (Apr 2026 v1): div[componentkey][role="button"][tabindex]
         // with company logo figure. Click updates right-pane in place.
         try {
