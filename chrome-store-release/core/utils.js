@@ -407,6 +407,111 @@
   // Legacy alias kept for callers that were pinned to the older name.
   function _hideRateLimitPopup(el) { return _replaceRateLimitContent(el); }
 
+  // ─── v2.5.85: dismiss LinkedIn dialog + inline chip near Easy Apply ────
+  // Théo 2026-09-18: prior UX replaced LinkedIn's dialog content in-place,
+  // but LinkedIn's dialog uses a modal backdrop that blocks the page even
+  // with our friendly copy inside. New UX: kill LinkedIn's dialog and
+  // drop a small chip inline next to the Easy Apply button on the job
+  // detail panel. No overlay, no page-blocking, page stays browsable
+  // during the cooldown.
+  //
+  // Returns { placed: bool, chip: HTMLElement | null }. Falls back to
+  // _replaceRateLimitContent when there's no Easy Apply anchor
+  // (e.g. rate-limit fired outside a job detail page).
+  function _dismissAndInlineChip(el, mode) {
+    try {
+      // Step 1 — dismiss LinkedIn's dialog. Prefer clicking its own
+      // Got it / Close / Dismiss button; fall back to display:none.
+      const findDismissBtn = (root) => {
+        if (!root || !root.querySelector) return null;
+        const bySel = root.querySelector(
+          'button[aria-label*="Got it" i], button[aria-label*="Dismiss" i], button[aria-label*="Close" i], .artdeco-modal__dismiss'
+        );
+        if (bySel) return bySel;
+        const btns = root.querySelectorAll ? root.querySelectorAll('button') : [];
+        return [...btns].find(b => /^got it$|^j.ai compris$|^fermer$|^ok$|^close$/i.test((b.textContent || '').trim())) || null;
+      };
+      const dialog = el.closest && (el.closest('[role="dialog"], .artdeco-modal, .artdeco-toast-item') || el);
+      const dismissBtn = findDismissBtn(dialog) || findDismissBtn(document);
+      if (dismissBtn) {
+        try { dismissBtn.click(); } catch (_) {}
+      } else {
+        try {
+          el.style.setProperty('display', 'none', 'important');
+          el.setAttribute('data-eam-hidden', 'rate-limit');
+        } catch (_) {}
+        try {
+          document.querySelectorAll('.artdeco-modal-overlay, [data-test-modal-container]').forEach(o => {
+            o.style.setProperty('display', 'none', 'important');
+            o.setAttribute('data-eam-hidden', 'rate-limit');
+          });
+        } catch (_) {}
+      }
+
+      // Step 2 — find the Easy Apply anchor. LinkedIn selector rot is
+      // real (memory linkedin_selector_rot_2026_08) — try several.
+      const easyApplyBtn =
+        document.querySelector('.jobs-apply-button:not([data-eam-rl-anchor])') ||
+        document.querySelector('button[data-live-test-job-apply-button]') ||
+        document.querySelector('.job-details__jobs-apply-form button, .jobs-s-apply button') ||
+        [...document.querySelectorAll('button')].find(b => /^easy apply$|^candidature simplifi/i.test((b.textContent || '').trim()));
+
+      if (!easyApplyBtn) {
+        // No anchor — fall back to old in-place replacement so the user
+        // still sees the message, just not next to Easy Apply.
+        return _replaceRateLimitContent(el, mode);
+      }
+
+      // Step 3 — idempotent: one chip at a time.
+      document.querySelectorAll('[data-eam-rl-chip]').forEach(n => n.remove());
+
+      // Step 4 — build the chip. Neutral amber for pause, green for
+      // daily-cap. Sits inline in the same row as Easy Apply.
+      const chipCopy = mode === 'daily' ? {
+        title: 'Daily LinkedIn limit reached',
+        body: 'Auto-apply resumes tomorrow.',
+        bg: '#ecfdf5', border: '#a7f3d0', fg: '#065f46',
+      } : {
+        title: 'Bot paused',
+        body: 'Resumes in a few minutes to stay under LinkedIn\'s rate limit.',
+        bg: '#fef3c7', border: '#fcd34d', fg: '#92400e',
+      };
+      const chip = document.createElement('span');
+      chip.setAttribute('data-eam-rl-chip', '1');
+      chip.setAttribute('role', 'status');
+      chip.setAttribute('aria-live', 'polite');
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-left:10px;padding:6px 12px;background:' + chipCopy.bg + ';border:1px solid ' + chipCopy.border + ';color:' + chipCopy.fg + ';border-radius:16px;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;white-space:nowrap;vertical-align:middle;box-shadow:0 1px 2px rgba(15,23,42,0.06)';
+      const icon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+      const closeIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+      chip.innerHTML = icon +
+        '<span><strong style="font-weight:700">' + chipCopy.title + '</strong> — ' + chipCopy.body + '</span>' +
+        '<button data-eam-chip-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:2px;line-height:1;color:' + chipCopy.fg + ';opacity:0.6">' + closeIcon + '</button>';
+      chip.querySelector('[data-eam-chip-close]')?.addEventListener('click', () => { try { chip.remove(); } catch (_) {} });
+
+      // Step 5 — inject inline after the Easy Apply button.
+      easyApplyBtn.setAttribute('data-eam-rl-anchor', '1');
+      try {
+        if (easyApplyBtn.parentNode) {
+          easyApplyBtn.parentNode.insertBefore(chip, easyApplyBtn.nextSibling);
+        }
+      } catch (_) {}
+
+      return { placed: true, mode: 'inline-chip', chip };
+    } catch (e) {
+      // Any failure — fall back to old behavior so the user still sees
+      // SOMETHING and the bot doesn't silently bail.
+      return _replaceRateLimitContent(el, mode);
+    }
+  }
+  // Remove any inline chip we injected — engine.js calls this when the
+  // pause ends and the bot resumes.
+  function _removeInlineChip() {
+    try {
+      document.querySelectorAll('[data-eam-rl-chip]').forEach(n => n.remove());
+      document.querySelectorAll('[data-eam-rl-anchor]').forEach(a => a.removeAttribute('data-eam-rl-anchor'));
+    } catch (_) {}
+  }
+
   // Called when rate-limit resolves — restore original LinkedIn content so
   // the user can interact with the actual popup again if it re-fires later,
   // and any hidden fallbacks come back too.
@@ -435,6 +540,8 @@
         n.style.removeProperty('display');
         n.removeAttribute('data-eam-hidden');
       });
+      // Third (v2.5.85): remove any inline chip we placed next to Easy Apply.
+      try { _removeInlineChip(); } catch (_) {}
     } catch (_) {}
   }
 
@@ -665,11 +772,10 @@
         // same viewport corner).
         let rect = null;
         try { rect = hit.element.getBoundingClientRect(); } catch (_) {}
-        const result = _replaceRateLimitContent(hit.element);
-        // Only show the FLOATING banner if the in-place replacement failed —
-        // otherwise the user sees our friendly message INSIDE the LinkedIn
-        // container (in-place, Théo 2026-09-08 ask), no duplicate UI.
-        if (!result || !result.replaced) {
+        // v2.5.85: prefer inline chip next to Easy Apply. Falls back to
+        // in-place replacement internally when no anchor is found.
+        const result = _dismissAndInlineChip(hit.element);
+        if (!result || (!result.placed && !result.replaced)) {
           _showFriendlyRateLimitBanner(rect);
         }
         return true;
@@ -770,6 +876,8 @@
     checkDailyLimit,
     checkRateLimit,
     _restoreHiddenRateLimit,
+    _removeInlineChip,
+    _dismissAndInlineChip,
     _showEasyApplyFilterHint,
     _startRateLimitPoller,
     _stopRateLimitPoller,
