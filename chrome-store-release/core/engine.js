@@ -1259,6 +1259,30 @@
               'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'city', 'country', 'expectedSalary',
               'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense'
             ]);
+            // v2.5.87: ground AI screening answers in the real CV (education,
+            // experience, skills). Auto-apply never loaded cvProfile, so the AI
+            // answered degree questions blind — "No" to "Bachelor's Degree?" for a
+            // Master's holder was submitted on a real application (2026-09-25).
+            // Same shape as popup.js universal-autofill enrichment.
+            try {
+              const { cvProfile } = await chrome.storage.local.get(['cvProfile']);
+              if (cvProfile) {
+                if (cvProfile.linkedin) state.config.linkedinUrl = cvProfile.linkedin;
+                if (cvProfile.website) state.config.portfolioUrl = cvProfile.website;
+                const latest = (cvProfile.experience || [])[0];
+                if (latest?.company) state.config.currentCompany = latest.company;
+                if (latest?.title) state.config.currentTitle = latest.title;
+                if (cvProfile.summary) state.config.summary = cvProfile.summary;
+                state.config.cvProfile = {
+                  summary: cvProfile.summary, skills: cvProfile.skills, experience: cvProfile.experience,
+                  education: cvProfile.education, languages: cvProfile.languages,
+                  linkedin: cvProfile.linkedin, website: cvProfile.website,
+                };
+                state.log(`AI grounding: CV profile loaded (${(cvProfile.education || []).length} education, ${(cvProfile.experience || []).length} experience entries)`);
+              } else {
+                state.log('⚠ No CV profile synced — AI will skip education/degree questions instead of guessing');
+              }
+            } catch (_) {}
             const local = await chrome.storage.local.get(['appliedCount', 'skippedCount', 'appliedJobs', 'resumeFile', 'resumeFileName', 'resumeFileType']);
             state.appliedCount = local.appliedCount || 0;
             state.skippedCount = local.skippedCount || 0;

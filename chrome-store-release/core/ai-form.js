@@ -112,6 +112,16 @@
       return '';
     }
 
+    // v2.5.87: never guess an education answer without education data — a blind
+    // "No" to "Bachelor's Degree?" was submitted for a Master's holder. Returning
+    // null leaves the field to the normal flow (required → application skipped).
+    const isEducationQ = /\b(degree|bachelor|master'?s?|mba|phd|doctorate|diploma|dipl[oô]me|licence|baccalaur|level of education|niveau d'?[ée]tudes|bac\s*\+\s*\d)\b/i.test(qLower);
+    const eduData = (config.cvProfile || {}).education;
+    if (isEducationQ && !(Array.isArray(eduData) && eduData.some(e => e && (e.degree || e.school)))) {
+      log()('AI [skip]: education question but no CV education data — not guessing');
+      return null;
+    }
+
     // Build prompt for the AI
     const recentAnswers = Object.entries(cache).slice(-8)
       .map(([k, a]) => `Q: ${questionOfKey(k)}\nA: ${a}`).join('\n');
@@ -138,7 +148,7 @@
     const recentRoles = (cv.experience || []).slice(0, 3)
       .map(e => `- ${e.title || ''} @ ${e.company || ''} (${e.duration || e.dates || ''})`)
       .filter(s => s.length > 5).join('\n');
-    const education = (cv.education || []).slice(0, 2)
+    const education = (cv.education || []).slice(0, 4)
       .map(e => `- ${e.degree || ''}${e.school ? ', ' + e.school : ''}${e.year ? ' (' + e.year + ')' : ''}`)
       .filter(s => s.length > 5).join('\n');
     const languages = Array.isArray(cv.languages)
@@ -175,6 +185,7 @@ ${recentAnswers ? `PREVIOUS ANSWERS:\n${recentAnswers}\n` : ''}
 RULES:
 - ${isMultiChoice ? 'MULTI-CHOICE MODE: Reply with a JSON array of the EXACT text of ALL applicable options — e.g. ["Option A", "Option C"]. Include EVERY option that honestly matches the candidate profile. If NONE apply, reply []. No commentary, no explanation, just the JSON array.' : isChoice ? 'CHOICE MODE: Reply with the EXACT text of ONE option from the list above — no commentary, no punctuation, no quotes. If genuinely none applies, reply "skip". Prefer the option that best matches candidate data + question intent. For "how did you hear about us"-style questions, pick the most plausible neutral answer like "LinkedIn" or "Google" or the option matching signup_source if listed. For consent/eligibility questions, pick "yes" if candidate qualifies per data above, else "no".' : isNumeric ? 'IMPORTANT: Reply with ONLY a single number. No text, no units, no punctuation. Just the number. Example: 160' : isTextarea ? 'Write 2-4 sentences, in first person, grounded in the candidate data above. Do not invent facts.' : 'Max 1 sentence. Use data above when available.'}
 - If the question asks for a specific candidate datapoint (LinkedIn URL, portfolio, gender, etc.) and the value is EMPTY above, reply with an appropriate empty marker: "" for open text, "N/A" for identity questions, "0" for numeric. NEVER fabricate a URL, email, phone, or biographical fact that is not listed above.
+- Degree / education-level questions: answer ONLY from "Education" above. A higher degree (Master, MBA, PhD, "Bac+5") means the lower levels (Bachelor, Licence, Associate, high school) are completed too.
 - Match the language of the question.
 - For salary/money/hours/quantity fields reply ONLY the number.
 
