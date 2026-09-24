@@ -435,18 +435,37 @@
       const dismissBtn = findDismissBtn(dialog) || findDismissBtn(document);
       if (dismissBtn) {
         try { dismissBtn.click(); } catch (_) {}
-      } else {
+      }
+      // Two hide helpers — chip path is aggressive (kill everything); fallback
+      // path only hides the dim overlay backdrop, keeping el + dialog visible
+      // so _replaceRateLimitContent can render our shadow-DOM banner inside
+      // el without a black backdrop competing for attention.
+      const hideOverlayBackdropOnly = () => {
+        try {
+          // Kill only sibling backdrop overlays that are NOT ancestors of el
+          // — hiding an ancestor cascades display:none onto el and blanks
+          // our injected banner.
+          document.querySelectorAll('.artdeco-modal-overlay, [data-test-modal-container]').forEach(o => {
+            if (o.contains(el)) return; // ancestor — leave alone
+            o.style.setProperty('display', 'none', 'important');
+            o.setAttribute('data-eam-hidden', 'rate-limit');
+          });
+        } catch (_) {}
+      };
+      const forceHide = () => {
         try {
           el.style.setProperty('display', 'none', 'important');
           el.setAttribute('data-eam-hidden', 'rate-limit');
-        } catch (_) {}
-        try {
+          if (dialog && dialog !== el) {
+            dialog.style.setProperty('display', 'none', 'important');
+            dialog.setAttribute('data-eam-hidden', 'rate-limit');
+          }
           document.querySelectorAll('.artdeco-modal-overlay, [data-test-modal-container]').forEach(o => {
             o.style.setProperty('display', 'none', 'important');
             o.setAttribute('data-eam-hidden', 'rate-limit');
           });
         } catch (_) {}
-      }
+      };
 
       // Step 2 — find the Easy Apply anchor. LinkedIn selector rot is
       // real (memory linkedin_selector_rot_2026_08) — try several.
@@ -458,8 +477,13 @@
 
       if (!easyApplyBtn) {
         // No anchor — fall back to old in-place replacement so the user
-        // still sees the message, just not next to Easy Apply.
-        return _replaceRateLimitContent(el, mode);
+        // still sees the message, just not next to Easy Apply. Also hide
+        // sibling backdrop overlays that would compete for attention with
+        // our shadow-DOM banner (but never ancestors of el, or el would
+        // cascade to display:none).
+        const result = _replaceRateLimitContent(el, mode);
+        hideOverlayBackdropOnly();
+        return result;
       }
 
       // Step 3 — idempotent: one chip at a time.
@@ -488,13 +512,17 @@
         '<button data-eam-chip-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:2px;line-height:1;color:' + chipCopy.fg + ';opacity:0.6">' + closeIcon + '</button>';
       chip.querySelector('[data-eam-chip-close]')?.addEventListener('click', () => { try { chip.remove(); } catch (_) {} });
 
-      // Step 5 — inject inline after the Easy Apply button.
+      // Step 5 — inject inline after the Easy Apply button, THEN force-hide
+      // LinkedIn's original popup + overlay so they don't coexist with the
+      // chip. Bug #889 (2026-09-20): dismiss-btn click alone left LinkedIn's
+      // popup rendered on top of our chip on the old /jobs/search/ layout.
       easyApplyBtn.setAttribute('data-eam-rl-anchor', '1');
       try {
         if (easyApplyBtn.parentNode) {
           easyApplyBtn.parentNode.insertBefore(chip, easyApplyBtn.nextSibling);
         }
       } catch (_) {}
+      forceHide();
 
       return { placed: true, mode: 'inline-chip', chip };
     } catch (e) {
@@ -618,24 +646,31 @@
       const limitPatterns = [
         "you've reached today's easy apply limit",
         "you have reached today's easy apply limit",
+        "you reached today's easy apply limit",
         "reached today's easy apply limit",
         "exceeded the daily application limit",
         "save this job and continue applying tomorrow",
         "great effort applying today",
+        "we limit easy apply submissions",
         "limit daily submissions",
       ];
-      const hit = _scanDialogsForPatterns(limitPatterns, true);
+      // v2.5.86 (2026-09-20): switched from narrow _scanDialogsForPatterns
+      // to broader _scanRateLimitModalsOnly. The narrow scanner missed the
+      // daily-limit popup on /jobs/search/ and /jobs/search-results/ because
+      // LinkedIn ships it in variable wrapper classes outside dialog/modal.
+      // The broader scanner does a text-walk fallback + norm-lowercases text
+      // so curly quotes match (verified 2026-09-20 with Théo live).
+      const hit = _scanRateLimitModalsOnly(limitPatterns);
       if (hit) {
-        const matched = typeof hit === 'string' ? hit : hit.pattern;
         log('DAILY LIMIT REACHED!');
-        log(`   Pattern: "${matched}"`);
+        log(`   Pattern: "${hit.pattern}"`);
         log(`   Applied: ${appliedCount} | Skipped: ${skippedCount}`);
         // Replace LinkedIn's scary "come back tomorrow" toast in place with
-        // our friendly terminal message (2026-09-09: Théo asked for this
-        // parity with rate-limit UI so users don't see LinkedIn's raw popup
-        // even at daily-cap).
+        // our friendly terminal message. Uses the same dismiss+chip flow as
+        // rate-limit for UX consistency (chip near Easy Apply, no page-blocking
+        // overlay). Falls back to shadow-DOM in-place replacement if no anchor.
         try {
-          if (hit && hit.element) _replaceRateLimitContent(hit.element, 'daily');
+          _dismissAndInlineChip(hit.element, 'daily');
         } catch (_) {}
         return true;
       }
@@ -679,14 +714,23 @@
     } catch (e) {}
     const vpW = window.innerWidth;
     const vpH = window.innerHeight;
+    // Normalize Unicode quotes + whitespace so patterns with straight
+    // apostrophes match LinkedIn's curly ones (U+2019 in "today's").
+    // Added 2026-09-20 (v2.5.86) — daily-limit detection was silently
+    // failing because the broader scanner wasn't norm-ing text.
+    const norm = (s) => s.toLowerCase()
+      .replace(/[‘’ʼ]/g, "'")
+      .replace(/[“”]/g, '"')
+      .replace(/\s+/g, ' ');
+    const normalizedPatterns = patterns.map(norm);
     for (const el of scopes) {
       const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
       if (rect.width === 0 && rect.height === 0) continue;
       // Size guard — never touch scaffold-sized elements.
       if (rect.width > vpW * 0.9 && rect.height > vpH * 0.7) continue;
-      const text = (el.textContent || '').toLowerCase();
-      for (const p of patterns) {
-        if (text.includes(p)) return { pattern: p, element: el };
+      const text = norm(el.textContent || '');
+      for (let i = 0; i < normalizedPatterns.length; i++) {
+        if (text.includes(normalizedPatterns[i])) return { pattern: patterns[i], element: el };
       }
     }
     // Selector-based scan missed — fall back to a text-based walk of
@@ -703,12 +747,12 @@
         const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
         if (rect.width === 0 || rect.width > 640) continue;
         if (rect.height === 0 || rect.height > vpH * 0.6) continue;
-        const text = (el.textContent || '').toLowerCase();
-        for (const p of patterns) {
-          if (text.includes(p)) {
+        const text = norm(el.textContent || '');
+        for (let i = 0; i < normalizedPatterns.length; i++) {
+          if (text.includes(normalizedPatterns[i])) {
             // Prefer a smaller (deeper) match to avoid hiding the whole body.
             if (!best || rect.width * rect.height < best.rect.width * best.rect.height) {
-              best = { pattern: p, element: el, rect };
+              best = { pattern: patterns[i], element: el, rect };
             }
           }
         }
