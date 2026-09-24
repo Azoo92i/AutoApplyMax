@@ -11,6 +11,15 @@
   window.EAM = window.EAM || {};
   const u = () => window.EAM.utils;
 
+  // v2.5.87: session start/stop telemetry → ext_diag_events (types already
+  // allow-listed by ext-diag-ingest). LinkedIn only, fire-and-forget.
+  function _diag(eventType, meta) {
+    try {
+      if (!/linkedin\.com$/i.test(location.hostname)) return;
+      chrome.runtime.sendMessage({ type: 'eam-diag', event: { site: 'linkedin', event_type: eventType, url_path: location.pathname, meta: meta || {} } });
+    } catch (_) {}
+  }
+
   let activeAdapter = null;
 
   // ─── Main loop ────────────────────────────────────────────────────────
@@ -1168,6 +1177,7 @@
     console.log('%c[EAM] stopBot called — reason: ' + reason, 'color:#c00;font-weight:bold');
     console.trace('[EAM] stopBot stack');
     state.log('Bot stopping — ' + reason);
+    _diag('session_end', { reason: String(reason || '').slice(0, 120), applied: state.appliedCount || 0, skipped: state.skippedCount || 0 });
     state.isRunning = false;
     state.userExplicitlyClickedStart = false;
     await chrome.storage.local.set({ isRunning: false });
@@ -1287,6 +1297,7 @@
               return;
             }
             state.log(`Using adapter: ${adapter.siteName}`);
+            _diag('session_start', { layout: /search-results/.test(location.pathname) ? 'search-results' : 'search', filter: state._startHadFilter });
             mainLoop(adapter);
 
           } else if (request.action === 'stop') {
