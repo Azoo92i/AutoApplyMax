@@ -1190,6 +1190,9 @@
     console.trace('[EAM] stopBot stack');
     state.log('Bot stopping — ' + reason);
     _diag('session_end', { reason: String(reason || '').slice(0, 120), applied: state.appliedCount || 0, skipped: state.skippedCount || 0 });
+    // The adapter's own daily_limit_reached only fires on one detection path; the real
+    // limit on 2026-09-25 00:52 went through the engine path and left no event.
+    if (/daily limit/i.test(String(reason))) _diag('daily_limit_reached', { source: 'engine', applied: state.appliedCount || 0 });
     state.isRunning = false;
     state.userExplicitlyClickedStart = false;
     await chrome.storage.local.set({ isRunning: false });

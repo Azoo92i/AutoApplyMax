@@ -718,6 +718,21 @@
     try { document.querySelectorAll('[data-eam-bot-notice]').forEach(x => x.remove()); } catch (_) {}
   }
 
+  function _structuralDailyLimit() {
+    const LIMIT_WORD = /limit|limite|límite|tomorrow|demain|mañana|morgen|domani|amanhã/i;
+    const btns = document.querySelectorAll('button.jobs-apply-button[disabled], button.jobs-apply-button.artdeco-button--disabled, button#jobs-apply-button-id[disabled]');
+    for (const b of btns) {
+      if (b.closest('[class*="sticky-header"]') || /\{:/.test(b.getAttribute('aria-label') || '')) continue;
+      const r = b.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      const card = b.closest('.job-details-jobs-unified-top-card__container--two-pane, .jobs-unified-top-card, .job-details-jobs-unified-top-card__container, .jobs-details__main-content') || b.parentElement;
+      const fb = card && card.querySelector('.artdeco-inline-feedback--error, [role="alert"].artdeco-inline-feedback');
+      const text = fb ? (fb.innerText || fb.textContent || '').trim() : '';
+      if (text && LIMIT_WORD.test(text)) return { element: fb, text };
+    }
+    return null;
+  }
+
   function checkDailyLimit() {
     try {
       const limitPatterns = [
@@ -749,6 +764,20 @@
         try {
           _dismissAndInlineChip(hit.element, 'daily');
         } catch (_) {}
+        return true;
+      }
+      // v2.5.87 — REAL signal captured live 2026-09-25 00:52 Paris (Théo's account,
+      // after LinkedIn's own "You reached today's Easy Apply limit" dialog was dismissed):
+      //   button#jobs-apply-button-id.jobs-apply-button.artdeco-button--disabled[disabled]
+      //   + sibling div.artdeco-inline-feedback--error[role=alert] "We limit daily submissions…"
+      // Structural check (greyed top-card Easy Apply + LinkedIn inline error) so a
+      // non-English UI is still caught. The hidden sticky-header copy of the button is
+      // ALWAYS disabled (aria-label "Apply to {:jobTitle}…") and is excluded.
+      const structural = _structuralDailyLimit();
+      if (structural) {
+        log('DAILY LIMIT REACHED (greyed Easy Apply + LinkedIn inline error)');
+        log(`   LinkedIn message: "${structural.text.slice(0, 140)}"`);
+        try { _dismissAndInlineChip(structural.element, 'daily'); } catch (_) {}
         return true;
       }
       return false;
