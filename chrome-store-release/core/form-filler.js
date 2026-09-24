@@ -433,6 +433,31 @@
     }
   }
 
+  // v2.5.87: country questions → profile country (never the first option).
+  const COUNTRY_NAMES = {
+    FR: ['france'], US: ['united states', 'united states of america', 'usa', 'états-unis', 'etats-unis'], IN: ['india', 'inde'],
+    GB: ['united kingdom', 'uk', 'royaume-uni', 'great britain'], UK: ['united kingdom', 'uk', 'royaume-uni', 'great britain'],
+    DE: ['germany', 'allemagne', 'deutschland'], ES: ['spain', 'espagne', 'españa'], IT: ['italy', 'italie', 'italia'],
+    BE: ['belgium', 'belgique'], CH: ['switzerland', 'suisse'], CA: ['canada'], NL: ['netherlands', 'pays-bas'],
+    PT: ['portugal'], IE: ['ireland', 'irlande'], LU: ['luxembourg'], MA: ['morocco', 'maroc'], PK: ['pakistan'],
+    AE: ['united arab emirates', 'émirats arabes unis'], SG: ['singapore', 'singapour'], AU: ['australia', 'australie'],
+  };
+  function isCountryQuestion(label) {
+    return /\b(country|countries|pays|país|paese|land|nationality|nationalit[ée]|citizenship|citoyennet[ée])\b/i.test(String(label || ''));
+  }
+  function looksLikeCountryList(texts) {
+    const t = texts.map(x => String(x || '').trim().toLowerCase());
+    return t.length > 30 && t.includes('afghanistan') && (t.includes('france') || t.includes('albania'));
+  }
+  function findCountryOption(options, textOf, config) {
+    const raw = String((config && config.country) || '').trim();
+    if (!raw) return null;
+    const names = COUNTRY_NAMES[raw.toUpperCase()] || [raw.toLowerCase()];
+    const norm = s => String(s || '').trim().toLowerCase();
+    return options.find(o => names.includes(norm(textOf(o)))) ||
+      options.find(o => names.some(n => n.length > 3 && norm(textOf(o)).startsWith(n))) || null;
+  }
+
   // v2.5.87: shared with ai-form (single source of truth for the opt-in regex).
   function isMarketingOptInLabel(label) {
     try { return !!(window.EAM && window.EAM.aiForm && window.EAM.aiForm.isMarketingOptIn && window.EAM.aiForm.isMarketingOptIn(label)); }
@@ -934,6 +959,12 @@
           u().log(`Gender dropdown: leaving unanswered (user gender="${canonical || ''}", ${options.length} options)`);
           continue;
         }
+      } else if ((isCountryQuestion(labelText) && options.length > 5) || looksLikeCountryList(options.map(o => o.text))) {
+        // v2.5.87: country dropdowns use the profile country. Live bug 2026-09-25 00:44
+        // (Agoda form): the options[1] fallback submitted "Afghanistan".
+        selectedOption = findCountryOption(options, o => o.text, config);
+        u().log(`Country select → ${selectedOption ? '"' + selectedOption.text.trim() + '"' : 'left unanswered (profile country not in list)'}: ${labelText.substring(0, 40)}`);
+        if (!selectedOption) continue;
       } else if (labelText.match(/proficiency|level.*english|level.*french|level.*spanish|level.*german|niveau.*anglais|niveau.*français|nivel.*inglés/)) {
         selectedOption = options.find(opt => opt.text.toLowerCase().match(/native|bilingual|bilingue|langue maternelle/));
         if (!selectedOption) selectedOption = options.find(opt => opt.text.toLowerCase().match(/fluent|courant|fluide/));
@@ -979,6 +1010,12 @@
         u().log(`Opt-in select → ${selectedOption ? '"' + selectedOption.text.trim() + '"' : 'left unanswered (no "No" option)'}: ${labelText.substring(0, 40)}`);
         if (!selectedOption) continue;
       }
+      // v2.5.87: never blind-pick in a long list (countries, cities, schools…) —
+      // an unanswered required field skips the job, a wrong answer is submitted.
+      if (!selectedOption && options.length > 30) {
+        u().log(`Long select (${options.length} options) left unanswered: ${labelText.substring(0, 40)}`);
+        continue;
+      }
       if (!selectedOption && options.length > 1) {
         selectedOption = options[1];
       }
@@ -1022,6 +1059,12 @@
             if (!selectedOption) selectedOption = options.find(opt => opt.textContent.toLowerCase().match(/fluent|courant/));
             if (!selectedOption) selectedOption = options.find(opt => opt.textContent.toLowerCase().match(/professional|professionnel|advanced/));
           }
+          // v2.5.87: country list → profile country, never the first option ("Afghanistan").
+          if (!selectedOption && ((isCountryQuestion(question) && options.length > 5) || looksLikeCountryList(options.map(o => o.textContent)))) {
+            selectedOption = findCountryOption(options, o => o.textContent, window.EAM && window.EAM.utils && window.EAM.utils.config);
+            if (!selectedOption) { u().log(`Country dropdown left unanswered: ${question.trim().substring(0, 40)}`); document.body.click(); continue; }
+          }
+          if (!selectedOption && options.length > 30) { u().log(`Long dropdown (${options.length}) left unanswered: ${question.trim().substring(0, 40)}`); document.body.click(); continue; }
           // v2.5.87: opt-in dropdown → the "No"-like option, never the first one.
           if (!selectedOption && isMarketingOptInLabel(question)) {
             selectedOption = options.find(opt => /^(no|non|nein)\b|do not|don'?t|decline|opt[- ]?out|ne (souhaite|veux) pas/i.test(opt.textContent.trim()));
