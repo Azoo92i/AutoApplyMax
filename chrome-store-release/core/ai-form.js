@@ -70,6 +70,37 @@
     return typeof hit === 'string' && hit ? hit : null;
   }
 
+  // ─── Marketing opt-in guard (v2.5.87, Théo 2026-09-25) ───────────────
+  // Marketing / contact opt-ins default to "No" / unchecked — decided by the
+  // extension, never asked to the user and never left to the AI (which said
+  // "Yes" to "Email me about other job openings" on a real application).
+  // A REQUIRED consent (privacy policy / data processing needed to submit) is
+  // not marketing and stays ticked by the form filler.
+  const MARKETING_OPTIN_RE = new RegExp([
+    // NB: bare "marketing" is a skill ("years of experience in digital marketing") — only marketing *messages*.
+    'newsletter', 'marketing (e-?mails?|messages?|updates|offers|communications?|materials?)', '(receive|send me) marketing', 'promotional',
+    'job alerts?', 'alertes?\\s+(e-?mail|emploi|offres?)',
+    'other (job )?(openings|opportunities|positions|roles|jobs)', 'future (job )?(openings|opportunities|positions|roles)',
+    'similar (jobs|roles|positions|opportunities)', 'talent (community|network|pool|pipeline)',
+    'keep me (informed|updated|posted)', 'email me', 'text me', 'contact me (about|for|regarding) (other|future|new)',
+    '\\bsms\\b', 'whats\\s?app', 'text messages?',
+    'recevoir\\s+(des|les|nos|l[ae])?\\s*(offres|newsletters?|actualit[ée]s|informations|communications|sms|e-?mails?|notifications|alertes)',
+    '(autres|nouvelles|futures|prochaines)\\s+offres', 'offres\\s+(similaires|d.emploi\\s+par)',
+    '(tenir|être)\\s+inform[ée]', 'communications?\\s+commerciales?',
+  ].join('|'), 'i');
+  function isMarketingOptIn(label) {
+    return MARKETING_OPTIN_RE.test(String(label || ''));
+  }
+  const NO_OPTION_RE = /^(no|non|nein|não|nao)\b|do not|don'?t|decline|opt[- ]?out|unsubscribe|ne (souhaite|veux) pas|pas int[ée]ress|refuse/i;
+  // Deterministic "No" in the shape the caller expects. null = nothing safe to pick.
+  function marketingNoAnswer(fieldType, options) {
+    if (fieldType === 'checkbox' && Array.isArray(options)) return '[]';
+    if (Array.isArray(options) && options.length) {
+      return options.find(o => NO_OPTION_RE.test(String(o).trim())) || null;
+    }
+    return 'No';
+  }
+
   // ─── Groq API call ──────────────────────────────────────────────────
 
   async function askAI(question, config, fieldType, options) {
@@ -79,6 +110,13 @@
     // radio/checkbox/select questions. When present, the AI is instructed
     // to reply with the EXACT text of the best-matching option (or "skip"
     // if none applies). Caller can then match the string to a control.
+
+    // Marketing opt-in → deterministic "No", before cache and AI.
+    if (isMarketingOptIn(question)) {
+      const no = marketingNoAnswer(fieldType, options);
+      log()(`AI [opt-in guard]: "${String(question).substring(0, 50)}" → ${no === null ? '(no "No" option — left unanswered)' : '"' + no + '"'}`);
+      return no;
+    }
 
     await loadCache();
 
@@ -185,6 +223,7 @@ ${recentAnswers ? `PREVIOUS ANSWERS:\n${recentAnswers}\n` : ''}
 RULES:
 - ${isMultiChoice ? 'MULTI-CHOICE MODE: Reply with a JSON array of the EXACT text of ALL applicable options — e.g. ["Option A", "Option C"]. Include EVERY option that honestly matches the candidate profile. If NONE apply, reply []. No commentary, no explanation, just the JSON array.' : isChoice ? 'CHOICE MODE: Reply with the EXACT text of ONE option from the list above — no commentary, no punctuation, no quotes. If genuinely none applies, reply "skip". Prefer the option that best matches candidate data + question intent. For "how did you hear about us"-style questions, pick the most plausible neutral answer like "LinkedIn" or "Google" or the option matching signup_source if listed. For consent/eligibility questions, pick "yes" if candidate qualifies per data above, else "no".' : isNumeric ? 'IMPORTANT: Reply with ONLY a single number. No text, no units, no punctuation. Just the number. Example: 160' : isTextarea ? 'Write 2-4 sentences, in first person, grounded in the candidate data above. Do not invent facts.' : 'Max 1 sentence. Use data above when available.'}
 - If the question asks for a specific candidate datapoint (LinkedIn URL, portfolio, gender, etc.) and the value is EMPTY above, reply with an appropriate empty marker: "" for open text, "N/A" for identity questions, "0" for numeric. NEVER fabricate a URL, email, phone, or biographical fact that is not listed above.
+- Marketing / contact opt-ins (newsletters, job alerts, "email me about other openings", talent community, SMS / WhatsApp consent) → always "No" (or the equivalent option). Only a consent REQUIRED to submit the application (privacy policy / data processing) is "Yes".
 - Degree / education-level questions: answer ONLY from "Education" above. A higher degree (Master, MBA, PhD, "Bac+5") means the lower levels (Bachelor, Licence, Associate, high school) are completed too.
 - Match the language of the question.
 - For salary/money/hours/quantity fields reply ONLY the number.
@@ -259,6 +298,7 @@ Answer:`;
   window.EAM.aiForm = {
     askAI,
     findCached,
+    isMarketingOptIn,
     _cacheKey: cacheKey, // exposed for unit tests
     loadCache,
     clearCache: async () => { cache = {}; await saveCache(); }
