@@ -81,7 +81,70 @@
     // navigate). Each method below branches on _isNewSearchResults() so
     // the legacy /jobs/search/ flow is byte-for-byte unchanged.
     _isNewSearchResults() {
-      return /\/jobs\/search-results\//i.test(window.location.pathname);
+      const path = window.location.pathname;
+      if (/\/jobs\/search-results\//i.test(path)) return true;
+      // v2.5.87: LinkedIn also serves the Aug-2026 card layout on /jobs/search/
+      // and /jobs/collections/. Detect by DOM (Aug-2026 job-card componentkey
+      // present, no legacy occludable list) so cards, job info and the modal
+      // flow all use the matching branch instead of the dead legacy selectors.
+      if (!/\/jobs\/(search|collections)\//i.test(path)) return false;
+      try {
+        if (document.querySelector('li[data-occludable-job-id]')) return false;
+        return !!document.querySelector('div[componentkey^="job-card-component-"]');
+      } catch (_) { return false; }
+    }
+
+    // v2.5.87: in-place recovery (replaces page reloads). Close stray modals,
+    // then scroll the job list (and the window) to wake lazy-loaded cards.
+    async recoverInPlace() {
+      try { await this.clearAllModals(2); } catch (_) {}
+      try {
+        const firstCard = this.getJobCards()[0];
+        let list = document.querySelector('.jobs-search-results-list, .scaffold-layout__list-container, .jobs-search-results__list, .scaffold-layout__list');
+        if (!list && firstCard) {
+          // Aug-2026 layout: nearest scrollable ancestor of the first card
+          let p = firstCard.parentElement;
+          while (p && p !== document.body) {
+            const oy = getComputedStyle(p).overflowY;
+            if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight) { list = p; break; }
+            p = p.parentElement;
+          }
+        }
+        if (list) { list.scrollTo({ top: list.scrollHeight }); await u().wait(1200); list.scrollTo({ top: 0 }); }
+        window.scrollTo(0, document.body.scrollHeight);
+        await u().wait(1200);
+        window.scrollTo(0, 0);
+        await u().wait(800);
+        return true;
+      } catch (_) { return false; }
+    }
+
+    // v2.5.87: re-enable LinkedIn's own "Easy Apply" search filter in place
+    // (SPA click, no navigation). Returns true once f_AL=true is back in the URL.
+    async restoreEasyApplyFilter() {
+      const isFilterOn = () => /[?&]f_AL=true/i.test(window.location.href);
+      if (isFilterOn()) return true;
+      const label = /^(easy apply|candidature simplifi[ée]e)$/i;
+      const candidates = [...document.querySelectorAll('button, [role="radio"], [role="checkbox"], [role="switch"], label')]
+        .filter(el => {
+          if (el.offsetParent === null) return false;
+          if (el.closest('div[componentkey^="job-card-component-"], li[data-occludable-job-id], .jobs-apply-button, .jobs-search__job-details, [data-eam-bot-notice]')) return false;
+          const aria = (el.getAttribute('aria-label') || '').trim();
+          if (/easy apply to|postuler/i.test(aria)) return false; // the job's own Apply control
+          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          return label.test(text) || /easy apply filter|filtre candidature simplifi/i.test(aria);
+        });
+      for (const el of candidates) {
+        try {
+          u().log('Re-enabling the Easy Apply filter (in place)…');
+          await u().click(el);
+          for (let i = 0; i < 8; i++) {
+            await u().wait(500);
+            if (isFilterOn()) { await u().wait(1500); return true; }
+          }
+        } catch (_) {}
+      }
+      return isFilterOn();
     }
 
     // The Apr 2026 LinkedIn redesign mounts the Easy Apply modal inside an
@@ -1373,16 +1436,9 @@
                     ' popup is up — skipping reload.');
             return false;
           }
-          // NEVER auto-reload on /jobs/search-results/ (see engine.js for
-          // full rationale — Skas 2026-08 refresh loop bug).
-          if (/\/jobs\/search-results\//i.test(window.location.pathname)) {
-            u().log('⚠ Stuck-loading in discardApplication on /jobs/search-results/ — NOT refreshing (preserve filter).');
-            return false;
-          }
-          u().log('Stuck loading popup detected - refreshing...');
-          location.reload();
-          await u().wait(2000);
-          return true;
+          // v2.5.87: never reload (any layout). Fall through to the normal
+          // Close / Discard / ESC sequence below, which closes the modal in place.
+          u().log('Stuck loading popup detected — closing in place (no reload)');
         }
         // No modal at all → nothing to discard, just return success so the
         // engine can move on to the next job card without losing context.

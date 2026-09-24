@@ -198,35 +198,24 @@
           const stillHasFilter = /[?&]f_AL=true/i.test(window.location.href);
           if (!stillHasFilter) {
             state._filterDropRecoveries = (state._filterDropRecoveries || 0) + 1;
-            if (state._filterDropRecoveries > 3) {
-              state.log('⏸ Taking a longer break — LinkedIn has been resetting your Easy Apply filter. Try again in 15-30 min (or re-apply the filter and click Start).');
-              await stopBot('LinkedIn dropped f_AL filter 4× — giving up');
+            // v2.5.87: NO navigation. The old fix assigned window.location.href
+            // = full page load = injected engine destroyed (isRunning lost,
+            // the "keeps refreshing, applies to nothing" reports). Re-enable
+            // the filter in place by clicking LinkedIn's own Easy Apply chip;
+            // if that fails, stop cleanly with a visible message.
+            const restored = state._filterDropRecoveries <= 3 && adapter.restoreEasyApplyFilter
+              ? await adapter.restoreEasyApplyFilter()
+              : false;
+            if (!restored) {
+              state.log('⏸ LinkedIn removed the Easy Apply filter and it could not be restored in place.');
+              await stopBot('LinkedIn dropped the Easy Apply filter', {
+                title: 'Easy Apply filter was removed',
+                body: 'LinkedIn reset your search filters. Turn the "Easy Apply" filter back on, then click Start again.',
+              });
               break;
             }
-            state.log(`⚠ LinkedIn dropped the Easy Apply filter (recovery attempt ${state._filterDropRecoveries}/3). Re-injecting f_AL into current URL to preserve pagination position…`);
-            // Re-inject f_AL into CURRENT URL rather than resetting to the
-            // very first page. This preserves pagination state (start=25,
-            // 50, 75…) and search filters (keywords, location) that may
-            // have been added mid-run. Falls back to _startUrl only if the
-            // current URL is unusable.
-            //
-            // 2026-08-14: user flagged that pagination clicks (Page 2, 3)
-            // can produce a URL that drops f_AL — the old restore-to-
-            // _startUrl would then loop back to page 1 = same jobs
-            // forever. Re-injecting on the current URL keeps forward
-            // progress AND restores the filter.
-            try {
-              const cur = new URL(window.location.href);
-              cur.searchParams.set('f_AL', 'true');
-              window.location.href = cur.href;
-            } catch (_) {
-              // Malformed URL fallback: use _startUrl or synth minimal URL
-              try {
-                window.location.href = state._startUrl || (window.location.origin + window.location.pathname + '?f_AL=true');
-              } catch (__) { /* fall through */ }
-            }
-            // Wait for the reload before continuing the loop.
-            await state.wait(4000);
+            state.log(`✓ Easy Apply filter re-enabled in place (attempt ${state._filterDropRecoveries}/3)`);
+            state.updateActivity();
             continue;
           }
           // Filter is intact — reset the recovery counter so we don't carry
@@ -259,20 +248,19 @@
           continue;
         }
 
-        // Stuck detection.
-        // Skip refresh on /jobs/search-results/ — LinkedIn's SPA may drop
-        // the f_AL=true filter on a same-URL reload (server-side rate-
-        // limit response), and users lose the search context. Better to
-        // stop cleanly and let the user manually re-trigger.
+        // Stuck detection — in-place recovery only (v2.5.87: never reload,
+        // on any layout). 2 attempts, then a clean stop with a message.
         if (state.isStuck()) {
-          if (/\/jobs\/search-results\//i.test(window.location.pathname)) {
-            state.log('STUCK on /jobs/search-results/ — stopping cleanly instead of refresh (would drop f_AL).');
-            await stopBot('Stuck on search-results, refresh skipped (would lose filter)');
+          state._stuckRecoveries = (state._stuckRecoveries || 0) + 1;
+          if (state._stuckRecoveries > 2) {
+            await stopBot('Stuck — no progress after in-place recovery', {
+              title: 'Paused — the page stopped responding',
+              body: 'Scroll the job list or change page, then click Start again.',
+            });
             break;
           }
-          state.log('STUCK DETECTED: No activity for 2 minutes');
-          await adapter.refreshPage();
-          await state.wait(2500);
+          state.log(`STUCK: no activity for 2 min — in-place recovery ${state._stuckRecoveries}/2 (no page reload)`);
+          await adapter.recoverInPlace();
           state.updateActivity();
           continue;
         }
@@ -289,21 +277,23 @@
           break;
         }
         if (jobCards.length === 0) {
-          state.log('No jobs found. Waiting 5s...');
-          if (state.isStuck()) {
-            // Same guard as above: never reload on search-results (drops filter).
-            if (/\/jobs\/search-results\//i.test(window.location.pathname)) {
-              state.log('STUCK on /jobs/search-results/ (no cards) — stopping cleanly instead of refresh.');
-              await stopBot('Stuck on search-results, no cards found');
-              break;
-            }
-            await adapter.refreshPage();
-            await state.wait(2500);
-            state.updateActivity();
+          // v2.5.87: no reload. Scroll to wake lazy lists (3 tries, ~15s),
+          // then stop cleanly with a visible message.
+          state._emptyScans = (state._emptyScans || 0) + 1;
+          if (state._emptyScans > 3) {
+            await stopBot('No jobs found on this page', {
+              title: 'No Easy Apply jobs found on this page',
+              body: 'Change your search (keywords, location, Easy Apply filter) and click Start again.',
+            });
+            break;
           }
+          state.log(`No jobs found — in-place retry ${state._emptyScans}/3 (scroll, no reload)`);
+          await adapter.recoverInPlace();
           await state.wait(2500);
           continue;
         }
+        state._emptyScans = 0;
+        state._stuckRecoveries = 0;
 
         state.log(`${jobCards.length} jobs found`);
         state.updateActivity();
@@ -789,21 +779,20 @@
                           ' popup is up — skipping reload, letting normal handler run.');
                 break;
               }
-              // NEVER auto-reload on /jobs/search-results/. Skas bug 2026-08-12
-              // signature: checkForStuckLoading mis-fires on the new layout
-              // (currentJobId=X already selected → click no-op → looks stuck
-              // → reload → fresh page with cards[0]=X again → same bug →
-              // infinite refresh loop. User sees "the page keeps refreshing
-              // and my filter is lost". Stop cleanly instead.
-              if (/\/jobs\/search-results\//i.test(window.location.pathname)) {
-                state.log('⚠ Stuck-loading heuristic fired on /jobs/search-results/ — stopping instead of refreshing.');
-                state.log('   If jobs keep skipping, please refresh manually (F5) and click Start again.');
-                await stopBot('Stuck on search-results, refresh skipped (preserving filter)');
+              // v2.5.87: NEVER reload (any layout — Skas 2026-08-12 refresh
+              // loop + reload kills the injected engine). Close the stuck
+              // modal in place and skip this job; stop only if it won't close.
+              state.log('Stuck loading popup — closing it in place and skipping this job (no reload)');
+              await adapter.discardApplication();
+              if (adapter.getFormModal() && adapter.clearAllModals) await adapter.clearAllModals(3);
+              const stillOpen = adapter.getFormModal();
+              if (stillOpen && stillOpen.offsetParent !== null) {
+                await stopBot('Stuck application window could not be closed', {
+                  title: 'Paused — an application window is stuck',
+                  body: 'Close the LinkedIn application window, then click Start again.',
+                });
                 return;
               }
-              state.log('Stuck loading popup - refreshing...');
-              location.reload();
-              await state.wait(2000);
               state.skippedCount++;
               state.updateSkippedCount();
               break;
@@ -971,6 +960,13 @@
           continue;
         } else {
           state.log('No more pages');
+          // v2.5.87: stop explicitly (was a silent break that left
+          // isRunning=true in storage and no feedback on the page).
+          await stopBot('No more pages in this search', {
+            title: 'Finished this search',
+            body: 'No more Easy Apply jobs on the remaining pages. Try other keywords or a wider location.',
+            tone: 'info',
+          });
           break;
         }
 
@@ -1160,8 +1156,11 @@
   }
 
   // ─── Stop bot helper ──────────────────────────────────────────────────
-  async function stopBot(reason) {
+  // notice (optional, v2.5.87): { title, body, tone } shown on the page next
+  // to Easy Apply so the user sees WHY the bot stopped (replaces reloads).
+  async function stopBot(reason, notice) {
     const state = u();
+    if (notice) { try { state._showBotNotice && state._showBotNotice(notice.title, notice.body, notice.tone); } catch (_) {} }
     // Visible trace so we can identify WHO triggered each stop. Critical
     // for diagnosing the "Bot stopped" mid-iteration bug: rate-limit and
     // daily-limit false positives both call stopBot, and without this log
@@ -1268,6 +1267,10 @@
             // against a corrupted search context.
             state._startUrl = window.location.href;
             state._startHadFilter = /[?&]f_AL=true/i.test(window.location.href);
+            state._filterDropRecoveries = 0;
+            state._stuckRecoveries = 0;
+            state._emptyScans = 0;
+            try { state._clearBotNotice && state._clearBotNotice(); } catch (_) {}
             await chrome.storage.local.set({ isRunning: true });
 
             sendResponse({ success: true, message: 'Bot started' });

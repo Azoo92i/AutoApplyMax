@@ -469,11 +469,10 @@
 
       // Step 2 — find the Easy Apply anchor. LinkedIn selector rot is
       // real (memory linkedin_selector_rot_2026_08) — try several.
-      const easyApplyBtn =
-        document.querySelector('.jobs-apply-button:not([data-eam-rl-anchor])') ||
-        document.querySelector('button[data-live-test-job-apply-button]') ||
-        document.querySelector('.job-details__jobs-apply-form button, .jobs-s-apply button') ||
-        [...document.querySelectorAll('button')].find(b => /^easy apply$|^candidature simplifi/i.test((b.textContent || '').trim()));
+      // v2.5.87: shared finder — also matches the Aug-2026 <a aria-label=
+      // "Easy Apply to this job"> on /jobs/search-results/ (the button-only
+      // lookup missed it) and never the "Easy Apply" filter chip in the toolbar.
+      const easyApplyBtn = _findEasyApplyAnchor();
 
       if (!easyApplyBtn) {
         // No anchor — fall back to old in-place replacement so the user
@@ -504,7 +503,7 @@
       chip.setAttribute('data-eam-rl-chip', '1');
       chip.setAttribute('role', 'status');
       chip.setAttribute('aria-live', 'polite');
-      chip.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-left:10px;padding:6px 12px;background:' + chipCopy.bg + ';border:1px solid ' + chipCopy.border + ';color:' + chipCopy.fg + ';border-radius:16px;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;white-space:nowrap;vertical-align:middle;box-shadow:0 1px 2px rgba(15,23,42,0.06)';
+      chip.style.cssText = 'display:flex;width:fit-content;max-width:100%;box-sizing:border-box;align-items:center;gap:8px;margin:8px 0 0 0;padding:6px 12px;background:' + chipCopy.bg + ';border:1px solid ' + chipCopy.border + ';color:' + chipCopy.fg + ';border-radius:16px;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;white-space:nowrap;vertical-align:middle;box-shadow:0 1px 2px rgba(15,23,42,0.06)';
       const icon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
       const closeIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
       chip.innerHTML = icon +
@@ -517,11 +516,10 @@
       // chip. Bug #889 (2026-09-20): dismiss-btn click alone left LinkedIn's
       // popup rendered on top of our chip on the old /jobs/search/ layout.
       easyApplyBtn.setAttribute('data-eam-rl-anchor', '1');
-      try {
-        if (easyApplyBtn.parentNode) {
-          easyApplyBtn.parentNode.insertBefore(chip, easyApplyBtn.nextSibling);
-        }
-      } catch (_) {}
+      // v2.5.87: placed BELOW the Easy Apply / Save / Match row, not inside
+      // it — inside the row it stretched the row and squeezed Save + Match·
+      // Tailor (overlap/clip seen 2026-09-24 on /jobs/search/).
+      _insertBelowActionsRow(chip, easyApplyBtn);
       forceHide();
 
       return { placed: true, mode: 'inline-chip', chip };
@@ -639,6 +637,85 @@
       document.body.appendChild(banner);
       setTimeout(() => banner.remove(), 25000);
     } catch (_) {}
+  }
+
+  // ─── v2.5.87: visible stop/recovery notice (replaces page reloads) ─────
+  // The bot must NEVER reload the page: LinkedIn scripts are injected by the
+  // popup, so a reload kills the engine (isRunning lost) and often drops the
+  // Easy Apply filter. When in-place recovery fails we stop cleanly and tell
+  // the user why — inline next to Easy Apply when there is one, otherwise a
+  // small fixed card. One notice at a time; cleared on the next Start.
+  // The job's own Easy Apply control (both layouts) — never the "Easy Apply"
+  // filter chip in the search toolbar, never a job card in the list.
+  function _findEasyApplyAnchor() {
+    const visible = (e) => { try { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (_) { return false; } };
+    const notToolbar = (e) => !e.closest('[class*="search-reusables"], [role="radiogroup"], [aria-label*="filter" i], div[componentkey^="job-card-component-"], li[data-occludable-job-id], [data-eam-bot-notice]') &&
+      !e.hasAttribute('aria-pressed') && !e.hasAttribute('aria-checked');
+    const bySel = [
+      '.jobs-apply-button',
+      'button[data-live-test-job-apply-button]',
+      'a[aria-label*="Easy Apply to" i]', 'button[aria-label*="Easy Apply to" i]',
+      'a[aria-label*="Candidature simplifi" i]', 'button[aria-label*="Candidature simplifi" i]',
+    ];
+    for (const sel of bySel) {
+      const hit = [...document.querySelectorAll(sel)].find(e => visible(e) && notToolbar(e));
+      if (hit) return hit;
+    }
+    return [...document.querySelectorAll('button, a')].find(b =>
+      /^easy apply$|^candidature simplifi/i.test((b.textContent || '').trim()) && visible(b) && notToolbar(b) &&
+      b.getBoundingClientRect().left > window.innerWidth * 0.35) || null;
+  }
+  // Insert `node` on its own line right below the row that holds Easy Apply +
+  // Save (+ our Match·Tailor button). Falls back to right after the anchor.
+  function _insertBelowActionsRow(node, anchor) {
+    try {
+      let row = null, el = anchor.parentElement;
+      for (let i = 0; i < 6 && el && el !== document.body; i++) {
+        const cs = getComputedStyle(el);
+        if ((cs.display === 'flex' || cs.display === 'inline-flex') && !/column/.test(cs.flexDirection) &&
+            el.querySelectorAll('button, a').length >= 2) { row = el; break; }
+        el = el.parentElement;
+      }
+      if (row) {
+        // Aug-2026 layout wraps the row in a single-child CSS grid whose
+        // children stack in one cell — step out of it or the notice overlaps
+        // the buttons (seen on /jobs/search-results/).
+        let target = row;
+        while (target.parentElement && target.parentElement !== document.body &&
+               target.parentElement.children.length === 1 &&
+               getComputedStyle(target.parentElement).display === 'grid') target = target.parentElement;
+        if (target.parentNode) { target.parentNode.insertBefore(node, target.nextSibling); return true; }
+      }
+      if (anchor.parentNode) { anchor.parentNode.insertBefore(node, anchor.nextSibling); return true; }
+    } catch (_) {}
+    return false;
+  }
+  function _showBotNotice(title, body, tone) {
+    try {
+      _clearBotNotice();
+      const c = tone === 'info'
+        ? { bg: '#eff6ff', border: '#93c5fd', fg: '#1e3a8a' }
+        : { bg: '#fef3c7', border: '#fcd34d', fg: '#92400e' };
+      const esc = (s) => String(s || '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+      const closeBtn = '<button data-eam-notice-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:0 2px;line-height:1;font-size:15px;opacity:0.6">×</button>';
+      const anchor = _findEasyApplyAnchor();
+      const n = document.createElement(anchor ? 'span' : 'div');
+      n.setAttribute('data-eam-bot-notice', '1');
+      n.setAttribute('role', 'status');
+      n.setAttribute('aria-live', 'polite');
+      n.innerHTML = '<span><strong style="font-weight:700">AutoApplyMax — ' + esc(title) + '</strong><br>' + esc(body) + '</span>' + closeBtn;
+      const base = 'align-items:flex-start;gap:8px;padding:8px 12px;background:' + c.bg + ';border:1px solid ' + c.border + ';color:' + c.fg + ';border-radius:12px;font:500 12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;box-shadow:0 1px 2px rgba(15,23,42,0.06);max-width:360px;white-space:normal';
+      n.style.cssText = 'display:flex;width:fit-content;box-sizing:border-box;margin:8px 0 0 0;' + base;
+      if (!anchor || !_insertBelowActionsRow(n, anchor)) {
+        n.style.cssText = 'display:flex;position:fixed;top:80px;right:20px;z-index:2147483646;' + base;
+        document.body.appendChild(n);
+      }
+      n.querySelector('[data-eam-notice-close]')?.addEventListener('click', () => { try { n.remove(); } catch (_) {} });
+      return n;
+    } catch (_) { return null; }
+  }
+  function _clearBotNotice() {
+    try { document.querySelectorAll('[data-eam-bot-notice]').forEach(x => x.remove()); } catch (_) {}
   }
 
   function checkDailyLimit() {
@@ -923,6 +1000,8 @@
     _removeInlineChip,
     _dismissAndInlineChip,
     _showEasyApplyFilterHint,
+    _showBotNotice,
+    _clearBotNotice,
     _startRateLimitPoller,
     _stopRateLimitPoller,
     isPageLoadingSlow,
