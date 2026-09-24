@@ -204,7 +204,7 @@
         // manually re-select filter + click Start. New behavior recovers
         // silently (up to 3×) so the run continues.
         if (state._startHadFilter && /\/jobs\/search-results\//i.test(window.location.pathname)) {
-          const stillHasFilter = /[?&]f_AL=true/i.test(window.location.href);
+          const stillHasFilter = adapter.isEasyApplyFilterOn ? adapter.isEasyApplyFilterOn() : /[?&]f_AL=true/i.test(window.location.href);
           if (!stillHasFilter) {
             state._filterDropRecoveries = (state._filterDropRecoveries || 0) + 1;
             // v2.5.87: NO navigation. The old fix assigned window.location.href
@@ -329,9 +329,21 @@
             state.isRunning = false;
             break;
           }
-          const jobCard = jobCards[i];
-          state.log(`\n--- Job ${i + 1}/${jobCards.length} ---`);
-          console.log(`[EAM][mainLoop] Processing job ${i + 1}/${jobCards.length}, URL:`, window.location.href);
+          // v2.5.87: LinkedIn can drop f_AL mid-list (seen live 2026-09-25 right
+          // after an apply on /jobs/search-results/). The filter check only ran
+          // in the outer loop, which this 25-card loop never returned to → 12 min
+          // of skipping non-Easy-Apply / stale cards. Hand back to the outer loop.
+          if (state._startHadFilter && /\/jobs\/search-results\//i.test(window.location.pathname) &&
+              !(adapter.isEasyApplyFilterOn ? adapter.isEasyApplyFilterOn() : /[?&]f_AL=true/i.test(window.location.href))) {
+            state.log('⚠ Easy Apply filter dropped mid-list — handing back to the main loop to restore it');
+            break;
+          }
+          // v2.5.87: read from _jobCards (the list re-queried after stale refs).
+          // Reading the original `jobCards` kept re-using the detached nodes after
+          // a re-query → the same stale cards forever ("0 applied, 188 skipped").
+          const jobCard = _jobCards[i];
+          state.log(`\n--- Job ${i + 1}/${_jobCards.length} ---`);
+          console.log(`[EAM][mainLoop] Processing job ${i + 1}/${_jobCards.length}, URL:`, window.location.href);
 
           // Reset per-job counters that the form-filler / step loop use
           // to detect "stuck on unanswerable field" scenarios.

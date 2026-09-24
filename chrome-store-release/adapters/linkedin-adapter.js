@@ -121,8 +121,18 @@
 
     // v2.5.87: re-enable LinkedIn's own "Easy Apply" search filter in place
     // (SPA click, no navigation). Returns true once f_AL=true is back in the URL.
+    // Filter state: URL f_AL=true OR the Aug-2026 toolbar chip
+    // div[role=radio][aria-label="Filter by Easy Apply"][aria-checked=true]
+    // (verified live 2026-09-25 — the URL can lag behind the chip).
+    isEasyApplyFilterOn() {
+      if (/[?&]f_AL=true/i.test(window.location.href)) return true;
+      try {
+        return !!document.querySelector('[aria-label="Filter by Easy Apply" i][aria-checked="true"], [aria-label*="Easy Apply filter" i][aria-pressed="true"]');
+      } catch (_) { return false; }
+    }
+
     async restoreEasyApplyFilter() {
-      const isFilterOn = () => /[?&]f_AL=true/i.test(window.location.href);
+      const isFilterOn = () => this.isEasyApplyFilterOn();
       if (isFilterOn()) return true;
       const label = /^(easy apply|candidature simplifi[ée]e)$/i;
       const candidates = [...document.querySelectorAll('button, [role="radio"], [role="checkbox"], [role="switch"], label')]
@@ -131,6 +141,9 @@
           if (el.closest('div[componentkey^="job-card-component-"], li[data-occludable-job-id], .jobs-apply-button, .jobs-search__job-details, [data-eam-bot-notice]')) return false;
           const aria = (el.getAttribute('aria-label') || '').trim();
           if (/easy apply to|postuler/i.test(aria)) return false; // the job's own Apply control
+          // Never toggle a chip LinkedIn already reports as ON (would switch the filter off)
+          if (el.getAttribute('aria-pressed') === 'true' || el.getAttribute('aria-checked') === 'true') return false;
+          if (el.tagName === 'LABEL' && el.parentElement && el.parentElement.getAttribute('aria-checked') === 'true') return false;
           const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
           return label.test(text) || /easy apply filter|filtre candidature simplifi/i.test(aria);
         });
