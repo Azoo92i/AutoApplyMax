@@ -71,7 +71,21 @@
     _diag('rate_limit_throttle', { phase: 'pause', strike: strikes, pause_min: Math.round(pauseMinutes * 10) / 10, source });
     state.log('⏳ Waiting ~' + Math.round(pauseMinutes) + ' min to avoid LinkedIn rate limit — this keeps your account safe. Will resume automatically.');
     try { await adapter.discardApplication(); } catch (e) {}
+    // v2.5.87: a silent throttle has no LinkedIn dialog for checkRateLimit to
+    // replace — show our own pause notice so the user sees why nothing moves.
+    try {
+      if (!document.querySelector('[data-eam-rl-chip], [data-eam-rate-limit-replacement], #eam-rate-limit-banner') && state._showBotNotice) {
+        state._showBotNotice('Paused ~' + Math.round(pauseMinutes) + ' min', 'LinkedIn is slowing Easy Apply down. Auto-apply resumes automatically — keep this tab open.', 'info');
+      }
+    } catch (_) {}
     await state.wait(pauseMs);
+    try { state._clearBotNotice && state._clearBotNotice(); } catch (_) {}
+    // v2.5.87: LinkedIn re-shows the same "temporarily paused" dialog DURING
+    // our pause (live 2026-09-25 13:14:08, 48 s into the pause). The 2.5 s
+    // poller hid it and set pendingRateLimitPause → right after resuming the
+    // bot paused AGAIN as strike 2 (8 min) for the same throttle. A detection
+    // made while we were already paused belongs to this pause.
+    state.pendingRateLimitPause = false;
     if (!state.isRunning) return false; // user stopped while we slept
     // Restore anything we hid when the popup fired so the top of the
     // job page comes back after the pause (bug 2026-09-06: hidden
@@ -763,8 +777,22 @@
             state.log('Modal did not appear (unknown reason), skipping');
             state.skippedCount++;
             state.updateSkippedCount();
+            // v2.5.87 — SILENT throttle. Live 2026-09-25 13:05→: after LinkedIn's
+            // "Easy Apply is temporarily paused" dialog and our 5-min pause, every
+            // Easy Apply click opened NOTHING (no dialog, button enabled) — the bot
+            // skipped card after card. Several no-modal clicks in a row = LinkedIn
+            // is still throttling → pause again (next strike, longer) instead of
+            // burning the whole list.
+            state._noModalStreak = (state._noModalStreak || 0) + 1;
+            if (state._noModalStreak >= ((state.rateLimitStrikes || 0) > 0 ? 3 : 5)) {
+              state.log(`⚠ ${state._noModalStreak} Easy Apply clicks in a row opened nothing — LinkedIn is still throttling. Pausing again.`);
+              state._noModalStreak = 0;
+              const keepGoing = await handleRateLimit(adapter, state, 'silent throttle');
+              if (!keepGoing) break;
+            }
             continue;
           }
+          state._noModalStreak = 0;
           if (pollMs > 0) state.log('Modal appeared after ' + pollMs + 'ms poll');
 
           // ── Multi-step form loop ──────────────────────────────────────
