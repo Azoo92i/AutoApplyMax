@@ -895,6 +895,33 @@
   }
   let _pendingRateLimitPause = false;
 
+  // v2.5.87: structural "applying too fast" (temporary throttle) detector —
+  // wording-independent fallback for checkRateLimit. A small LinkedIn
+  // dialog / toast / inline error (no form fields) that talks about Easy
+  // Apply AND a slow-down / pause, but NOT about today / tomorrow (that is
+  // the DAILY limit, handled by checkDailyLimit → stop until tomorrow).
+  // Throttle = pause + auto-resume; daily = stop. Never the same handler.
+  const THROTTLE_EA_RE = /easy apply|candidature simplifi|postuler|apply/i;
+  const THROTTLE_WORD_RE = /\b(fast pace|too (fast|quickly)|so (fast|quickly)|applying quickly|slow down|briefly paused|paused|pausing|safeguard|automated|rythme (rapide|soutenu)|trop (vite|rapidement)|mis en pause|temporairement|momentan[ée]ment|automatis)/i;
+  const DAILY_WORD_RE = /today|tomorrow|daily|per day|demain|aujourd|quotidien|du jour|par jour/i;
+  function _structuralRateLimit() {
+    const sel = 'dialog, [role="dialog"], [role="alertdialog"], .artdeco-modal, .artdeco-toast-item, .artdeco-inline-feedback--error';
+    const scopes = [...document.querySelectorAll(sel)];
+    try { const sr = document.getElementById('interop-outlet')?.shadowRoot; if (sr) scopes.push(...sr.querySelectorAll(sel)); } catch (_) {}
+    for (const el of scopes) {
+      if (el.closest && el.closest('[data-eam-rl-chip],[data-eam-bot-notice],[data-eam-rate-limit-replacement],#eam-rate-limit-banner')) continue;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
+      if (!r.width || !r.height) continue;
+      if (el.querySelector && el.querySelector('input, select, textarea')) continue; // an application form, not a warning
+      const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 600) continue;
+      if (THROTTLE_EA_RE.test(text) && THROTTLE_WORD_RE.test(text) && !DAILY_WORD_RE.test(text)) {
+        return { pattern: 'structural: ' + text.slice(0, 80), element: el };
+      }
+    }
+    return null;
+  }
+
   function checkRateLimit() {
     try {
       // Very specific phrases from LinkedIn's actual rate-limit warning
@@ -914,7 +941,7 @@
         "outils d'automatisation tiers",
         "outils d'automatisation",
       ];
-      const hit = _scanRateLimitModalsOnly(rateLimitPatterns);
+      const hit = _scanRateLimitModalsOnly(rateLimitPatterns) || _structuralRateLimit();
       if (hit) {
         log(`Rate-limit safeguard triggered — replacing LinkedIn popup content. Pattern: "${hit.pattern}"`);
         // Capture the toast/dialog's bounding rect BEFORE mutating (in case
@@ -1031,6 +1058,7 @@
     _showEasyApplyFilterHint,
     _showBotNotice,
     _clearBotNotice,
+    _structuralRateLimit,
     _startRateLimitPoller,
     _stopRateLimitPoller,
     isPageLoadingSlow,

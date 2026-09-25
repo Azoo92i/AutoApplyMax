@@ -212,15 +212,14 @@
       // tomorrow. Théo asked 2026-08-28 to replace LinkedIn's raw message
       // with our own "LinkedIn rate limit, extension paused — retry in
       // a few minutes" toast.
-      if (/appl(y|ying).{0,20}(too\s+quickly|too\s+fast|very\s+fast|so\s+quickly|so\s+fast)/i.test(scanText)
-          || /you'?re\s+applying\s+quickly/i.test(scanText)
-          || /you\s+seem\s+to\s+be\s+applying/i.test(scanText)
-          || /please\s+(wait|slow\s+down)\s+(a\s+moment|a\s+bit|before)/i.test(scanText)
-          || /try\s+again\s+in\s+a?\s*(few\s+)?(minutes?|moment)/i.test(scanText)
-          || /trop\s+rapidement/i.test(scanText)
-          || /veuillez\s+attendre/i.test(scanText)) {
-        return 'rate-limit-throttle';
-      }
+      // v2.5.87: throttle detection is delegated to utils.checkRateLimit()
+      // (dialogs / toasts / inline errors only + structural fallback). The old
+      // whole-body regexes ("try again in a few minutes", "veuillez attendre")
+      // could match any job description.
+      try {
+        const u = window.EAM && window.EAM.utils;
+        if (u && u.checkRateLimit && u.checkRateLimit()) return 'rate-limit-throttle';
+      } catch (_) {}
       // Qualifications-preview panel — appears in the right pane the FIRST
       // time we click Easy Apply, before the modal mounts. LinkedIn ships
       // two variants of the wording:
@@ -292,8 +291,10 @@
           // tell the user what to do. Théo 2026-08-28 asked to replace it
           // with an actionable message. Sets same _dailyLimitHit sticky
           // flag so the engine's outer loop stops iterating on this run.
+          // v2.5.87: a TEMPORARY throttle must pause + auto-resume, never stop
+          // for the day. It used to set _dailyLimitHit (= hard stop, no resume).
           this._rateLimitHit = true;
-          this._dailyLimitHit = true; // reuse existing engine stop flag
+          try { window.EAM.utils.pendingRateLimitPause = true; } catch (_) {}
           try {
             const findCloseBtn = (root) => {
               if (!root || !root.querySelector) return null;
@@ -305,9 +306,8 @@
             const closeBtn = findCloseBtn(document) || findCloseBtn(this._getInteropShadowRoot());
             if (closeBtn) closeBtn.click();
           } catch (_) {}
-          console.warn('[EAM] Soft rate-limit detected — pausing iteration to protect the LinkedIn account.');
-          try { window.EAM.utils.log && window.EAM.utils.log('⏳ Waiting a few minutes to avoid LinkedIn rate limit — this keeps your account safe. Auto-apply will resume shortly.'); } catch (_) {}
-          _emitDiag('rate_limit_throttle', {});
+          console.warn('[EAM] Soft rate-limit detected — engine will pause then auto-resume.');
+          // (diag rate_limit_throttle is emitted by engine.handleRateLimit — one event per pause)
           return false;
         }
         if (state === 'daily-limit') {

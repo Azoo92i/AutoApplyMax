@@ -60,6 +60,7 @@
           });
         }
       } catch (e) {}
+      _diag('rate_limit_throttle', { phase: 'stop', strike: strikes, source });
       await stopBot('Rate limit (' + strikes + ' strikes)');
       return false; // signal: caller should break/return
     }
@@ -67,6 +68,7 @@
     const baseMin = RATE_LIMIT_PAUSE_MINUTES[strikes - 1] || RATE_LIMIT_PAUSE_MINUTES[RATE_LIMIT_PAUSE_MINUTES.length - 1];
     const pauseMinutes = baseMin + Math.random();
     const pauseMs = Math.round(pauseMinutes * 60 * 1000);
+    _diag('rate_limit_throttle', { phase: 'pause', strike: strikes, pause_min: Math.round(pauseMinutes * 10) / 10, source });
     state.log('⏳ Waiting ~' + Math.round(pauseMinutes) + ' min to avoid LinkedIn rate limit — this keeps your account safe. Will resume automatically.');
     try { await adapter.discardApplication(); } catch (e) {}
     await state.wait(pauseMs);
@@ -112,6 +114,8 @@
     // Give LinkedIn a beat to settle before we start clicking again.
     await state.wait(1200);
     state.log('▶ Resuming auto-apply.');
+    _diag('rate_limit_throttle', { phase: 'resume', strike: strikes, source });
+    try { if (adapter) adapter._rateLimitHit = false; } catch (_) {}
     state.updateActivity();
     return true; // signal: keep looping
   }
@@ -337,6 +341,13 @@
               !(adapter.isEasyApplyFilterOn ? adapter.isEasyApplyFilterOn() : /[?&]f_AL=true/i.test(window.location.href))) {
             state.log('⚠ Easy Apply filter dropped mid-list — handing back to the main loop to restore it');
             break;
+          }
+          // v2.5.87: a throttle flagged between cards (background poller or the
+          // adapter's pre-modal check) pauses HERE, before touching the next card.
+          if (state.pendingRateLimitPause) {
+            state.pendingRateLimitPause = false;
+            const keepGoing = await handleRateLimit(adapter, state, 'between cards');
+            if (!keepGoing) break;
           }
           // v2.5.87: read from _jobCards (the list re-queried after stale refs).
           // Reading the original `jobCards` kept re-using the detached nodes after
