@@ -300,7 +300,9 @@
     const copy = mode === 'daily' ? {
       icon: '🎯',
       title: 'You hit today’s LinkedIn Easy Apply limit',
-      body: 'Great work today — you reached LinkedIn’s ~100/day cap. Auto-apply will resume automatically tomorrow. See you then!',
+      // v2.5.87 (UX audit): LinkedIn publishes no fixed number (it hit after ~28 on
+      // 2026-09-25), and the bot does NOT restart by itself — the user clicks Start.
+      body: 'LinkedIn’s daily Easy Apply limit is reached, so the bot has stopped. Easy Apply usually comes back within a day — click Start again then.',
       bg: 'linear-gradient(135deg, #ecfdf5, #d1fae5)',
       border: '#a7f3d0',
       shadow: 'rgba(5, 150, 105, 0.10)',
@@ -492,7 +494,7 @@
       // daily-cap. Sits inline in the same row as Easy Apply.
       const chipCopy = mode === 'daily' ? {
         title: 'Daily LinkedIn limit reached',
-        body: 'Auto-apply resumes tomorrow.',
+        body: 'Bot stopped. Click Start again once Easy Apply is back (usually within a day).',
         bg: '#ecfdf5', border: '#a7f3d0', fg: '#065f46',
       } : {
         title: 'Bot paused',
