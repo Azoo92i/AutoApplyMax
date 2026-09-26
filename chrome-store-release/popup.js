@@ -368,26 +368,52 @@ async function showAiPremiumNoticeOnce() {
   try {
     const { eam_ai_premium_notice: n, isPremium, plan } = await chrome.storage.local.get(['eam_ai_premium_notice', 'isPremium', 'plan']);
     if (!n || n.seen || isPremium || ['premium', 'pro', 'unlimited'].includes(plan)) return;
-    const tabs = document.querySelector('.tabs');
-    if (!tabs || document.getElementById('ai-premium-notice')) return;
-    const box = document.createElement('div');
-    box.id = 'ai-premium-notice';
-    box.setAttribute('role', 'status');
-    box.style.cssText = 'margin:10px 16px 0;padding:10px 12px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:10px;font-size:12.5px;line-height:1.45;color:#0f172a;display:flex;gap:8px;align-items:flex-start';
-    const txt = document.createElement('div');
-    txt.style.flex = '1';
-    const t = document.createElement('strong'); t.textContent = 'Some applications were skipped';
-    const p = document.createElement('div');
-    p.textContent = 'They had screening questions only AI can answer. AI answers are a Premium feature — everything else keeps working on the free plan.';
-    const a = document.createElement('a'); a.href = '#'; a.textContent = 'See Premium'; a.style.cssText = 'color:#0a66c2;font-weight:600;';
-    a.addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: BASE_URL + '/premium?src=ext_ai_skipped' }); });
-    txt.append(t, p, a);
-    const x = document.createElement('button'); x.type = 'button'; x.setAttribute('aria-label', 'Dismiss'); x.textContent = '×';
-    x.style.cssText = 'border:0;background:transparent;font-size:16px;line-height:1;cursor:pointer;color:#475569;';
-    x.addEventListener('click', async () => { box.remove(); try { await chrome.storage.local.set({ eam_ai_premium_notice: { ...n, seen: true } }); } catch (_) {} });
-    box.append(txt, x);
-    tabs.parentNode.insertBefore(box, tabs);
+    if (document.getElementById('ai-premium-notice')) return;
+    const box = buildAlert({
+      id: 'ai-premium-notice',
+      tone: 'info',
+      title: 'Some applications were skipped',
+      body: 'They had screening questions only AI can answer. AI answers are a Premium feature — everything else keeps working on the free plan.',
+      link: { text: 'See Premium', url: 'https://autoapplymax.com/premium?src=ext_ai_skipped' },
+      onClose: async () => { try { await chrome.storage.local.set({ eam_ai_premium_notice: { ...n, seen: true } }); } catch (_) {} },
+    });
+    document.getElementById('alert-slot')?.appendChild(box);
   } catch (_) {}
+}
+
+// Shared alert card (rate limit / daily limit / AI-skipped notice) rendered in
+// #alert-slot under the header. tone: 'warning' (amber) | 'info' (blue) | 'success'.
+const ALERT_ICONS = {
+  warning: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+  info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+  success: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+};
+function buildAlert({ id, tone = 'warning', title, body, bodyId, link, onClose }) {
+  const box = document.createElement('div');
+  if (id) box.id = id;
+  box.className = 'alert alert-' + tone;
+  box.setAttribute('role', 'status');
+  const icon = document.createElement('span');
+  icon.className = 'alert-icon';
+  icon.innerHTML = ALERT_ICONS[tone] || ALERT_ICONS.info;
+  const txt = document.createElement('div');
+  txt.className = 'alert-body';
+  if (title) { const t = document.createElement('strong'); t.textContent = title; txt.appendChild(t); }
+  const p = document.createElement('div');
+  if (bodyId) p.id = bodyId;
+  p.textContent = body || '';
+  txt.appendChild(p);
+  if (link) {
+    const a = document.createElement('a');
+    a.href = '#'; a.textContent = link.text + ' →';
+    a.addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: link.url }); });
+    txt.appendChild(a);
+  }
+  const x = document.createElement('button');
+  x.type = 'button'; x.className = 'alert-close'; x.setAttribute('aria-label', 'Dismiss'); x.textContent = '×';
+  x.addEventListener('click', () => { box.remove(); if (onClose) onClose(); });
+  box.append(icon, txt, x);
+  return box;
 }
 
 // Setup tabs
@@ -696,15 +722,15 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
     count = perFrame.reduce((a, b) => a + b, 0);
     if (count > 0) {
       btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> ${count} field${count > 1 ? 's' : ''} filled!`;
-      btn.style.background = '#059669';
+      btn.style.background = '#059669'; btn.style.color = '#fff'; btn.style.borderColor = '#059669';
     } else {
       btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/></svg> No fields found`;
-      btn.style.background = '#6b7280';
+      btn.style.background = '#64748b'; btn.style.color = '#fff'; btn.style.borderColor = '#64748b';
     }
 
     setTimeout(() => {
       btn.innerHTML = originalHTML;
-      btn.style.background = '';
+      btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = '';
       btn.disabled = false;
     }, 3000);
 
@@ -712,7 +738,7 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
     console.error('Autofill error:', error);
     showToast('Error running autofill. Make sure you are on a regular webpage.', 'error');
     btn.innerHTML = originalHTML;
-    btn.style.background = '';
+    btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = '';
     btn.disabled = false;
   }
 });
@@ -731,7 +757,8 @@ function updateStatusDisplay(text, running) {
   } else {
     statusEl.textContent = text;
   }
-  statusEl.className = running ? 'status-value running' : 'status-value stopped';
+  statusEl.className = running ? 'status-value running'
+    : /rate-limited|paused/i.test(text) ? 'status-value paused' : 'status-value stopped';
 }
 
 // Update status from storage
@@ -761,7 +788,7 @@ chrome.runtime.onMessage.addListener((request) => {
     isRunning = false;
     updateButtons();
     updateStatusDisplay('Rate-limited', false);
-    showRateLimitBanner(request.message);
+    showRateLimitBanner(request.message, 'warning');
   } else if (request.type === 'botActionableStop') {
     // Actionable stop reasons — unsupported layout / daily limit / rate limit.
     // Reuse the persistent rate-limit banner UI (same style + auto-persist)
@@ -769,7 +796,7 @@ chrome.runtime.onMessage.addListener((request) => {
     isRunning = false;
     updateButtons();
     updateStatusDisplay('Stopped', false);
-    showRateLimitBanner(request.message);
+    showRateLimitBanner(request.message, request.tone);
   }
 });
 
@@ -785,14 +812,14 @@ try {
       chrome.storage.local.remove('eam_actionable_stop_banner');
       return;
     }
-    renderRateLimitBanner({ message: b.message, ts: b.ts });
+    renderRateLimitBanner({ message: b.message, ts: b.ts, tone: b.tone, reason: b.reason });
   });
 } catch (e) {}
 
-function showRateLimitBanner(message) {
+function showRateLimitBanner(message, tone) {
   // Persist the banner across popup re-opens by stashing it in storage —
   // popups close as soon as the user clicks elsewhere.
-  const payload = { message, ts: Date.now() };
+  const payload = { message, tone: tone || 'warning', ts: Date.now() };
   try { chrome.storage.local.set({ eam_rate_limit_banner: payload }); } catch (e) {}
   renderRateLimitBanner(payload);
 }
@@ -803,29 +830,24 @@ function renderRateLimitBanner(payload) {
   // probably already retried and we don't want a stale warning.
   if (Date.now() - (payload.ts || 0) > 30 * 60 * 1000) return;
 
-  let banner = document.getElementById('eam-rate-limit-banner');
-  if (!banner) {
-    banner = document.createElement('div');
-    banner.id = 'eam-rate-limit-banner';
-    banner.style.cssText = 'background:#fef3c7;border:1px solid #f59e0b;color:#78350f;' +
-      'padding:10px 12px;margin:8px;border-radius:6px;font-size:12px;line-height:1.4;' +
-      'display:flex;align-items:flex-start;gap:8px';
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '×';
-    closeBtn.style.cssText = 'background:none;border:none;font-size:18px;cursor:pointer;' +
-      'color:#78350f;line-height:1;padding:0;flex-shrink:0';
-    closeBtn.onclick = () => {
-      banner.remove();
-      try { chrome.storage.local.remove('eam_rate_limit_banner'); } catch (e) {}
-    };
-    const text = document.createElement('div');
-    text.id = 'eam-rate-limit-banner-text';
-    text.style.cssText = 'flex:1';
-    banner.appendChild(text);
-    banner.appendChild(closeBtn);
-    document.body.insertBefore(banner, document.body.firstChild);
-  }
-  document.getElementById('eam-rate-limit-banner-text').textContent = payload.message;
+  const isDaily = /daily/i.test(payload.message + ' ' + (payload.reason || ''));
+  const tone = payload.tone === 'info' || isDaily ? 'info' : 'warning';
+  const title = isDaily ? 'Daily LinkedIn limit reached'
+    : /unsupported|isn't supported/i.test(payload.message) ? 'This LinkedIn page isn\'t supported'
+    : 'Auto-apply paused';
+  const existing = document.getElementById('eam-rate-limit-banner');
+  if (existing) existing.remove();
+  const banner = buildAlert({
+    id: 'eam-rate-limit-banner',
+    bodyId: 'eam-rate-limit-banner-text',
+    tone,
+    title,
+    body: payload.message,
+    link: isDaily ? { text: 'See today\'s applications', url: 'https://autoapplymax.com/dashboard.html#applications' } : null,
+    onClose: () => { try { chrome.storage.local.remove(['eam_rate_limit_banner', 'eam_actionable_stop_banner']); } catch (e) {} },
+  });
+  const slot = document.getElementById('alert-slot');
+  if (slot) slot.prepend(banner); else document.body.insertBefore(banner, document.body.firstChild);
 }
 
 // Re-render any pending rate-limit banner on popup open
@@ -859,8 +881,8 @@ document.getElementById('export-csv-btn').addEventListener('click', async () => 
     const btn = document.getElementById('export-csv-btn');
     const originalHTML = btn.innerHTML;
     btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> Exported ${jobs.length} jobs!`;
-    btn.style.background = '#059669';
-    setTimeout(() => { btn.innerHTML = originalHTML; btn.style.background = ''; }, 3000);
+    btn.style.background = '#059669'; btn.style.color = '#fff'; btn.style.borderColor = '#059669';
+    setTimeout(() => { btn.innerHTML = originalHTML; btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = ''; }, 3000);
   } catch (error) {
     console.error('Export error:', error);
     showToast('Error exporting jobs: ' + error.message, 'error');
@@ -885,8 +907,8 @@ document.getElementById('reset-counters-btn').addEventListener('click', async ()
     const btn = document.getElementById('reset-counters-btn');
     const originalHTML = btn.innerHTML;
     btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> Reset!`;
-    btn.style.background = '#059669';
-    setTimeout(() => { btn.innerHTML = originalHTML; btn.style.background = ''; }, 2000);
+    btn.style.background = '#059669'; btn.style.color = '#fff'; btn.style.borderColor = '#059669';
+    setTimeout(() => { btn.innerHTML = originalHTML; btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = ''; }, 2000);
   } catch (error) {
     console.error(error);
   }
@@ -1141,8 +1163,10 @@ function showLoggedOutState() {
   const premiumCard = document.getElementById('premium-card');
   const dashLinkRow = document.querySelector('.dash-block-row');
 
+  document.body.dataset.auth = 'out';
+  document.body.dataset.plan = 'free';
   if (headerRight) {
-    headerRight.innerHTML = '<button id="header-sign-in-btn" class="header-sign-in">Sign In</button>';
+    headerRight.innerHTML = '<button id="header-sign-in-btn" class="header-sign-in">Sign in</button>';
     document.getElementById('header-sign-in-btn')?.addEventListener('click', (e) => {
       e.preventDefault();
       chrome.tabs.create({ url: 'https://autoapplymax.com/auth.html' });
@@ -1167,10 +1191,12 @@ function showLoggedInState(profile, session) {
   const creditsUsed = profile.ai_credits_used || 0;
   const creditsTotal = profile.ai_credits_total || (plan === 'premium' ? 30 : 2);
   const creditsLeft = Math.max(0, creditsTotal - creditsUsed);
+  document.body.dataset.auth = 'in';
+  document.body.dataset.plan = plan;
 
   if (headerRight) {
     const creditsHtml = plan !== 'unlimited'
-      ? `<span class="header-credits">${creditsLeft} AI Credit${creditsLeft !== 1 ? 's' : ''}</span>`
+      ? `<span class="header-credits" title="AI credits left this month">${creditsLeft} AI credit${creditsLeft !== 1 ? 's' : ''} left</span>`
       : '';
     headerRight.innerHTML = `${creditsHtml}<a href="#" class="header-plan-badge" id="header-plan-link">${planLabel}</a>`;
     document.getElementById('header-plan-link')?.addEventListener('click', (e) => {
@@ -1205,8 +1231,16 @@ function setupDashboardLinks() {
     'link-cover-letter': '/dashboard.html#cover-letter',
     'link-analytics': '/dashboard.html#analytics',
     'view-dashboard-applications': '/dashboard.html#applications',
-    'header-sign-in-btn': '/auth.html'
+    'link-dashboard-logo': '/dashboard.html',
+    'header-sign-in-btn': '/auth.html',
+    'signin-card-btn': '/auth.html'
   };
+
+  // Easy Apply filter on — the layout auto-apply is built for.
+  document.getElementById('open-linkedin-search')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: 'https://www.linkedin.com/jobs/search/?f_AL=true' });
+  });
 
   for (const [id, path] of Object.entries(links)) {
     const el = document.getElementById(id);
