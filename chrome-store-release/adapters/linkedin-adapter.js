@@ -964,19 +964,34 @@
         // mis-categorizes this as either a daily-limit hit or a benign
         // skip — all of which break the iteration. Visibility check
         // is the safest filter.
-        const visibleEA = (el) => el && el.offsetParent !== null;
+        // v2.5.88: never the "Filter by Easy Apply" chip in the filters bar.
+        // LinkedIn switched the job's control from <a> to
+        // <button aria-label="Easy Apply to this job"> (2026-09-26); the <a>-only
+        // selectors missed it and the generic [aria-label*="Easy Apply"] fallback
+        // returned the chip (div[role=radio][aria-label="Filter by Easy Apply"]).
+        // Clicking it re-ran the search, reset focus to card 0 (already applied)
+        // → every job skipped as "silently already-applied", 0 applies.
+        const isFilterChip = (el) => {
+          const aria = (el.getAttribute('aria-label') || '');
+          return /filter|filtre|filtro|filtern/i.test(aria)
+            || /^(radio|checkbox|switch|option|tab|menuitemradio)$/i.test(el.getAttribute('role') || '')
+            || el.hasAttribute('aria-checked') || el.hasAttribute('aria-pressed')
+            || !!el.closest('[role="radiogroup"], [role="toolbar"], [role="tablist"], [componentkey^="job-card-component-"]');
+        };
+        const visibleEA = (el) => el && el.offsetParent !== null && (el.tagName === 'A' || el.tagName === 'BUTTON') && !isFilterChip(el);
+        const pick = (sel) => [...document.querySelectorAll(sel)].find(visibleEA) || null;
 
-        let a = document.querySelector('a[aria-label="Easy Apply to this job"]');
-        if (visibleEA(a)) return a;
-        a = document.querySelector('a[aria-label*="Easy Apply"]');
-        if (visibleEA(a)) return a;
+        let a = pick('button[aria-label="Easy Apply to this job"], a[aria-label="Easy Apply to this job"]');
+        if (a) return a;
+        a = pick('button[aria-label*="Easy Apply"], a[aria-label*="Easy Apply"]');
+        if (a) return a;
         if (S) {
-          a = document.querySelector(S.attrSelector('aria-label', 'easy_apply'));
-          if (visibleEA(a)) return a;
+          a = pick(S.attrSelector('aria-label', 'easy_apply'));
+          if (a) return a;
         }
-        // Absolute last-ditch: any button/anchor whose text is "Easy Apply"
-        const cand = [...document.querySelectorAll('a, button, [role="button"]')]
-          .find(el => /^easy\s*apply$/i.test((el.textContent||'').trim()) && el.offsetParent !== null);
+        // Absolute last-ditch: a button/anchor whose text is "Easy Apply" (never a filter chip)
+        const cand = [...document.querySelectorAll('a, button')]
+          .find(el => /^easy\s*apply$/i.test((el.textContent||'').trim()) && visibleEA(el));
         if (cand) return cand;
         return null;
       }

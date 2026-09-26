@@ -39,6 +39,32 @@
     return labelText;
   }
 
+  // v2.5.88: the question as the USER sees it, for the AI. getFieldLabel() mixes
+  // name/id/autocomplete/urn attributes for keyword matching, which gave the AI
+  // "address single line text form component formelement urn…" instead of
+  // "Address" (seen live 2026-09-26 14:35, VISEO form) → empty or wrong answers.
+  function getFieldQuestion(input, modal) {
+    const clean = (s) => String(s || '').replace(/\s+/g, ' ').replace(/\*+\s*$/, '').trim();
+    const inputId = input.getAttribute('id');
+    let q = '';
+    if (inputId) {
+      try { q = clean(modal.querySelector(`label[for="${CSS.escape(inputId)}"]`)?.textContent); } catch (_) {}
+    }
+    if (!q) q = clean(input.getAttribute('aria-label'));
+    if (!q) { const pl = input.closest('label'); if (pl) q = clean(pl.textContent); }
+    if (!q) {
+      const lb = input.getAttribute('aria-labelledby');
+      if (lb) q = clean(lb.split(/\s+/).map(id => (modal.querySelector(`#${CSS.escape(id)}`) || document.getElementById(id))?.textContent || '').join(' '));
+    }
+    if (!q) {
+      const block = input.closest('div, fieldset');
+      const near = block && block.querySelector('label, legend');
+      if (near && near.textContent.length < 300) q = clean(near.textContent);
+    }
+    if (!q) q = clean(input.getAttribute('placeholder'));
+    return q || clean(getFieldLabel(input, modal));
+  }
+
   // ─── Fill text inputs ─────────────────────────────────────────────────
   async function fillTextInputs(modal, config) {
     const textInputs = modal.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="number"]');
@@ -177,7 +203,8 @@
         // Restored from v2.1.0 (dropped in v2.2 refactor). Covers date,
         // availability, salary, custom employer questions, etc.
         else if (label && window.EAM && window.EAM.aiForm) {
-          const aiAnswer = await window.EAM.aiForm.askAI(label, config, input.type);
+          const question = getFieldQuestion(input, modal);
+          const aiAnswer = await window.EAM.aiForm.askAI(question, config, input.type);
           if (aiAnswer) {
             const labelLower = label.toLowerCase();
             const isNumericField = input.type === 'number'
@@ -220,7 +247,7 @@
         u().log(`Textarea skipped (AI unavailable): "${label.substring(0, 50)}"`);
         continue;
       }
-      const answer = await window.EAM.aiForm.askAI(label, config, 'textarea');
+      const answer = await window.EAM.aiForm.askAI(getFieldQuestion(ta, modal), config, 'textarea');
       if (answer) {
         u().fill(ta, answer);
         u().log(`AI textarea: "${label.substring(0, 40)}" → "${answer.substring(0, 50)}"`);
@@ -1108,6 +1135,7 @@
     fillSelectDropdowns,
     fillCustomDropdowns,
     fillTextareas,
-    getFieldLabel
+    getFieldLabel,
+    getFieldQuestion
   };
 })();
