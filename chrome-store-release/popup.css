@@ -89,6 +89,25 @@ a:hover { text-decoration: underline; }
 .wordmark span { color: var(--primary); }
 
 .header-right { display: flex; align-items: center; gap: 8px; }
+.header-actions { display: flex; align-items: center; gap: 8px; }
+
+/* "?" help — same round outline button as the dashboard header */
+.help-btn {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.help-btn:hover, .help-btn:focus-visible { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); outline: none; }
 
 .header-sign-in {
   height: 30px;
@@ -691,9 +710,9 @@ small { font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; }
 @keyframes toastOut { to { opacity: 0; transform: translateY(8px); } }
 
 /* ============================================
-   ONBOARDING (first run, popup-improvements.js)
+   ONBOARDING (first run, popup-improvements.js) + HELP GUIDE ("?")
    ============================================ */
-#onboarding-overlay {
+#onboarding-overlay, #help-overlay {
   position: fixed;
   inset: 0;
   z-index: 9999;
@@ -744,3 +763,14 @@ small { font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; }
 .ob-link { border: 0; background: transparent; color: var(--text-secondary); font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 4px; }
 .ob-link:hover { color: var(--primary); }
 .ob-done { font-size: 12px; font-weight: 600; color: #065f46; display: flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 8px 10px; background: var(--success-soft); border-radius: var(--radius-sm); }
+
+/* ============================================
+   HELP GUIDE ("?" in the header, popup-improvements.js)
+   ============================================ */
+.help-step-row { display: flex; gap: 12px; align-items: flex-start; }
+.help-step-row .ob-icon { flex-shrink: 0; margin-bottom: 0; }
+.help-links { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 4px; }
+.help-links a { font-size: 12.5px; font-weight: 600; color: var(--primary); text-decoration: none; cursor: pointer; }
+.help-links a:hover { text-decoration: underline; }
+.help-nav { display: flex; gap: 8px; }
+.help-nav .btn { flex: 1; height: 40px; }

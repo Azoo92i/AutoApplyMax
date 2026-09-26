@@ -598,6 +598,17 @@
             break;
           }
 
+          // v2.5.90: layout fingerprint once the Easy Apply form is up — emitted
+          // once per distinct combination per session (low volume).
+          try {
+            if (adapter.layoutFingerprint) {
+              await state.wait(600);
+              const fp = adapter.layoutFingerprint();
+              state._fpSeen = state._fpSeen || new Set();
+              if (fp && fp.modal !== 'none' && !state._fpSeen.has(fp.key)) { state._fpSeen.add(fp.key); _diag('modal_open', { fp }); }
+            }
+          } catch (_) {}
+
           // ── Safety reminder modal ("Continue applying") ─────────────
           // LinkedIn sometimes shows a "Job search safety reminder" dialog
           // with "Review job post" and "Continue applying" buttons.
@@ -1446,7 +1457,8 @@
               return;
             }
             state.log(`Using adapter: ${adapter.siteName}`);
-            _diag('session_start', { layout: /search-results/.test(location.pathname) ? 'search-results' : 'search', filter: state._startHadFilter });
+            let _fp = null; try { _fp = adapter.layoutFingerprint ? adapter.layoutFingerprint() : null; } catch (_) {}
+            _diag('session_start', { layout: /search-results/.test(location.pathname) ? 'search-results' : 'search', filter: state._startHadFilter, fp: _fp });
             mainLoop(adapter);
 
           } else if (request.action === 'stop') {
@@ -1459,7 +1471,7 @@
 
           } else if (request.action === 'resetCounters') {
             const state = u();
-            state.appliedCount = 0;
+            state.appliedCount = 0; state._fpSeen = null;
             state.skippedCount = 0;
             state.appliedJobs = [];
             await chrome.storage.local.set({ appliedCount: 0, skippedCount: 0, appliedJobs: [] });

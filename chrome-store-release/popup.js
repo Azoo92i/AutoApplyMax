@@ -694,10 +694,14 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
       });
     } catch (e) { /* may already be injected */ }
 
-    await chrome.scripting.executeScript({
+    const injected = await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
       files: ['core/autofill.js']
     });
+    // v2.5.90: message exactly the frames we injected into. The old blind
+    // 0..15 fan-out reached the top frame twice on Lever/Greenhouse, so every
+    // form ran twice (2× AI calls, 2 tool_usage rows) — gate 2026-09-26.
+    const frameIds = [...new Set((injected || []).map(r => r.frameId).filter(n => Number.isInteger(n)))];
 
     // Small delay to ensure script is loaded
     await new Promise(r => setTimeout(r, 200));
@@ -712,7 +716,7 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
     // warning to users at install.
     let count = 0;
     const perFrame = await Promise.all(
-      Array.from({ length: 16 }, (_, fid) => fid).map(async fid => {
+      (frameIds.length ? frameIds : [0]).map(async fid => {
         try {
           const r = await chrome.tabs.sendMessage(tab.id, { action: 'eam-autofill', config }, { frameId: fid });
           return r?.filled || 0;
@@ -720,6 +724,8 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
       })
     );
     count = perFrame.reduce((a, b) => a + b, 0);
+    // v2.5.90: keep the result readable (the disabled style faded it out).
+    btn.disabled = false; btn.style.opacity = '1';
     if (count > 0) {
       btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> ${count} field${count > 1 ? 's' : ''} filled!`;
       btn.style.background = '#059669'; btn.style.color = '#fff'; btn.style.borderColor = '#059669';

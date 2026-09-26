@@ -502,6 +502,28 @@
     // `mdoc.querySelectorAll(...)` calls (Discard, Close, ESC fallback)
     // actually target the modal contents. ShadowRoot has the same
     // querySelector / querySelectorAll API as Document.
+    // v2.5.90: layout fingerprint for telemetry. LinkedIn serves several A/B
+    // layouts (legacy list + artdeco modal, new cards, search-results with an
+    // <a> or <button> Easy Apply control, native <dialog>, interop shadow modal).
+    // 2.5.56 broke silently on some of them for days; the fingerprint lets the
+    // admin recap flag an unknown combination or a variant whose applies drop.
+    layoutFingerprint() {
+      const fp = { path: /search-results/.test(location.pathname) ? 'search-results' : (/collections/.test(location.pathname) ? 'collections' : 'search') };
+      try {
+        fp.cards = document.querySelector('[componentkey^="job-card-component-"]') ? 'A0'
+          : document.querySelector('.job-card-container, [data-job-id]') ? 'legacy'
+          : document.querySelector('a[href*="/jobs/view/"]') ? 'href_only' : 'none';
+        const ea = [...document.querySelectorAll('button, a')].find(el => /easy apply|candidature simplifiée/i.test(el.getAttribute('aria-label') || el.textContent || '') && !/filter|filtre/i.test(el.getAttribute('aria-label') || ''));
+        fp.ea = ea ? ea.tagName.toLowerCase() : 'none';
+        const sr = this._getInteropShadowRoot && this._getInteropShadowRoot();
+        fp.modal = [...document.querySelectorAll('dialog[open]')].some(d => d.getClientRects().length) ? 'native_dialog'
+          : (sr && sr.querySelector('[role="dialog"], .artdeco-modal')) ? 'interop_shadow'
+          : document.querySelector('.jobs-easy-apply-modal, .artdeco-modal[role="dialog"]') ? 'artdeco' : 'none';
+      } catch (_) {}
+      fp.key = [fp.path, fp.cards, fp.ea, fp.modal].join('|');
+      return fp;
+    }
+
     _getModalDocument() {
       if (this._isNewSearchResults()) {
         const sr = this._getInteropShadowRoot();
