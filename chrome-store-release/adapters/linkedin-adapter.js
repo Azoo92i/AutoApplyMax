@@ -612,7 +612,15 @@
         const description = [ps[3]?.textContent, ps[4]?.textContent].filter(Boolean).join(' · ').trim();
         // Always store canonical /jobs/view/{jobId}/ — search-results URLs with
         // `currentJobId=` reload the search and don't reliably re-open the job.
-        let link = jobCard.querySelector('a[href*="/jobs/view/"]')?.href || window.location.href;
+        // v2.5.88: new cards have NO anchors, so this fell back to location.href —
+        // read BEFORE the card click, i.e. the PREVIOUS job's currentJobId. Every
+        // job_applications row got the previous job's link (live 2026-09-26: Comec
+        // saved with Residential Group's id…) and a submit whose link was already
+        // stored hit the (user_id, link) unique index → row silently dropped.
+        // The card's own componentkey="job-card-component-ref-<jobId>" is exact.
+        const ckId = ((jobCard.getAttribute && jobCard.getAttribute('componentkey')) || '').match(/(\d{6,})/)?.[1];
+        let link = jobCard.querySelector('a[href*="/jobs/view/"]')?.href
+          || (ckId ? `https://www.linkedin.com/jobs/view/${ckId}/` : window.location.href);
         link = _canonicalJobUrl(link) || link;
         return { title, company, description, link, location };
       }
