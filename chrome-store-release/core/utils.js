@@ -460,14 +460,23 @@
           });
         } catch (_) {}
       };
-      const forceHide = () => {
+      const forceHide = (keep) => {
         try {
-          el.style.setProperty('display', 'none', 'important');
-          el.setAttribute('data-eam-hidden', 'rate-limit');
-          if (dialog && dialog !== el) {
-            dialog.style.setProperty('display', 'none', 'important');
-            dialog.setAttribute('data-eam-hidden', 'rate-limit');
-          }
+          // v2.5.88: never hide an ANCESTOR of our chip / the Easy Apply control.
+          // On /jobs/search/ the matched "applying at a fast pace" element can be a
+          // container that also holds the Easy Apply row → display:none blanked the
+          // row AND our chip (live 2026-09-26 15:03: chip in DOM, invisible). In
+          // that case hide only LinkedIn's own message nodes inside it.
+          const hideEl = (node) => {
+            const holdsOurs = (keep || []).some(k => k && node.contains(k));
+            if (!holdsOurs) { node.style.setProperty('display', 'none', 'important'); node.setAttribute('data-eam-hidden', 'rate-limit'); return; }
+            node.querySelectorAll('.artdeco-inline-feedback, [role="alert"], .artdeco-toast-item').forEach(m => {
+              if ((keep || []).some(k => k && (m.contains(k) || k.contains(m)))) return;
+              m.style.setProperty('display', 'none', 'important'); m.setAttribute('data-eam-hidden', 'rate-limit');
+            });
+          };
+          hideEl(el);
+          if (dialog && dialog !== el) hideEl(dialog);
           document.querySelectorAll('.artdeco-modal-overlay, [data-test-modal-container]').forEach(o => {
             o.style.setProperty('display', 'none', 'important');
             o.setAttribute('data-eam-hidden', 'rate-limit');
@@ -528,7 +537,7 @@
       // it — inside the row it stretched the row and squeezed Save + Match·
       // Tailor (overlap/clip seen 2026-09-24 on /jobs/search/).
       _insertBelowActionsRow(chip, easyApplyBtn);
-      forceHide();
+      forceHide([chip, easyApplyBtn]);
 
       return { placed: true, mode: 'inline-chip', chip };
     } catch (e) {

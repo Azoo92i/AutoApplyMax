@@ -65,9 +65,41 @@
     return q || clean(getFieldLabel(input, modal));
   }
 
+  // v2.5.88: deterministic profile-URL fields (no AI needed).
+  // Returns 'LinkedIn' | 'GitHub' | 'Website' | null from the visible question.
+  function profileUrlKind(question) {
+    const q = String(question || '').toLowerCase();
+    if (!q || q.length > 160) return null;
+    // "How did you hear about us (LinkedIn, Indeed…)" is a source question, not a URL.
+    if (/hear|entendu|connu|source|referr|référ|conoci|erfahren|venuto a conoscenza/.test(q)) return null;
+    if (/linked\s*in/.test(q) && (/url|profil|profile|link|lien|page|perfil|address|adresse/.test(q) || q.replace(/[^a-z]/g, '').length <= 12)) return 'LinkedIn';
+    if (/github|gitlab/.test(q)) return 'GitHub';
+    if (/portfolio|website|web\s*site|site\s*web|site\s*internet|personal\s*(site|page)|página\s*web|sitio\s*web|webseite/.test(q)) return 'Website';
+    return null;
+  }
+  function profileUrlValue(kind, config, modal) {
+    const cv = (config && config.cvProfile) || {};
+    const norm = (v) => { v = String(v || '').trim(); if (!v) return ''; return /^https?:\/\//i.test(v) ? v : 'https://' + v.replace(/^\/+/, ''); };
+    if (kind === 'LinkedIn') {
+      let v = config.linkedinUrl || cv.linkedin || '';
+      // On LinkedIn itself: the applicant's own profile link on the Easy Apply
+      // contact card (or the global nav "Me" link).
+      if (!v && /linkedin\.com$/i.test(location.hostname)) {
+        const a = (modal && modal.querySelector && modal.querySelector('a[href*="/in/"]'))
+          || document.querySelector('.global-nav__me a[href*="/in/"], a.global-nav__primary-link-me-menu-trigger[href*="/in/"], nav a[href*="/in/"]');
+        const m = a && (a.getAttribute('href') || '').match(/\/in\/([^/?#]+)/);
+        if (m) v = `https://www.linkedin.com/in/${m[1]}/`;
+      }
+      return norm(v);
+    }
+    if (kind === 'GitHub') return norm(config.githubUrl || cv.github || (/github\.com/i.test(config.portfolioUrl || '') ? config.portfolioUrl : ''));
+    if (kind === 'Website') return norm(config.portfolioUrl || cv.website || '');
+    return '';
+  }
+
   // ─── Fill text inputs ─────────────────────────────────────────────────
   async function fillTextInputs(modal, config) {
-    const textInputs = modal.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="number"]');
+    const textInputs = modal.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="number"], input[type="url"], input:not([type])');
     for (const input of textInputs) {
       if (input.value) continue;
 
@@ -102,6 +134,15 @@
         (input.getAttribute('name') || '')
       ).toLowerCase().trim();
       const haystack = label.length > 150 && shortSignal ? shortSignal : label;
+
+      // v2.5.88: profile URLs are deterministic (they used to need the AI, which is
+      // Premium-only → free users' applications with a required "LinkedIn Profile"
+      // field were discarded, live 2026-09-26 15:00). Decided on the visible question.
+      const urlKind = profileUrlKind(getFieldQuestion(input, modal));
+      if (urlKind) {
+        const v = profileUrlValue(urlKind, config, modal);
+        if (v) { u().fill(input, v); u().log(`${urlKind} URL filled: ${v}`); continue; }
+      }
 
       // Years of experience (EN/FR/ES/DE/IT)
       if (haystack.match(/experience|years|expérience|années|años|jahre|anni|esperienza/)) {
@@ -1136,6 +1177,7 @@
     fillCustomDropdowns,
     fillTextareas,
     getFieldLabel,
-    getFieldQuestion
+    getFieldQuestion,
+    profileUrlKind
   };
 })();

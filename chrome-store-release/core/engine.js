@@ -1347,6 +1347,7 @@
               if (cvProfile) {
                 if (cvProfile.linkedin) state.config.linkedinUrl = cvProfile.linkedin;
                 if (cvProfile.website) state.config.portfolioUrl = cvProfile.website;
+                if (cvProfile.github) state.config.githubUrl = cvProfile.github;
                 const latest = (cvProfile.experience || [])[0];
                 if (latest?.company) state.config.currentCompany = latest.company;
                 if (latest?.title) state.config.currentTitle = latest.title;

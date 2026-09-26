@@ -255,6 +255,12 @@ Answer:`;
           if (response.error === 'premium_required') {
             log()('AI [premium]: AI form answers require Premium plan — skipping all AI calls this session');
             premiumBlocked = true;
+            // v2.5.88: flag for the one-time popup notice (never re-armed once seen).
+            try {
+              chrome.storage.local.get(['eam_ai_premium_notice'], (r) => {
+                if (!r || !r.eam_ai_premium_notice) chrome.storage.local.set({ eam_ai_premium_notice: { at: Date.now(), seen: false } });
+              });
+            } catch (_) {}
           } else if (response.error === 'session_expired' || response.error === 'unauthorized' ||
                      response.error === 'no_session' || response.error === 'not_logged_in') {
             // Treat any auth-related error like premium_required: stop calling AI
