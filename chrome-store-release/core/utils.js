@@ -998,11 +998,21 @@
     }
   }
 
+  // v2.5.88: a loader only means "stuck" if it is INDETERMINATE (spinner, or a
+  // progressbar without aria-valuenow) and stays visible ≥ 8 s. Before, any
+  // visible [role=progressbar] — e.g. the Easy Apply form's own "0% / 80%"
+  // step bar in LinkedIn's native <dialog> (2026-09-26) — or a 1-s spinner
+  // between steps discarded a healthy application.
+  let _loaderSeenSince = 0;
   function checkForStuckLoadingPopup() {
     try {
-      const loadingIndicators = document.querySelectorAll('.artdeco-loader, .loading, .spinner, [role="progressbar"]');
-      for (const indicator of loadingIndicators) {
-        if (indicator.offsetParent !== null) return true;
+      const loadingIndicators = [...document.querySelectorAll('.artdeco-loader, .loading, .spinner, [role="progressbar"]')]
+        .filter(el => isShown(el) && !(el.getAttribute('role') === 'progressbar' && el.hasAttribute('aria-valuenow')));
+      if (loadingIndicators.length) {
+        if (!_loaderSeenSince) _loaderSeenSince = Date.now();
+        if (Date.now() - _loaderSeenSince >= 8000) return true;
+      } else {
+        _loaderSeenSince = 0;
       }
       // Broadened modal detection: legacy .jobs-easy-apply-modal PLUS any
       // visible role=dialog that contains an EA form (survives class rename).
@@ -1029,11 +1039,28 @@
     }
   }
 
+  // v2.5.88: visibility that also covers a native <dialog> opened with showModal().
+  // Top-layer dialogs are position:fixed → offsetParent is ALWAYS null even when
+  // shown (LinkedIn's Easy Apply form since 2026-09-26), which made the engine
+  // treat the open form as "modal did not appear".
+  function isShown(el) {
+    if (!el) return false;
+    if (el.offsetParent !== null) return true;
+    try {
+      if (el.tagName === 'DIALOG' && !el.open) return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      const r = el.getBoundingClientRect();
+      return (cs.position === 'fixed' || el.tagName === 'DIALOG') && r.width > 0 && r.height > 0;
+    } catch (_) { return false; }
+  }
+
   // ─── Export as namespace ──────────────────────────────────────────────
   window.EAM.utils = {
     // Logging & waiting
     log,
     wait,
+    isShown,
 
     // Protected DOM interactions
     click,

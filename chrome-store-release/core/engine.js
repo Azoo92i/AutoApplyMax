@@ -392,7 +392,7 @@
           const hasFormFields = leftoverModal &&
             leftoverModal.querySelectorAll &&
             leftoverModal.querySelectorAll('input, textarea, select').length > 0;
-          const shouldTryCleanup = leftoverModal && leftoverModal.offsetParent !== null
+          const shouldTryCleanup = leftoverModal && state.isShown(leftoverModal)
             && hasFormFields && state._staleDialogFails < 2;
           if (shouldTryCleanup) {
             state.log('Modal from previous job still open! Cleaning up...');
@@ -402,7 +402,7 @@
             const stillHasFields = leftoverModal &&
               leftoverModal.querySelectorAll &&
               leftoverModal.querySelectorAll('input, textarea, select').length > 0;
-            if (leftoverModal && leftoverModal.offsetParent !== null && stillHasFields) {
+            if (leftoverModal && state.isShown(leftoverModal) && stillHasFields) {
               state._staleDialogFails++;
               state.log('Cleanup failed (' + state._staleDialogFails + '/2). ' +
                        (state._staleDialogFails < 2 ? 'Will retry on next card.' : 'Giving up — proceeding past stale dialog.'));
@@ -557,10 +557,21 @@
           await state.click(applyBtn);
           await state.wait(800);
           const urlAfterApply = window.location.href;
-          const navigatedAway =
+          let navigatedAway =
             urlAfterApply !== urlBeforeApply &&
             (/\/jobs\/view\//i.test(urlAfterApply) ||
              !/\/jobs\/(search|search-results|collections)/i.test(urlAfterApply));
+          // v2.5.88: LinkedIn (2026-09-26) opens the Easy Apply form as a native
+          // <dialog> OVER the search list and swaps the URL to /jobs/view/<id>/
+          // (SPA overlay, list still mounted). That is in-place — only a real page
+          // change (no dialog, /apply/ route, non-jobs page) is "navigated away".
+          if (navigatedAway && /\/jobs\/view\/\d+\/?(\?|$)/i.test(urlAfterApply)) {
+            for (let i = 0; i < 8 && navigatedAway; i++) {
+              try { if (adapter.getFormModal && adapter.getFormModal()) navigatedAway = false; } catch (_) {}
+              if (navigatedAway) await state.wait(400);
+            }
+            if (!navigatedAway) state.log('Easy Apply dialog opened as an overlay (URL /jobs/view/…) — continuing in place');
+          }
           if (navigatedAway) {
             state.log('⚠ Page navigated away after clicking Apply — search context lost');
             state.log('   Was: ' + urlBeforeApply.slice(0, 100));
@@ -576,7 +587,7 @@
           // with "Review job post" and "Continue applying" buttons.
           // We must click "Continue applying" to proceed.
           const safetyModal = document.querySelector('[role="dialog"], .artdeco-modal');
-          if (safetyModal && safetyModal.offsetParent !== null) {
+          if (safetyModal && state.isShown(safetyModal)) {
             const safetyText = safetyModal.textContent.toLowerCase();
             if (safetyText.includes('safety reminder') || safetyText.includes('rappel de sécurité') ||
                 safetyText.includes('continue applying') || safetyText.includes('continuer à postuler')) {
@@ -725,12 +736,12 @@
           const POLL_BUDGET = 8000;
           const RETRY_CLICK_AT_MS = 4000;
           let retryClickFired = false;
-          while ((!modal || modal.offsetParent === null) && pollMs < POLL_BUDGET) {
+          while ((!modal || !state.isShown(modal)) && pollMs < POLL_BUDGET) {
             if (!state.isRunning) break;
             await state.wait(POLL_INTERVAL);
             pollMs += POLL_INTERVAL;
             modal = adapter.getFormModal();
-            if (!retryClickFired && pollMs >= RETRY_CLICK_AT_MS && (!modal || modal.offsetParent === null)) {
+            if (!retryClickFired && pollMs >= RETRY_CLICK_AT_MS && (!modal || !state.isShown(modal))) {
               retryClickFired = true;
               try {
                 const freshBtn = adapter.getApplyButton && adapter.getApplyButton();
@@ -741,7 +752,7 @@
               } catch (_) {}
             }
           }
-          if (!modal || modal.offsetParent === null) {
+          if (!modal || !state.isShown(modal)) {
             state.log('Modal did not appear (' + Math.round(pollMs/1000) + 's poll) — checking for limit...');
             if (adapter.checkDailyLimit()) {
               await stopBot('Daily limit reached');
@@ -846,7 +857,7 @@
               await adapter.discardApplication();
               if (adapter.getFormModal() && adapter.clearAllModals) await adapter.clearAllModals(3);
               const stillOpen = adapter.getFormModal();
-              if (stillOpen && stillOpen.offsetParent !== null) {
+              if (stillOpen && state.isShown(stillOpen)) {
                 await stopBot('Stuck application window could not be closed', {
                   title: 'Paused — an application window is stuck',
                   body: 'Close the LinkedIn application window, then click Start again.',

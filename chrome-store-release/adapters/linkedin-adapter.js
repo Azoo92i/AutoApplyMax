@@ -83,6 +83,15 @@
     _isNewSearchResults() {
       const path = window.location.pathname;
       if (/\/jobs\/search-results\//i.test(path)) return true;
+      // v2.5.88: while the new native Easy Apply <dialog> is open, LinkedIn swaps the
+      // URL to /jobs/view/<id>/ (SPA overlay) — the search-results list stays mounted
+      // underneath. Same surface, same branch.
+      if (/\/jobs\/view\/\d+/i.test(path)) {
+        try {
+          return !document.querySelector('li[data-occludable-job-id]')
+            && !!document.querySelector('div[componentkey^="job-card-component-"]');
+        } catch (_) { return false; }
+      }
       // v2.5.87: LinkedIn also serves the Aug-2026 card layout on /jobs/search/
       // and /jobs/collections/. Detect by DOM (Aug-2026 job-card componentkey
       // present, no legacy occludable list) so cards, job info and the modal
@@ -250,7 +259,8 @@
         // Only treat as "panel" if no shadow modal is mounted — otherwise
         // the modal is the source of truth.
         const sr = this._getInteropShadowRoot();
-        const modalUp = sr && sr.querySelector('[role="dialog"], [aria-modal="true"], form');
+        const modalUp = (sr && sr.querySelector('[role="dialog"], [aria-modal="true"], form'))
+          || [...document.querySelectorAll('dialog[open]')].some(d => u().isShown(d)); // v2.5.88 native dialog
         if (!modalUp) return 'qualifications-panel';
       }
       return 'none';
@@ -264,6 +274,14 @@
     // discarded the application without ever attempting to fill the form.
     async isLoading() {
       if (this._isNewSearchResults()) {
+        // v2.5.88: native light-DOM Easy Apply <dialog> (2026-09-26) = modal mounted.
+        // Without this, the pre-modal "qualifications panel" text still visible in
+        // the right pane BEHIND the open form triggered 3 synthetic Easy Apply
+        // re-clicks at every step.
+        try {
+          const nativeDlg = [...document.querySelectorAll('dialog[open]')].find(d => u().isShown(d) && d.querySelector('input, select, textarea, button'));
+          if (nativeDlg) { console.debug('[EAM Diag] isLoading=false — native dialog mounted'); return false; }
+        } catch (_) {}
         const sr = this._getInteropShadowRoot();
         // ANY content in the shadow root means the modal has mounted.
         // Buttons may briefly be disabled during entry animations or
@@ -347,7 +365,10 @@
         // `element.click()` (what u().click() dispatches) sometimes fails
         // entirely. Without a blind retry the bot ate the full 20s timeout
         // on those cards and skipped them.
-        const jobKey = (location.href.match(/currentJobId=(\d+)/) || [])[1] || 'unknown';
+        // v2.5.88: /jobs/view/<id>/ (native-dialog overlay URL) has no currentJobId —
+        // it used to collapse every job onto 'unknown' and share the re-click budget.
+        const jobKey = (location.href.match(/currentJobId=(\d+)/) || [])[1]
+          || (location.pathname.match(/\/jobs\/view\/(\d+)/) || [])[1] || 'unknown';
         this._loadingPollsByJob = this._loadingPollsByJob || new Map();
         const polls = (this._loadingPollsByJob.get(jobKey) || 0) + 1;
         this._loadingPollsByJob.set(jobKey, polls);
@@ -1066,17 +1087,21 @@
       // shadow dialog OR null. No fallbacks. No iframe scan. No light-DOM
       // sweep. No _capturedModal carryover.
       if (this._isNewSearchResults()) {
+        // v2.5.88 (LinkedIn change seen 2026-09-26): the Easy Apply modal on
+        // /jobs/search-results/ is now a NATIVE light-DOM
+        // <dialog data-testid="dialog" open aria-labelledby="dialog-header"> under #root
+        // ("Apply to <company>" h2 in header#dialog-header), and the URL is swapped to
+        // /jobs/view/<id>/ while it is open (SPA, no reload). Still strict: only a
+        // dialog that passes the EA fingerprint below is returned.
+        const visibleDlg = (d) => d && (d.offsetParent !== null || (d.tagName === 'DIALOG' && d.open && d.getBoundingClientRect().width > 0));
         const sr = this._getInteropShadowRoot();
-        if (!sr) {
-          console.log('[EAM strict] getFormModal: shadow root NOT mounted → null');
-          return null;
-        }
+        const lightDialogs = [...document.querySelectorAll('dialog[open], dialog[data-testid="dialog"]')].filter(visibleDlg);
+        const shadowDialogs = sr ? [...sr.querySelectorAll('[role="dialog"], [aria-modal="true"], dialog[open]')].filter(visibleDlg) : [];
         // Find ALL visible dialogs — there may be multiple (e.g., a stale
         // "Application sent" success dialog AND the actual EA modal).
-        const allDialogs = [...sr.querySelectorAll('[role="dialog"], [aria-modal="true"]')]
-          .filter(d => d.offsetParent !== null);
+        const allDialogs = [...lightDialogs, ...shadowDialogs];
         if (allDialogs.length === 0) {
-          console.log('[EAM strict] getFormModal: shadow root present, no visible dialog → null');
+          console.log('[EAM strict] getFormModal: no visible dialog (light DOM or shadow) → null');
           return null;
         }
 
@@ -1145,7 +1170,7 @@
       }
 
       // ── Legacy paths (/jobs/search/, /jobs/collections/...) ─────────
-      if (this._capturedModal && this._capturedModal.offsetParent !== null) {
+      if (this._capturedModal && u().isShown(this._capturedModal)) {
         return this._capturedModal;
       }
       const visible = (el) => el && el.offsetParent !== null;
@@ -1241,12 +1266,20 @@
       submitBtn.scrollIntoView({ block: 'end', behavior: 'smooth' });
       await u().wait(800);
 
+      // v2.5.88: the native-dialog form (2026-09-26) uses React ids («rr») — also
+      // find the "Follow <company>" checkbox by its label text.
+      const labelOf = (cb) => { try { return (cb.id && modal.querySelector(`label[for="${CSS.escape(cb.id)}"]`)) || cb.closest('label'); } catch (_) { return cb.closest('label'); } };
+      const followByText = () => [...modal.querySelectorAll('input[type="checkbox"]')].find(cb => {
+        const lab = labelOf(cb) || cb.parentElement;
+        return /^\s*(follow|suivre|seguir|folgen)\b/i.test((lab && lab.textContent) || '');
+      });
       const followCheckbox = modal.querySelector('input[id="follow-company-checkbox"]') ||
-                            modal.querySelector('input[id*="follow-company"][type="checkbox"]');
+                            modal.querySelector('input[id*="follow-company"][type="checkbox"]') ||
+                            followByText();
       if (followCheckbox && followCheckbox.checked) {
         followCheckbox.scrollIntoView({ block: 'center', behavior: 'smooth' });
         await u().wait(500);
-        const label = modal.querySelector(`label[for="${followCheckbox.id}"]`);
+        const label = labelOf(followCheckbox);
         if (label) {
           await u().click(label);
           u().log('Company UNFOLLOWED');
@@ -1346,6 +1379,7 @@
         '.jobs-apply-modal',
         '[role="dialog"]',           // generic — covers /jobs/search-results/
         '[aria-modal="true"]',
+        'dialog[open]',              // v2.5.88: native <dialog> (Easy Apply form / "Application sent", 2026-09-26)
       ];
       const X_BUTTON_SELECTORS = [
         'button.artdeco-modal__dismiss',
@@ -1369,8 +1403,8 @@
         let modal = null;
         for (const root of queryRoots) {
           for (const sel of MODAL_SELECTORS) {
-            const el = root.querySelector(sel);
-            if (el && el.offsetParent !== null) { modal = el; break; }
+            const el = [...root.querySelectorAll(sel)].find(e => u().isShown(e));
+            if (el) { modal = el; break; }
           }
           if (modal) break;
         }
@@ -1463,7 +1497,7 @@
         // would refresh the page even though nothing was wrong, costing
         // the user the rest of their search results in the list.
         const presentModal = this.getFormModal();
-        const modalIsStuckAndVisible = presentModal && presentModal.offsetParent !== null
+        const modalIsStuckAndVisible = presentModal && u().isShown(presentModal)
           && u().checkForStuckLoadingPopup();
         if (modalIsStuckAndVisible) {
           // Skip reload if the stuck-heuristic actually caught a rate-limit
@@ -1503,7 +1537,7 @@
               await u().wait(1500);
             }
             const modal = this.getFormModal();
-            if (!modal || modal.offsetParent === null) return true;
+            if (!modal || !u().isShown(modal)) return true;
           }
         }
 
@@ -1527,7 +1561,7 @@
               try { btn.click(); await u().wait(300); btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e) {}
               await u().wait(1500);
               const modal = this.getFormModal();
-              if (!modal || modal.offsetParent === null) return true;
+              if (!modal || !u().isShown(modal)) return true;
             }
           }
           await u().wait(1000);
