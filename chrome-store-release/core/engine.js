@@ -526,6 +526,22 @@
             } catch (e) {}
           }
 
+          // v2.5.89: "Max years required" setting, read from the job DESCRIPTION.
+          // shouldSkipByExperience() above only sees card titles, where LinkedIn
+          // never states the requirement → the setting was effectively ignored.
+          try {
+            const maxY = parseInt(state.config.maxYearsRequired, 10);
+            if (maxY > 0 && adapter.getJobDescriptionText && state.extractRequiredYears) {
+              const req = state.extractRequiredYears(adapter.getJobDescriptionText());
+              if (req > maxY) {
+                state.log(`Skip: job asks for ${req}+ years of experience (your max: ${maxY})`);
+                state.skippedCount++;
+                state.updateSkippedCount();
+                continue;
+              }
+            }
+          } catch (_) {}
+
           // Wait for apply button to load (Indeed renders it asynchronously via React)
           let applyBtn = null;
           for (let attempt = 1; attempt <= 6; attempt++) {
@@ -720,7 +736,10 @@
             state.pendingRateLimitPause = false;
             const keepGoing = await handleRateLimit(adapter, state, 'after Apply click');
             if (!keepGoing) break;
-            continue; // retry from next job
+            // v2.5.89: retry THIS job once after the pause — it was never applied to
+            // (every throttle used to silently lose the job that hit it).
+            if (!jobCard.__eamThrottleRetried) { jobCard.__eamThrottleRetried = true; i--; state.log('↻ Retrying the same job after the pause'); }
+            continue;
           }
 
           // Verify modal appeared. Poll up to 8s, with one re-click of the
@@ -761,6 +780,7 @@
             if (adapter.checkRateLimit()) {
               const keepGoing = await handleRateLimit(adapter, state, 'modal failed');
               if (!keepGoing) break;
+              if (!jobCard.__eamThrottleRetried) { jobCard.__eamThrottleRetried = true; i--; state.log('↻ Retrying the same job after the pause'); }
               continue;
             }
             // Modal didn't appear after applyBtn click — most common cause is
@@ -936,7 +956,17 @@
               await state.wait(1200);
               nextBtn = adapter.getNextStepButton(modal);
             }
-            if (!nextBtn) { state.log('No button found after retry — skipping'); break; }
+            if (!nextBtn) {
+              // v2.5.89: close the window before moving on. A spinner-only / broken
+              // Easy Apply window used to stay open over the list, and the NEXT job
+              // was processed "inside" it and skipped too (fixture repro 2026-09-26).
+              state.log('No button found after retry — closing this application window and skipping');
+              await adapter.discardApplication();
+              if (adapter.getFormModal() && adapter.clearAllModals) await adapter.clearAllModals(3);
+              state.skippedCount++;
+              state.updateSkippedCount();
+              break;
+            }
 
             const isSubmit = adapter.isSubmitButton(nextBtn);
 
@@ -980,6 +1010,19 @@
             // Submit flow
             if (isSubmit) {
               state.log('Submit clicked!');
+              // v2.5.89: only count + record the job once LinkedIn accepted it.
+              // A rejected submit ("Something went wrong", offline, last-step
+              // validation) used to be saved to job_applications as applied.
+              let outcome = 'unknown';
+              try { if (adapter.verifySubmitted) outcome = await adapter.verifySubmitted(); } catch (_) {}
+              if (outcome === 'failed') {
+                state.log('⚠ LinkedIn did not accept the application (error or form still open) — not counted, discarding');
+                await adapter.discardApplication();
+                state.skippedCount++;
+                state.updateSkippedCount();
+                break;
+              }
+              state.log(outcome === 'confirmed' ? 'Application confirmed by LinkedIn' : 'Submit sent (no confirmation signal seen)');
               state.appliedCount++;
               state.appliedJobs.push({
                 title: jobInfo.title,
@@ -1357,6 +1400,9 @@
                   education: cvProfile.education, languages: cvProfile.languages,
                   linkedin: cvProfile.linkedin, website: cvProfile.website,
                 };
+                // v2.5.89: language-level questions read config.languages, which was
+                // never loaded → every language answered with the default level.
+                if (!state.config.languages && Array.isArray(cvProfile.languages)) state.config.languages = cvProfile.languages;
                 state.log(`AI grounding: CV profile loaded (${(cvProfile.education || []).length} education, ${(cvProfile.experience || []).length} experience entries)`);
               } else {
                 state.log('⚠ No CV profile synced — AI will skip education/degree questions instead of guessing');

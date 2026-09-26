@@ -97,6 +97,147 @@
     return '';
   }
 
+  // ─── v2.5.89: years of experience for the question ACTUALLY asked ────────
+  // Live 2026-09-26: "How many years of work experience do you have with Company
+  // Secretarial Work?" got the global yearsOfExperience (3) for a project manager.
+  // Rule: skill-specific question → years of the CV experience entries that mention
+  // the skill (merged date ranges, capped at the total); skill only listed (skills /
+  // summary) without dated evidence → 1 (never above the total); skill absent from
+  // the CV → 0. Generic questions ("work experience", "this role") → total.
+  const _MONTHS = { jan: 0, janv: 0, janvier: 0, january: 0, ene: 0, enero: 0, feb: 1, fev: 1, fevr: 1, fevrier: 1, february: 1, febrero: 1,
+    mar: 2, mars: 2, march: 2, marzo: 2, apr: 3, avr: 3, avril: 3, april: 3, abr: 3, abril: 3, may: 4, mai: 4, mayo: 4,
+    jun: 5, juin: 5, june: 5, junio: 5, jul: 6, juil: 6, juillet: 6, july: 6, julio: 6, aug: 7, aout: 7, august: 7, ago: 7, agosto: 7,
+    sep: 8, sept: 8, septembre: 8, september: 8, septiembre: 8, oct: 9, octobre: 9, october: 9, octubre: 9,
+    nov: 10, novembre: 10, november: 10, noviembre: 10, dec: 11, decembre: 11, december: 11, dic: 11, diciembre: 11 };
+  const _deaccent = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  function _parseYM(s, isEnd) {
+    const t = _deaccent(s).toLowerCase().trim();
+    if (!t) return null;
+    if (/present|current|now|today|aujourd|actuel|en cours|ongoing|actualidad|heute/.test(t)) { const d = new Date(); return d.getFullYear() * 12 + d.getMonth(); }
+    let m = t.match(/(\d{1,2})[\/.\-](\d{4})/); if (m) return +m[2] * 12 + Math.min(11, Math.max(0, +m[1] - 1));
+    m = t.match(/(\d{4})[\/.\-](\d{1,2})/); if (m) return +m[1] * 12 + Math.min(11, Math.max(0, +m[2] - 1));
+    m = t.match(/([a-z]{3,9})\.?\s*(\d{4})/); if (m && _MONTHS[m[1]] != null) return +m[2] * 12 + _MONTHS[m[1]];
+    m = t.match(/(\d{4})/); if (m) return +m[1] * 12 + (isEnd ? 11 : 0);
+    return null;
+  }
+  // "01/2021 – Present", "Jan 2020 - Mar 2022", "2019 – 2021", "sept. 2019 à déc. 2020" → [startYM, endYM] or null
+  function _entryRange(e) {
+    const start = e.startDate || e.start || e.from, end = e.endDate || e.end || e.to;
+    if (start) { const a = _parseYM(start, false), b = end ? _parseYM(end, true) : _parseYM('present', true); return a != null && b != null && b >= a ? [a, b] : null; }
+    const raw = String(e.duration || e.dates || e.period || e.date || '');
+    const parts = raw.split(/\s*(?:–|—|-|to|à|au|a|until|jusqu'?a|hasta|bis)\s+(?=\S)|\s*[–—]\s*/i).filter(Boolean);
+    if (parts.length >= 2) { const a = _parseYM(parts[0], false), b = _parseYM(parts[parts.length - 1], true); if (a != null && b != null && b >= a) return [a, b]; }
+    return null;
+  }
+  const _GENERIC_SKILL = /^(work|working|professional|relevant|total|overall|industry|full[- ]time|paid|similar|this|the|a|an|your|such|previous|prior)?\s*(work|experience|field|role|position|job|industry|domain|area|capacity|kind of role|similar role|similar position|this role|this position|this field|this industry)?\s*$/i;
+  // Skill named in a years question, or '' for a generic question.
+  function yearsQuestionSkill(question) {
+    const q = String(question || '').replace(/\s+/g, ' ').replace(/[?*:]+\s*$/, '').trim();
+    const pats = [
+      /experience\s+(?:do\s+you\s+have\s+|have\s+you\s+got\s+)?(?:with|in|using|of|on|working\s+with|working\s+in)\s+(.+)$/i,
+      /years?\s+of\s+(?:professional\s+|work\s+|relevant\s+|hands[- ]on\s+|practical\s+)?(.+?)\s+experience\b/i,
+      /years?\s+(?:have\s+you\s+)?(?:worked|been\s+working|used|been\s+using)\s+(?:with|in|on)?\s*(.+)$/i,
+      /exp[ée]rience\s+(?:avez[- ]vous\s+|poss[ée]dez[- ]vous\s+)?(?:en|avec|dans|sur|de)\s+(?:l'|la\s+|le\s+|les\s+)?(.+)$/i,
+      /experiencia\s+(?:tienes\s+|tiene\s+)?(?:con|en)\s+(.+)$/i,
+    ];
+    for (const re of pats) {
+      const m = q.match(re);
+      if (m) {
+        let s = m[1].replace(/\b(do you have|avez[- ]vous|have you|as an?|in total|total|au total)\b.*$/i, '').replace(/^(the|la|le|les|l')\s+/i, '').trim();
+        if (!s || s.length > 60 || _GENERIC_SKILL.test(s)) return '';
+        return s;
+      }
+    }
+    return '';
+  }
+  // Tail words that qualify a skill without being the skill ("Agile methodologies", "SAP systems").
+  const _SKILL_TAIL = /^(methodolog\w*|methods?|tools?|frameworks?|technolog\w*|concepts?|principles?|practices?|skills?|environments?|software|systems?|platforms?|solutions?|products?|projects?|techniques?|m[ée]thodes?|outils?|logiciels?|environnements?)$/;
+  // Minimal FR/ES → EN bridge so an English CV is not answered "0" to a French question (and vice versa).
+  const _SKILL_SYNONYMS = [
+    ['gestion de projet', 'project management'], ['chef de projet', 'project manager'], ['gestion de produit', 'product management'],
+    ['developpement', 'development'], ['comptabilite', 'accounting'], ['ressources humaines', 'human resources'], ['recrutement', 'recruitment'],
+    ['vente', 'sales'], ['analyse de donnees', 'data analysis'], ['gestion de programme', 'program management'], ['service client', 'customer service'],
+    ['gestion de projets', 'project management'], ['gestion del proyecto', 'project management'], ['gestion de proyectos', 'project management'],
+  ];
+  function _norm(s) { return ' ' + _deaccent(s).toLowerCase().replace(/[^a-z0-9+#.]+/g, ' ').trim() + ' '; }
+  function _tokens(s) {
+    return _norm(s).trim().split(' ').filter(w => w.length >= 2 && !/^(and|or|the|of|in|with|for|de|des|du|et|en|la|le|les|work|experience|a|an)$/.test(w));
+  }
+  // Word match on a shared prefix (manager ~ management ~ managing, projet ~ projets) — min 5 chars, else exact.
+  function _hasWord(t, w) {
+    if (w.length < 5) return t.includes(' ' + w + ' ');
+    const stem = w.slice(0, Math.max(5, Math.min(w.length, 6)));
+    return t.includes(' ' + stem);
+  }
+  function _mentionsOne(text, skill) {
+    const t = _norm(text); const s = _norm(skill).trim();
+    if (!s) return false;
+    if (t.includes(' ' + s + ' ')) return true;
+    const toks = _tokens(skill);
+    if (!toks.length) return false;
+    const core = toks.filter(w => !_SKILL_TAIL.test(w));
+    const need = core.length ? core : toks;
+    return need.every(w => _hasWord(t, w));
+  }
+  function _mentions(text, skill) {
+    if (_mentionsOne(text, skill)) return true;
+    const s = _norm(skill).trim();
+    for (const [a, b] of _SKILL_SYNONYMS) {
+      if (s.includes(a) && _mentionsOne(text, s.replace(a, b))) return true;
+      if (s.includes(b) && _mentionsOne(text, s.replace(b, a))) return true;
+    }
+    return false;
+  }
+  function yearsForQuestion(question, config) {
+    const total = parseInt(String((config && config.yearsOfExperience) || '').match(/\d+/)?.[0] || '0', 10) || 0;
+    const skill = yearsQuestionSkill(question);
+    if (!skill) return { years: total, basis: 'total' };
+    const cv = config && config.cvProfile;
+    if (!cv || !Array.isArray(cv.experience)) return { years: total, basis: 'total (no CV profile synced)', skill };
+    const ranges = [];
+    let mentionedInExp = false;
+    for (const e of cv.experience) {
+      const txt = [e.title, e.role, e.position, e.company, e.description, ...(Array.isArray(e.bullets) ? e.bullets : []), ...(Array.isArray(e.achievements) ? e.achievements : [])].filter(Boolean).join(' ');
+      if (!_mentions(txt, skill)) continue;
+      mentionedInExp = true;
+      const r = _entryRange(e); if (r) ranges.push(r);
+    }
+    if (ranges.length) {
+      ranges.sort((a, b) => a[0] - b[0]);
+      let months = 0, cur = null;
+      for (const r of ranges) { if (!cur || r[0] > cur[1] + 1) { if (cur) months += cur[1] - cur[0] + 1; cur = r.slice(); } else cur[1] = Math.max(cur[1], r[1]); }
+      if (cur) months += cur[1] - cur[0] + 1;
+      let y = Math.floor(months / 12); if (y === 0 && months >= 6) y = 1;
+      if (total) y = Math.min(y, total);
+      return { years: y, basis: `CV experience mentioning "${skill}" (${months} months)`, skill };
+    }
+    const listed = mentionedInExp || (Array.isArray(cv.skills) && cv.skills.some(s => _mentions(typeof s === 'string' ? s : (s && s.name) || '', skill)))
+      || _mentions(cv.summary || '', skill);
+    if (listed) return { years: Math.min(total || 1, 1), basis: `"${skill}" listed in the CV without dated experience`, skill };
+    return { years: 0, basis: `"${skill}" not in the CV`, skill };
+  }
+
+  // ─── v2.5.89: salary answer shaped by the question ──────────────────────
+  // Plain number by default (LinkedIn validates most salary fields as numbers).
+  // Currency appended only when the question explicitly asks for it; the question's
+  // own currency wins, else the profile country. Never converts amounts.
+  const _CUR_BY_COUNTRY = { france: 'EUR', fr: 'EUR', germany: 'EUR', de: 'EUR', spain: 'EUR', es: 'EUR', italy: 'EUR', it: 'EUR', belgium: 'EUR', netherlands: 'EUR', portugal: 'EUR', ireland: 'EUR', austria: 'EUR',
+    india: 'INR', in: 'INR', 'united states': 'USD', usa: 'USD', us: 'USD', 'united kingdom': 'GBP', uk: 'GBP', gb: 'GBP', canada: 'CAD', ca: 'CAD', switzerland: 'CHF', ch: 'CHF', australia: 'AUD', au: 'AUD' };
+  const _CUR_BY_DIAL = { '+33': 'EUR', '+49': 'EUR', '+34': 'EUR', '+39': 'EUR', '+32': 'EUR', '+31': 'EUR', '+351': 'EUR', '+353': 'EUR', '+43': 'EUR', '+91': 'INR', '+44': 'GBP', '+41': 'CHF', '+61': 'AUD' };
+  function salaryAnswer(question, config, input) {
+    const raw = String((config && config.expectedSalary) || '').trim();
+    if (!raw) return '';
+    const q = String(question || '');
+    if (/[a-z€$£₹]/i.test(raw)) return raw; // user typed their own format ("55k EUR")
+    const numericOnly = input && (input.type === 'number' || input.getAttribute('inputmode') === 'numeric' || input.getAttribute('inputmode') === 'decimal');
+    const asksCurrency = /\b(includ\w*|incl\.?|with|along with|and|plus|mention\w*|indiqu\w*|pr[ée]cis\w*|avec|y|con|specify\w*)\s+(the\s+|la\s+|votre\s+|your\s+|a\s+)?(currency|devise|moneda|w[äa]hrung)|\bcurrency\s*(and|&|\+)|\(\s*(amount|montant)\s*(and|et|\+)\s*(currency|devise)\s*\)/i.test(q);
+    if (numericOnly || !asksCurrency) return raw;
+    const inQ = (q.match(/\b(EUR|USD|INR|GBP|CAD|CHF|AUD)\b/i) || [])[1] || (/€/.test(q) ? 'EUR' : /₹/.test(q) ? 'INR' : /£/.test(q) ? 'GBP' : /\$/.test(q) ? 'USD' : '');
+    const country = String((config && config.country) || '').toLowerCase().trim();
+    const cur = (inQ && inQ.toUpperCase()) || _CUR_BY_COUNTRY[country] || _CUR_BY_DIAL[String((config && config.phoneCountryCode) || '').trim()] || '';
+    return cur ? `${raw} ${cur}` : raw;
+  }
+
   // ─── Fill text inputs ─────────────────────────────────────────────────
   async function fillTextInputs(modal, config) {
     const textInputs = modal.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="number"], input[type="url"], input:not([type])');
@@ -112,8 +253,10 @@
       if (inputType === 'number') {
         // Only honor very specific numeric intents below.
         if (label.match(/experience|years|expérience|années|años|jahre|anni|esperienza/)) {
-          u().fill(input, config.yearsOfExperience || '2');
-          u().log(`Years exp: ${config.yearsOfExperience || '2'}`);
+          const y = yearsForQuestion(getFieldQuestion(input, modal), config);
+          const v = (y.basis === 'total' && !y.years) ? (config.yearsOfExperience || '2') : String(y.years);
+          u().fill(input, v);
+          u().log(`Years exp: ${v} (${y.basis})`);
         } else if (label.match(/salary|compensation|remuneration|salaire|rémunération|prétention|pretention|sueldo|salario|gehalt|stipendio|pay.*expect|expectation.*pay/) && config.expectedSalary) {
           u().fill(input, config.expectedSalary);
           u().log(`Salary filled: ${config.expectedSalary}`);
@@ -146,14 +289,20 @@
 
       // Years of experience (EN/FR/ES/DE/IT)
       if (haystack.match(/experience|years|expérience|années|años|jahre|anni|esperienza/)) {
-        u().fill(input, config.yearsOfExperience || '2');
-        u().log(`Years exp: ${config.yearsOfExperience || '2'}`);
+        // v2.5.89: years for the skill the question names, not the global total
+        // (0 when the skill is nowhere in the CV — never a made-up number).
+        const y = yearsForQuestion(getFieldQuestion(input, modal), config);
+        const v = (y.basis === 'total' && !y.years) ? (config.yearsOfExperience || '2') : String(y.years);
+        u().fill(input, v);
+        u().log(`Years exp: ${v} (${y.basis})`);
       }
       // Salary / Compensation / Prétentions salariales
       else if (haystack.match(/salary|compensation|remuneration|salaire|rémunération|prétention|pretention|sueldo|salario|gehalt|stipendio|pay.*expect|expectation.*pay/)) {
         if (config.expectedSalary) {
-          u().fill(input, config.expectedSalary);
-          u().log(`Salary filled: ${config.expectedSalary}`);
+          // v2.5.89: plain number by default; "+ currency" only when the question asks for it.
+          const sal = salaryAnswer(getFieldQuestion(input, modal), config, input);
+          u().fill(input, sal);
+          u().log(`Salary filled: ${sal}`);
         }
       }
       // Notice period / Préavis / "When can you start"
@@ -884,8 +1033,10 @@
       // Detects EN + FR + ES + DE + IT phrasing.
       if (/\b(years? of|ans?\s+d[\'e]|années?|jahre|anni|años)\b.*(experience|exp[ée]rience|erfahrung|esperienza|experiencia)|how many years|combien.*ann[ée]e/i.test(questionText)
           || /\b(experience|exp[ée]rience)\b.*\b(years?|ans?|années?)\b/i.test(questionText)) {
-        const cvYears = parseInt(String(config.yearsOfExperience || 0), 10);
-        if (cvYears > 0 && fillYearsRangeRadio(fieldset, radioInputs, cvYears)) continue;
+        // v2.5.89: skill-specific years (0 when the skill is not in the CV), not the global total.
+        const y = yearsForQuestion(questionLabel ? questionLabel.textContent : questionText, config);
+        const known = y.basis !== 'total' || y.years > 0;
+        if (known && fillYearsRangeRadio(fieldset, radioInputs, y.years)) { u().log(`Radio years basis: ${y.basis}`); continue; }
       }
 
       // Language-level radios (English/French/Spanish + level/niveau + CEFR
@@ -1033,6 +1184,20 @@
         selectedOption = findCountryOption(options, o => o.text, config);
         u().log(`Country select → ${selectedOption ? '"' + selectedOption.text.trim() + '"' : 'left unanswered (profile country not in list)'}: ${labelText.substring(0, 40)}`);
         if (!selectedOption) continue;
+      } else if (/(how many years|years? of|combien d.ann|ann[ée]es? d.exp|años de experiencia)/i.test(labelText)
+                 && options.filter(o => parseYearsRange(o.text)).length >= 2) {
+        // v2.5.89: years-range dropdown ("0-1 / 2-4 / 5+") — pick the bucket for the
+        // skill actually asked. Used to fall through to the blind options[1].
+        const y = yearsForQuestion(getFieldQuestion(select, modal) || labelText, config);
+        let best = null, bestScore = -Infinity;
+        for (const o of options) {
+          const r = parseYearsRange(o.text); if (!r) continue;
+          const sc = (y.years >= r.min && y.years <= r.max) ? 100 : -Math.min(Math.abs(y.years - r.min), Math.abs(y.years - r.max));
+          if (sc > bestScore) { bestScore = sc; best = o; }
+        }
+        selectedOption = best;
+        u().log(`Years select → "${best ? best.text.trim() : '-'}" (${y.years}y, ${y.basis})`);
+        if (!selectedOption) continue;
       } else if (labelText.match(/proficiency|level.*english|level.*french|level.*spanish|level.*german|niveau.*anglais|niveau.*français|nivel.*inglés/)) {
         selectedOption = options.find(opt => opt.text.toLowerCase().match(/native|bilingual|bilingue|langue maternelle/));
         if (!selectedOption) selectedOption = options.find(opt => opt.text.toLowerCase().match(/fluent|courant|fluide/));
@@ -1178,6 +1343,9 @@
     fillTextareas,
     getFieldLabel,
     getFieldQuestion,
-    profileUrlKind
+    profileUrlKind,
+    yearsQuestionSkill,
+    yearsForQuestion,
+    salaryAnswer
   };
 })();

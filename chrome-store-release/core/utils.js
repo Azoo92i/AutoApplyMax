@@ -236,6 +236,36 @@
     return years.length > 0 ? Math.max(...years) : 0;
   }
 
+  // v2.5.89: years REQUIRED by a job description (the "max years required" setting
+  // used to read only card titles, where LinkedIn never puts it). Only requirement
+  // phrasing counts — "5+ years of experience", "minimum 7 ans d'expérience",
+  // "at least 3 years" — and company-history phrasing is ignored ("our company has
+  // 20 years of experience", "depuis plus de 30 ans", "founded 15 years ago").
+  function extractRequiredYears(text) {
+    if (!text) return 0;
+    const t = String(text).replace(/\s+/g, ' ');
+    const found = [];
+    const pats = [
+      /(?:at\s+least|minimum(?:\s+of)?|min\.?|a\s+minimum\s+of|over|more\s+than|plus\s+de|au\s+moins|minimum\s+de|m[ií]nimo(?:\s+de)?|mindestens)?\s*(\d{1,2})\s*(?:\+|\s*-\s*\d{1,2}|\s*(?:to|à|a)\s*\d{1,2})?\s*(?:years?|yrs?)(?:'|’)?\s+(?:of\s+)?(?:(?:professional|relevant|proven|hands[- ]on|work(?:ing)?|industry|practical|solid|progressive|prior|previous|related|total|post[- ]qualification)\s+){0,3}(?:experience|exp\b)/gi,
+      /(\d{1,2})\s*(?:\+|\s*(?:à|a|-)\s*\d{1,2})?\s*(?:ans?|années?)\s+(?:d['’]\s*|minimum\s+d['’]\s*)?(?:exp[ée]rience)/gi,
+      /exp[ée]rience\s+(?:professionnelle\s+|significative\s+|confirm[ée]e\s+|r[ée]ussie\s+|similaire\s+)?(?:d['’]\s*au\s+moins|de\s+(?:plus\s+de\s+)?|minimum(?:\s+de)?|d['’])\s*(\d{1,2})\s*(?:\+|\s*(?:à|a|-)\s*\d{1,2})?\s*(?:ans?|années?)/gi,
+      /(?:minimum|at\s+least|au\s+moins)\s*(?:of\s+|de\s+)?(\d{1,2})\s*(?:\+)?\s*(?:years?|ans?|années?)/gi,
+      /(\d{1,2})\s*(?:\+)?\s*(?:años?)\s+de\s+experiencia/gi,
+      /(\d{1,2})\s*(?:\+)?\s*jahre?\s+(?:berufs)?erfahrung/gi,
+    ];
+    const companyCtx = /\b(we|we've|we have|our|company|firm|group|since|founded|history|legacy|over the (last|past)|for (more than|over)|depuis|notre|nous|fond[ée]e?|soci[ée]t[ée]|entreprise|cabinet|groupe|existence|nuestra|empresa|unser|seit)\b[^.]{0,40}$/i;
+    for (const re of pats) {
+      for (const m of t.matchAll(re)) {
+        const n = parseInt(m[1], 10);
+        if (!(n > 0 && n <= 25)) continue;
+        const before = t.slice(Math.max(0, m.index - 60), m.index);
+        if (companyCtx.test(before)) continue;
+        found.push(n);
+      }
+    }
+    return found.length ? Math.max(...found) : 0;
+  }
+
   // ─── Daily limit detection ────────────────────────────────────────────
   // Only scan VISIBLE modals/toasts/alerts — never raw body.innerText.
   // Body text contains job descriptions, suggestions, ads, footer copy
@@ -999,6 +1029,11 @@
         '[data-test-jobs-easy-apply-modal] [role="progressbar"]'
       );
       for (const spinner of spinners) {
+        // v2.5.89: a DETERMINATE progress bar (aria-valuenow = the form's own
+        // "0% / 50% / 100%" step bar) is not a loader — it is visible on every
+        // step of LinkedIn's newer Easy Apply form, which made every application
+        // "load" 20 s and get discarded (fixture repro 2026-09-26).
+        if (spinner.getAttribute('role') === 'progressbar' && spinner.hasAttribute('aria-valuenow')) continue;
         if (spinner.offsetParent !== null) return true;
       }
       return false;
@@ -1092,6 +1127,7 @@
     // Skip logic
     shouldSkipByBlacklist,
     extractYearsRequired,
+    extractRequiredYears,
 
     // Daily limit, rate limit & loading
     checkDailyLimit,

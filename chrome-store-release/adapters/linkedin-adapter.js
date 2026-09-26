@@ -1083,6 +1083,64 @@
     // We pierce the shadow root and return the dialog/form element
     // inside. form-filler.js's `modal.querySelectorAll(...)` will then
     // resolve correctly against the shadow tree.
+    // EA FINGERPRINT — a dialog is the Easy Apply form ONLY if it has at least one
+    // of these signals. Any other dialog (success popup, job suggestion, save-job
+    // prompt, daily-limit notice) is NOT the form. Shared by both layouts (v2.5.89).
+    _eaDialogSignature(d) {
+      if (!d) return null;
+      const className = (d.className || '') + '';
+      // Strongest: legacy class that LinkedIn kept across redesigns
+      if (/easy-apply|jobs-apply/i.test(className)) return 'class:' + className.slice(0, 60);
+      if (d.querySelector && d.querySelector('[class*="easy-apply" i], [class*="jobs-apply" i]')) return 'inner-class';
+      // 2026-08: New layout — modal identified by data-* attrs that survive class hashing.
+      if (d.querySelector && d.querySelector(
+        '[data-test-modal-id*="easy-apply" i], ' +
+        '[data-test-jobs-easy-apply-modal], ' +
+        'form input[type="file"][name*="resume" i], ' +
+        'button[data-live-test-easy-apply-submit-button]'
+      )) return 'data-attr';
+      // Heading "Apply to <company>" / localized
+      const headings = d.querySelectorAll ? [...d.querySelectorAll('h1, h2, h3')] : [];
+      for (const h of headings) {
+        const t = (h.textContent || '').trim();
+        if (/^(apply\s+to|postuler\s+(à|chez)|candidatar(-se)?|aplicar\s+a|bewerben\s+bei|申请)/i.test(t)) {
+          return 'heading:' + t.slice(0, 50);
+        }
+      }
+      // Inner button with EA-specific aria-label
+      if (d.querySelector && d.querySelector(
+        'button[aria-label*="Submit application" i], ' +
+        'button[aria-label*="Continue applying" i], ' +
+        'button[aria-label*="Soumettre la candidature" i], ' +
+        'button[aria-label*="Continuer la candidature" i], ' +
+        'button[aria-label*="Review your application" i], ' +
+        'button[aria-label*="Vérifier votre candidature" i]'
+      )) return 'submit-button';
+      // Last resort: dialog text starts with "Apply to" / similar (first chars only).
+      const txt = (d.textContent || '').replace(/\s+/g, ' ').trim();
+      if (/^(dialog content start\.\s*)?(apply to|postuler|candidatar)/i.test(txt)) {
+        return 'text-prefix:' + txt.slice(0, 50);
+      }
+      return null;
+    }
+
+    // v2.5.89: the focused job's description text (right pane), for the
+    // "max years required" filter. Legacy selectors first, then the Aug-2026
+    // layout (no stable classes): the container of the "About the job" heading.
+    getJobDescriptionText() {
+      try {
+        const legacy = document.querySelector('#job-details, .jobs-description__content, .jobs-description-content__text, .jobs-box__html-content');
+        if (legacy && (legacy.innerText || legacy.textContent || '').trim().length > 40) return (legacy.innerText || legacy.textContent).trim();
+        const h = [...document.querySelectorAll('h2, h3')].find(x => /^(about the job|about this job|à propos (de l'offre|du poste|de cet emploi)|description du poste|acerca del empleo|info zum job)/i.test((x.textContent || '').trim()));
+        if (h) {
+          let c = h.parentElement;
+          for (let i = 0; i < 4 && c && (c.innerText || '').trim().length < 120; i++) c = c.parentElement;
+          if (c) return (c.innerText || c.textContent || '').trim();
+        }
+      } catch (_) {}
+      return '';
+    }
+
     getFormModal() {
       // ── /jobs/search-results/ (Apr 2026 redesign) ────────────────────
       // STRICT path: the Easy Apply modal only ever renders as a
@@ -1117,46 +1175,7 @@
         // at least ONE of these signals. Any other dialog (success popup,
         // job suggestion, save-job prompt, post-apply confirmation) is
         // NOT the EA modal and we must NOT treat it as a leftover.
-        const isEAModal = (d) => {
-          const className = (d.className || '') + '';
-          // Strongest: legacy class that LinkedIn kept across redesigns
-          if (/easy-apply|jobs-apply/i.test(className)) return 'class:' + className.slice(0, 60);
-          if (d.querySelector && d.querySelector('[class*="easy-apply" i], [class*="jobs-apply" i]')) return 'inner-class';
-          // 2026-08: New layout — modal identified by data-* attrs that
-          // survive class hashing. Add before heading/text heuristics so
-          // it fires even when the modal has no <h1> yet.
-          if (d.querySelector && d.querySelector(
-            '[data-test-modal-id*="easy-apply" i], ' +
-            '[data-test-jobs-easy-apply-modal], ' +
-            'form input[type="file"][name*="resume" i], ' +
-            'button[data-live-test-easy-apply-submit-button]'
-          )) return 'data-attr';
-          // Heading "Apply to <company>" / localized
-          const headings = d.querySelectorAll ? [...d.querySelectorAll('h1, h2, h3')] : [];
-          for (const h of headings) {
-            const t = (h.textContent || '').trim();
-            if (/^(apply\s+to|postuler\s+(à|chez)|candidatar(-se)?|aplicar\s+a|bewerben\s+bei|申请)/i.test(t)) {
-              return 'heading:' + t.slice(0, 50);
-            }
-          }
-          // Inner button with EA-specific aria-label
-          if (d.querySelector && d.querySelector(
-            'button[aria-label*="Submit application" i], ' +
-            'button[aria-label*="Continue applying" i], ' +
-            'button[aria-label*="Soumettre la candidature" i], ' +
-            'button[aria-label*="Continuer la candidature" i], ' +
-            'button[aria-label*="Review your application" i], ' +
-            'button[aria-label*="Vérifier votre candidature" i]'
-          )) return 'submit-button';
-          // Last resort: dialog text starts with "Apply to" / similar.
-          // Use trimmed first 80 chars to avoid false positives from
-          // long unrelated content.
-          const txt = (d.textContent || '').replace(/\s+/g, ' ').trim();
-          if (/^(dialog content start\.\s*)?(apply to|postuler|candidatar)/i.test(txt)) {
-            return 'text-prefix:' + txt.slice(0, 50);
-          }
-          return null;
-        };
+        const isEAModal = (d) => this._eaDialogSignature(d);
 
         for (const d of allDialogs) {
           const sig = isEAModal(d);
@@ -1188,6 +1207,17 @@
       if (visible(m)) return m;
       m = document.querySelector('.artdeco-modal');
       if (visible(m)) return m;
+
+      // 1b. v2.5.89: LinkedIn's native light-DOM Easy Apply <dialog> (2026-09-26) can
+      // also open over the LEGACY card list (same A/B rollout as /jobs/search-results/).
+      // Top-layer dialogs have offsetParent === null, so the checks above and the
+      // last-ditch scan below never saw it → the /jobs/view/<id>/ overlay URL looked
+      // like "Page navigated away" and the bot stopped (fixture repro 2026-09-26).
+      for (const d of document.querySelectorAll('dialog[open]')) {
+        if (!u().isShown(d)) continue;
+        const sig = this._eaDialogSignature(d);
+        if (sig) { console.log('[EAM] getFormModal (legacy list): native EA dialog (' + sig + ')'); return d; }
+      }
 
       // 2. Same-origin iframe scan (legacy edge case, kept for non-new-design)
       const isChromeInput = (i) =>
@@ -1249,6 +1279,43 @@
         } catch (e) {}
       }
       return null;
+    }
+
+    // ── v2.5.89: did LinkedIn really accept the application? ────────────
+    // The engine used to count + record the job the moment Submit was clicked.
+    // A submit that LinkedIn rejects ("Something went wrong", network drop,
+    // validation on the last step) was saved as an application. Poll ≤ 8 s:
+    //   'confirmed' — success popup / "Application submitted" status / form gone
+    //   'failed'    — the form is still open with an explicit error toast or a
+    //                 validation message on it
+    //   'unknown'   — no signal within 8 s (slow network): the engine keeps the
+    //                 old behaviour and counts it — never discard a maybe-sent one
+    async verifySubmitted() {
+      const SUCCESS = /(application (was )?sent|your application was sent|application submitted|candidature (a [ée]t[ée] )?envoy[ée]e|votre candidature a [ée]t[ée] envoy[ée]e|postulation envoy[ée]e|solicitud enviada|bewerbung (wurde )?(gesendet|versendet))/i;
+      const ERROR = /(something went wrong|try again|went wrong|unable to submit|couldn.?t submit|une erreur|r[ée]essayer|impossible d.envoyer|algo sali[óo] mal|etwas ist schiefgelaufen)/i;
+      const texts = () => {
+        const out = [];
+        const sel = 'dialog[open], [role="dialog"], [role="alertdialog"], .artdeco-modal, .artdeco-toast-item, [role="alert"]';
+        const roots = [document]; const sr = this._getInteropShadowRoot(); if (sr) roots.push(sr);
+        for (const r of roots) for (const el of r.querySelectorAll(sel)) { if (u().isShown(el)) out.push((el.innerText || el.textContent || '').replace(/\s+/g, ' ').slice(0, 400)); }
+        return out;
+      };
+      for (let i = 0; i < 16; i++) {
+        const t = texts();
+        if (t.some(x => SUCCESS.test(x))) return 'confirmed';
+        const modal = this.getFormModal();
+        const open = modal && u().isShown(modal);
+        if (!open) {
+          // Form closed. Confirmed unless an error toast is what replaced it.
+          if (!t.some(x => ERROR.test(x))) return 'confirmed';
+        } else {
+          const submitStill = [...modal.querySelectorAll('button')].some(b => this.isSubmitButton(b) && u().isShown(b));
+          if (t.some(x => ERROR.test(x)) && submitStill) return 'failed';
+          if (this.hasValidationErrors(modal)) return 'failed';
+        }
+        await u().wait(500);
+      }
+      return 'unknown';
     }
 
     // ── Next / Submit button ────────────────────────────────────────────
