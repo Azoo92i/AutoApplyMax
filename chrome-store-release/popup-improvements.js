@@ -9,6 +9,14 @@
 
 let toastContainer = null;
 
+// Line icons (dashboard style) — the popup never uses emoji (Théo 2026-09-26).
+const UI_ICON = {
+  close: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+  check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>',
+  alert: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>',
+};
+window.UI_ICON = UI_ICON;
+
 // Class-based toast styled by popup.css (#toast-container / .toast-*).
 function showToast(message, type = 'info', duration = 4000) {
   if (!toastContainer || !document.body.contains(toastContainer)) {
@@ -29,7 +37,7 @@ function showToast(message, type = 'info', duration = 4000) {
   close.type = 'button';
   close.className = 'toast-close';
   close.setAttribute('aria-label', 'Dismiss');
-  close.textContent = '×';
+  close.innerHTML = UI_ICON.close;
   close.addEventListener('click', () => toast.remove());
   toast.append(dot, msg, close);
   toastContainer.appendChild(toast);
@@ -127,8 +135,8 @@ function showFieldError(fieldId, message) {
 
   errorMsg.textContent = '';
   const warnIcon = document.createElement('span');
-  warnIcon.style.fontWeight = '600';
-  warnIcon.textContent = '⚠';
+  warnIcon.style.display = 'inline-flex';
+  warnIcon.innerHTML = UI_ICON.alert;
   errorMsg.appendChild(warnIcon);
   errorMsg.appendChild(document.createTextNode(' ' + message));
 }
@@ -207,10 +215,11 @@ const OB_URL = 'https://www.autoapplymax.com';
 const OB_STEPS = [
   {
     icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-    title: 'Connect your AutoApplyMax account',
-    text: 'Free to create. Your applications, CV and AI credits stay in sync between this extension and your dashboard.',
-    points: ['Every application tracked on your dashboard', 'Tailored CVs and cover letters with AI', 'Uses the profile you already filled in'],
-    primary: { label: 'Sign in or create a free account', url: '/auth.html?src=ext_onboarding' },
+    title: 'Create your free account',
+    text: 'Your applications, CV and AI credits stay in sync between this extension and your dashboard.',
+    points: ['Every application tracked on your dashboard', 'A CV tailored to each job with AI', 'Uses the profile you already filled in'],
+    primary: { label: 'Sign up free', url: '/auth.html?mode=signup&src=ext_onboarding' },
+    secondary: { label: 'I already have an account — sign in', url: '/auth.html?src=ext_onboarding' },
     doneWhenSignedIn: 'You\'re signed in',
   },
   {
@@ -225,7 +234,7 @@ const OB_STEPS = [
     icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l14 8-14 8V4z"/></svg>',
     title: 'Open LinkedIn Easy Apply jobs',
     text: 'Search for your role with the Easy Apply filter, then open this extension and click <b>Start auto-apply</b>.',
-    note: '<b>Other job sites?</b> Indeed, Workday, Greenhouse or any career page: click <b>Autofill this form</b> — the extension fills it, you review and submit. Click <b>?</b> at the top any time for a refresher.',
+    note: '<b>Applying on another site?</b> Open the application form and click <b>Autofill this form</b> — it works on any site: the extension fills it, you review and submit. Click <b>?</b> at the top any time for a refresher.',
     primary: { label: 'Open Easy Apply jobs on LinkedIn', url: 'https://www.linkedin.com/jobs/search/?f_AL=true', external: true, finish: true },
   },
 ];
@@ -266,11 +275,11 @@ function showOnboarding(startStep = 0, signedIn = false) {
     const progress = OB_STEPS.map((_, i) => '<span class="' + (i <= step ? 'done' : '') + '"></span>').join('');
     const points = s.points ? '<ul class="ob-points">' + s.points.map(p => '<li>' + p + '</li>').join('') + '</ul>' : '';
     const note = s.note ? '<div class="ob-note">' + s.note + '</div>' : '';
-    const done = (step === 0 && signedIn) ? '<div class="ob-done">✓ ' + s.doneWhenSignedIn + '</div>' : '';
+    const done = (step === 0 && signedIn) ? '<div class="ob-done">' + UI_ICON.check + ' ' + s.doneWhenSignedIn + '</div>' : '';
     const primaryLabel = (step === 0 && signedIn) ? 'Continue' : s.primary.label;
     overlay.innerHTML =
       '<div class="ob-top">' +
-        '<span class="logo"><img src="icons/icon48.png" alt="" width="24" height="24"><span class="wordmark">AutoApply<span>Max</span></span></span>' +
+        '<span class="logo"><img src="icons/icon48.png" alt="" width="28" height="28"><span class="wordmark">AutoApplyMax</span></span>' +
         '<button type="button" class="ob-skip" id="close-onboarding">Skip setup</button>' +
       '</div>' +
       '<div class="ob-body">' +
@@ -283,7 +292,7 @@ function showOnboarding(startStep = 0, signedIn = false) {
         points + note +
         '<div class="ob-actions">' +
           '<button type="button" class="btn btn-primary btn-block" id="ob-primary">' + primaryLabel + '</button>' +
-          (s.secondary ? '<button type="button" class="ob-link" id="ob-secondary">' + s.secondary.label + '</button>' : '') +
+          (s.secondary && !(step === 0 && signedIn) ? '<button type="button" class="ob-link" id="ob-secondary">' + s.secondary.label + '</button>' : '') +
           (step > 0 ? '<button type="button" class="ob-link" id="ob-back">← Back</button>'
                     : '<button type="button" class="ob-link" id="ob-open-dashboard">I\'ll do it later</button>') +
         '</div>' +
@@ -300,6 +309,14 @@ function showOnboarding(startStep = 0, signedIn = false) {
       render();
     });
     overlay.querySelector('#ob-secondary')?.addEventListener('click', async () => {
+      if (s.secondary.url) {
+        // Sign in (existing account): same resume logic as the primary step.
+        openUrl(s.secondary.url, s.secondary.external);
+        step = Math.min(step + 1, OB_STEPS.length - 1);
+        saveStep(step);
+        render();
+        return;
+      }
       if (s.secondary.action === 'personal') {
         step = Math.min(step + 1, OB_STEPS.length - 1);
         saveStep(step);
@@ -349,16 +366,16 @@ const HELP_STEPS = [
   },
   {
     icon: HELP_ICON.edit,
-    title: 'Other job sites: Autofill',
-    text: 'On Indeed, Workday, Greenhouse, Lever or any career page, open the application form and click <b>Autofill this form</b>.',
+    title: 'Any other site: Autofill',
+    text: 'On any job site or career page, open the application form and click <b>Autofill this form</b>.',
     points: ['Your name, email, phone and links are filled in', '<b>You</b> review the answers and click Submit on the site'],
   },
   {
     icon: HELP_ICON.spark,
     title: 'What Premium adds',
     text: 'On the free plan the extension fills the standard fields from your profile.',
-    points: ['<b>AI answers</b> to screening questions, written from your CV', 'More AI credits for tailored CVs and cover letters'],
-    links: [{ label: 'See plans', url: '/dashboard#upgrade' }, { label: 'Complete my profile', url: '/dashboard#smart-profile' }],
+    points: ['<b>AI answers</b> to screening questions during auto-apply, written from your CV', '30 AI credits a month: a tailored CV and cover letter for each job'],
+    links: [{ label: 'See plans', url: '/dashboard?section=upgrade&src=ext_help' }, { label: 'Tailor my CV', url: '/dashboard?section=cv-generator&src=ext_help' }],
   },
 ];
 
@@ -384,8 +401,8 @@ function showHelp(startStep = 0) {
     const links = s.links ? '<div class="help-links">' + s.links.map((l, i) => '<a href="#" data-help-link="' + i + '">' + l.label + '&nbsp;→</a>').join('') + '</div>' : '';
     overlay.innerHTML =
       '<div class="ob-top">' +
-        '<span class="logo"><img src="icons/icon48.png" alt="" width="24" height="24"><span class="wordmark">How it works</span></span>' +
-        '<button type="button" class="ob-skip" id="help-close" aria-label="Close help">Close ✕</button>' +
+        '<span class="logo"><img src="icons/icon48.png" alt="" width="28" height="28"><span class="wordmark">How it works</span></span>' +
+        '<button type="button" class="ob-skip" id="help-close" aria-label="Close help">Close ' + UI_ICON.close + '</button>' +
       '</div>' +
       '<div class="ob-body">' +
         '<div class="ob-progress">' + progress + '</div>' +

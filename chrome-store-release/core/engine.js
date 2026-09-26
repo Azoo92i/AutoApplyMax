@@ -39,7 +39,7 @@
     const strikes = state.rateLimitStrikes;
 
     if (strikes >= RATE_LIMIT_STRIKE_LIMIT) {
-      const msg = 'Auto-apply paused to protect your LinkedIn account. Take a 15-min break, then click AutoApply on a fresh job card to resume.';
+      const msg = 'Auto-apply paused to protect your LinkedIn account. Take a 15-minute break, then click Start auto-apply to continue.';
       state.log('⏸ ' + msg);
       try { await adapter.discardApplication(); } catch (e) {}
       try {
@@ -55,7 +55,7 @@
             type: 'basic',
             iconUrl: chrome.runtime.getURL('icons/icon128.png'),
             title: 'AutoApplyMax — short break',
-            message: 'Paused to protect your LinkedIn account. Take a 15-min break, then click AutoApply on a new job.',
+            message: 'Paused to protect your LinkedIn account. Take a 15-minute break, then click Start auto-apply to continue.',
             priority: 2,
           });
         }

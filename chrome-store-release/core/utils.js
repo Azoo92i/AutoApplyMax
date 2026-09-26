@@ -328,13 +328,29 @@
   // place — user sees a single friendly message in LinkedIn's own container,
   // preserving position and dismiss ergonomics. Falls back to hide+banner
   // if the container structure is unexpected.
+  // Line icons for in-page notices (dashboard style, currentColor) — no emoji
+  // anywhere in the extension UI (Théo 2026-09-26).
+  const AAM_ICON = {
+    pause: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M10 9v6M14 9v6"/></svg>',
+    target: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+    info: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+    close: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+  };
+  const AAM_FONT = 'Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+
   function _replaceRateLimitContent(el, mode) {
     if (!el) return { replaced: false };
     // mode: 'rate' (default) shows friendly pause message; 'daily' shows
     // terminal "come back tomorrow" message with matching UX (2026-09-09).
     // Both live in the same shadow-DOM to survive LinkedIn's cascade.
+    // Icons/font inlined (not AAM_ICON/AAM_FONT) so this function stays
+    // self-contained — tests/ext-rate-limit-inplace extracts it on its own.
+    const ICON_TARGET = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>';
+    const ICON_PAUSE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M10 9v6M14 9v6"/></svg>';
+    const FONT = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
     const copy = mode === 'daily' ? {
-      icon: '🎯',
+      icon: ICON_TARGET,
+      iconColor: '#059669',
       title: 'You hit today’s LinkedIn Easy Apply limit',
       // v2.5.87 (UX audit): LinkedIn publishes no fixed number (it hit after ~28 on
       // 2026-09-25), and the bot does NOT restart by itself — the user clicks Start.
@@ -343,7 +359,8 @@
       border: '#a7f3d0',
       shadow: 'rgba(5, 150, 105, 0.10)',
     } : {
-      icon: '⏳',
+      icon: ICON_PAUSE,
+      iconColor: '#0a66c2',
       title: 'Short pause to protect your account',
       body: 'Waiting a few minutes to avoid LinkedIn rate limit — this is a normal safety pause. Auto-apply will resume automatically. Keep this tab in the foreground for best results.',
       bg: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
@@ -374,10 +391,10 @@
 
       const cssText = [
         ':host { display: block; contain: layout style; }',
-        `.aam-rl-root { all: initial; display: block; padding: 14px 18px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif; line-height: 1.45; color: #0f172a; background: ${copy.bg}; border-radius: 8px; border: 1px solid ${copy.border}; box-shadow: 0 4px 14px ${copy.shadow}; box-sizing: border-box; }`,
+        `.aam-rl-root { all: initial; display: block; padding: 14px 18px; font-family: ${FONT}; line-height: 1.45; color: #0f172a; background: ${copy.bg}; border-radius: 8px; border: 1px solid ${copy.border}; box-shadow: 0 4px 14px ${copy.shadow}; box-sizing: border-box; }`,
         '.aam-rl-root, .aam-rl-root * { box-sizing: border-box; }',
         '.aam-rl-row { display: flex; gap: 10px; align-items: flex-start; }',
-        '.aam-rl-icon { font-size: 20px; line-height: 1; }',
+        `.aam-rl-icon { display: inline-flex; flex-shrink: 0; margin-top: 1px; color: ${copy.iconColor}; }`,
         '.aam-rl-col { flex: 1; display: block; min-width: 0; }',
         '.aam-rl-title { display: block; font-weight: 700; color: #0f172a; margin: 0 0 5px 0; font-size: 15px; }',
         '.aam-rl-body { display: block; color: #334155; font-size: 13px; margin: 0; }',
@@ -389,7 +406,7 @@
       row.className = 'aam-rl-row';
       const icon = document.createElement('span');
       icon.className = 'aam-rl-icon';
-      icon.textContent = copy.icon;
+      icon.innerHTML = copy.icon;
       const col = document.createElement('div');
       col.className = 'aam-rl-col';
       const title = document.createElement('div');
@@ -550,7 +567,7 @@
       chip.setAttribute('data-eam-rl-chip', '1');
       chip.setAttribute('role', 'status');
       chip.setAttribute('aria-live', 'polite');
-      chip.style.cssText = 'display:flex;width:fit-content;max-width:100%;box-sizing:border-box;align-items:center;gap:8px;margin:8px 0 0 0;padding:6px 12px;background:' + chipCopy.bg + ';border:1px solid ' + chipCopy.border + ';color:' + chipCopy.fg + ';border-radius:16px;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;white-space:nowrap;vertical-align:middle;box-shadow:0 1px 2px rgba(15,23,42,0.06)';
+      chip.style.cssText = 'display:flex;width:fit-content;max-width:100%;box-sizing:border-box;align-items:center;gap:8px;margin:8px 0 0 0;padding:6px 12px;background:' + chipCopy.bg + ';border:1px solid ' + chipCopy.border + ';color:' + chipCopy.fg + ';border-radius:16px;font:600 12px/1.2 ' + AAM_FONT + ';white-space:nowrap;vertical-align:middle;box-shadow:0 1px 2px rgba(15,23,42,0.06)';
       const icon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
       const closeIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
       chip.innerHTML = icon +
@@ -640,15 +657,15 @@
       } catch (_) {}
       const banner = document.createElement('div');
       banner.id = 'eam-rate-limit-banner';
-      banner.style.cssText = 'position:fixed;' + pos + 'z-index:2147483647;background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #93c5fd;border-radius:10px;padding:14px 18px;max-width:360px;box-shadow:0 8px 24px rgba(30,64,175,0.18);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;color:#1e3a8a;font-size:13px;line-height:1.45';
+      banner.style.cssText = 'position:fixed;' + pos + 'z-index:2147483647;background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #93c5fd;border-radius:10px;padding:14px 18px;max-width:360px;box-shadow:0 8px 24px rgba(30,64,175,0.18);font-family:' + AAM_FONT + ';color:#1e3a8a;font-size:13px;line-height:1.45';
       banner.innerHTML =
         '<div style="display:flex;gap:10px;align-items:flex-start">' +
-        '<span style="font-size:18px;line-height:1">⏳</span>' +
+        '<span style="display:inline-flex;flex-shrink:0;color:#0a66c2">' + AAM_ICON.pause + '</span>' +
         '<div style="flex:1">' +
         '<div style="font-weight:600;color:#0f172a;margin-bottom:4px">Short pause to protect your account</div>' +
         '<div style="color:#475569">Waiting a few minutes to avoid LinkedIn rate limit — this is a normal safety pause. Auto-apply will resume automatically. Keep this tab in the foreground for best results.</div>' +
         '</div>' +
-        '<button type="button" aria-label="Dismiss" style="background:transparent;border:0;color:#64748b;font-size:18px;cursor:pointer;padding:0 2px;line-height:1;margin-left:4px">×</button>' +
+        '<button type="button" aria-label="Dismiss" style="background:transparent;border:0;color:#64748b;font-size:18px;cursor:pointer;padding:0 2px;line-height:1;margin-left:4px">' + AAM_ICON.close + '</button>' +
         '</div>';
       banner.querySelector('button').addEventListener('click', () => banner.remove());
       document.body.appendChild(banner);
@@ -667,15 +684,15 @@
     try {
       const banner = document.createElement('div');
       banner.id = 'eam-easy-apply-hint';
-      banner.style.cssText = 'position:fixed;top:80px;right:20px;z-index:2147483646;background:linear-gradient(135deg,#fefce8,#fef3c7);border:1px solid #fbbf24;border-radius:10px;padding:14px 18px;max-width:340px;box-shadow:0 8px 24px rgba(180,120,10,0.18);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;color:#78350f;font-size:13px;line-height:1.45';
+      banner.style.cssText = 'position:fixed;top:80px;right:20px;z-index:2147483646;background:linear-gradient(135deg,#fefce8,#fef3c7);border:1px solid #fbbf24;border-radius:10px;padding:14px 18px;max-width:340px;box-shadow:0 8px 24px rgba(180,120,10,0.18);font-family:' + AAM_FONT + ';color:#78350f;font-size:13px;line-height:1.45';
       banner.innerHTML =
         '<div style="display:flex;gap:10px;align-items:flex-start">' +
-        '<span style="font-size:18px;line-height:1">💡</span>' +
+        '<span style="display:inline-flex;flex-shrink:0;color:#b45309">' + AAM_ICON.info + '</span>' +
         '<div style="flex:1">' +
         '<div style="font-weight:600;color:#7c2d12;margin-bottom:4px">Enable the "Easy Apply" filter</div>' +
         '<div style="color:#78350f">Most external-Apply jobs are being skipped. Click the <b>Easy Apply</b> chip in LinkedIn\'s filter row to only show jobs the bot can auto-apply to.</div>' +
         '</div>' +
-        '<button type="button" aria-label="Dismiss" style="background:transparent;border:0;color:#92400e;font-size:18px;cursor:pointer;padding:0 2px;line-height:1;margin-left:4px">×</button>' +
+        '<button type="button" aria-label="Dismiss" style="background:transparent;border:0;color:#92400e;font-size:18px;cursor:pointer;padding:0 2px;line-height:1;margin-left:4px">' + AAM_ICON.close + '</button>' +
         '</div>';
       banner.querySelector('button').addEventListener('click', () => {
         try { sessionStorage.setItem('eam-easy-apply-hint-dismissed', '1'); } catch (_) {}
@@ -744,14 +761,14 @@
         ? { bg: '#eff6ff', border: '#93c5fd', fg: '#1e3a8a' }
         : { bg: '#fef3c7', border: '#fcd34d', fg: '#92400e' };
       const esc = (s) => String(s || '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-      const closeBtn = '<button data-eam-notice-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:0 2px;line-height:1;font-size:15px;opacity:0.6">×</button>';
+      const closeBtn = '<button data-eam-notice-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:0 2px;line-height:1;opacity:0.6;display:inline-flex">' + AAM_ICON.close + '</button>';
       const anchor = _findEasyApplyAnchor();
       const n = document.createElement(anchor ? 'span' : 'div');
       n.setAttribute('data-eam-bot-notice', '1');
       n.setAttribute('role', 'status');
       n.setAttribute('aria-live', 'polite');
-      n.innerHTML = '<span><strong style="font-weight:700">AutoApplyMax — ' + esc(title) + '</strong><br>' + esc(body) + '</span>' + closeBtn;
-      const base = 'align-items:flex-start;gap:8px;padding:8px 12px;background:' + c.bg + ';border:1px solid ' + c.border + ';color:' + c.fg + ';border-radius:12px;font:500 12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;box-shadow:0 1px 2px rgba(15,23,42,0.06);max-width:360px;white-space:normal';
+      n.innerHTML = '<span style="display:inline-flex;flex-shrink:0">' + AAM_ICON.info + '</span><span><strong style="font-weight:700">AutoApplyMax — ' + esc(title) + '</strong><br>' + esc(body) + '</span>' + closeBtn;
+      const base = 'align-items:flex-start;gap:8px;padding:8px 12px;background:' + c.bg + ';border:1px solid ' + c.border + ';color:' + c.fg + ';border-radius:12px;font:500 12px/1.4 ' + AAM_FONT + ';box-shadow:0 1px 2px rgba(15,23,42,0.06);max-width:360px;white-space:normal';
       n.style.cssText = 'display:flex;width:fit-content;box-sizing:border-box;margin:8px 0 0 0;' + base;
       if (!anchor || !_insertBelowActionsRow(n, anchor)) {
         n.style.cssText = 'display:flex;position:fixed;top:80px;right:20px;z-index:2147483646;' + base;

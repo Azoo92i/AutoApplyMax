@@ -5,6 +5,16 @@
    slate text, 1px #e2e8f0 borders, 8/12px radii, one primary action.
    ============================================ */
 
+/* Inter bundled with the extension (same family/weights as the site —
+   Google Fonts can't load here: the extension CSP only allows 'self'). */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('fonts/Inter-latin.woff2') format('woff2');
+}
+
 :root {
   --primary: #0a66c2;
   --primary-light: #378fe9;
@@ -85,8 +95,21 @@ a:hover { text-decoration: underline; }
 
 .logo { display: flex; align-items: center; gap: 8px; text-decoration: none !important; }
 .logo img { border-radius: 6px; display: block; }
-.wordmark { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-primary); }
-.wordmark span { color: var(--primary); }
+/* Same logo lockup as the site navbar: icon + bold dark "AutoApplyMax". */
+.wordmark { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-primary); }
+
+/* Blue line icon tile — dashboard style, used instead of emoji everywhere. */
+.card-icon {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+  color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .header-right { display: flex; align-items: center; gap: 8px; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
@@ -178,6 +201,9 @@ body[data-plan="free"] .header-plan-badge:hover { background: var(--primary-soft
   padding: 0 2px;
 }
 .alert-close:hover { opacity: 1; }
+.alert-close svg, .toast-close svg, .ob-skip svg, .field-error svg { display: block; flex-shrink: 0; }
+.ob-skip { display: inline-flex; align-items: center; gap: 4px; }
+.ob-done svg { flex-shrink: 0; }
 .alert-info { border-color: #bfdbfe; background: var(--primary-soft); color: #1e3a8a; }
 .alert-success { border-color: #a7f3d0; background: var(--success-soft); color: #065f46; }
 
@@ -186,19 +212,25 @@ body[data-plan="free"] .header-plan-badge:hover { background: var(--primary-soft
    ============================================ */
 .signin-card {
   display: none;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 10px;
   margin: 12px 16px 0;
-  padding: 12px 14px;
+  padding: 14px;
   background: var(--bg-primary);
   border: 1px solid #bfdbfe;
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
 }
 body[data-auth="out"] .signin-card { display: flex; }
+.signin-head { display: flex; gap: 12px; align-items: flex-start; }
 .signin-text { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-.signin-text strong { font-size: 13px; }
+.signin-text strong { font-size: 14px; }
 .signin-text span { font-size: 12px; color: var(--text-secondary); }
+.signin-alt { font-size: 12px; color: var(--text-secondary); text-align: center; }
+.signin-alt a { font-weight: 600; }
+/* Signed out: the sign-up card is the one primary action; the run card and
+   dashboard shortcuts step back until the account is connected. */
+body[data-auth="out"] #start-btn { background: var(--bg-primary); color: var(--primary); border-color: var(--border-strong); box-shadow: none; }
 
 /* ============================================
    BUTTONS
@@ -628,7 +660,9 @@ small { font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; }
   border: 1px solid #bfdbfe;
   border-radius: var(--radius-md);
 }
-.premium-card-header { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.premium-card-header { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.premium-card-header > div { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.premium-note { margin-top: 6px; font-size: 11.5px; color: var(--text-tertiary); text-align: center; }
 .premium-badge {
   align-self: flex-start;
   padding: 2px 8px;

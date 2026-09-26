@@ -410,7 +410,8 @@ function buildAlert({ id, tone = 'warning', title, body, bodyId, link, onClose }
     txt.appendChild(a);
   }
   const x = document.createElement('button');
-  x.type = 'button'; x.className = 'alert-close'; x.setAttribute('aria-label', 'Dismiss'); x.textContent = '×';
+  x.type = 'button'; x.className = 'alert-close'; x.setAttribute('aria-label', 'Dismiss');
+  x.innerHTML = (window.UI_ICON && window.UI_ICON.close) || '×';
   x.addEventListener('click', () => { box.remove(); if (onClose) onClose(); });
   box.append(icon, txt, x);
   return box;
@@ -1090,7 +1091,7 @@ async function checkAuthState() {
     }
 
     const fetchProfile = (token) => fetch(
-      `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=plan,ai_credits_used,ai_credits_total,credits_reset_date,email,first_name`,
+      `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=plan,ai_credits_used,ai_credits_total,credits_reset_date,email,first_name,country`,
       { headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY } }
     );
 
@@ -1164,6 +1165,27 @@ async function checkAuthState() {
   }
 }
 
+// Local Premium price, same rule as the site (localizePrices): India → ₹,
+// eurozone → €, else $. Country from the profile when signed in, otherwise
+// guessed from the browser time zone. Display only — checkout prices are
+// always decided server-side by the site.
+const EUR_COUNTRIES = new Set(['AT','BE','CY','DE','EE','ES','FI','FR','GR','HR','IE','IT','LT','LU','LV','MT','NL','PT','SI','SK','AD','MC','SM','VA']);
+const EUR_TZ = /^Europe\/(Vienna|Brussels|Nicosia|Berlin|Tallinn|Madrid|Helsinki|Paris|Athens|Zagreb|Dublin|Rome|Vilnius|Luxembourg|Riga|Malta|Amsterdam|Lisbon|Ljubljana|Bratislava|Andorra|Monaco|San_Marino|Vatican)$/;
+function guessCountryFromTimeZone() {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    if (tz === 'Asia/Kolkata' || tz === 'Asia/Calcutta') return 'IN';
+    if (EUR_TZ.test(tz)) return 'FR'; // any eurozone country → € price
+  } catch (_) {}
+  return '';
+}
+function applyLocalPremiumPrice(country) {
+  const c = String(country || guessCountryFromTimeZone() || '').toUpperCase();
+  const price = c === 'IN' ? '₹299' : EUR_COUNTRIES.has(c) ? '€6.99' : '$6.99';
+  const el = document.getElementById('premium-price');
+  if (el) el.textContent = price;
+}
+
 function showLoggedOutState() {
   const headerRight = document.getElementById('header-right');
   const premiumCard = document.getElementById('premium-card');
@@ -1175,12 +1197,12 @@ function showLoggedOutState() {
     headerRight.innerHTML = '<button id="header-sign-in-btn" class="header-sign-in">Sign in</button>';
     document.getElementById('header-sign-in-btn')?.addEventListener('click', (e) => {
       e.preventDefault();
-      chrome.tabs.create({ url: 'https://autoapplymax.com/auth.html' });
+      chrome.tabs.create({ url: 'https://autoapplymax.com/auth.html?src=ext_popup' });
     });
   }
   if (premiumCard) premiumCard.style.display = '';
   if (dashLinkRow) dashLinkRow.style.display = 'none';
-
+  applyLocalPremiumPrice('');
 }
 
 function showLoggedInState(profile, session) {
@@ -1202,14 +1224,15 @@ function showLoggedInState(profile, session) {
 
   if (headerRight) {
     const creditsHtml = plan !== 'unlimited'
-      ? `<span class="header-credits" title="AI credits left this month">${creditsLeft} AI credit${creditsLeft !== 1 ? 's' : ''} left</span>`
+      ? `<span class="header-credits" title="AI credits left this month">${creditsLeft} AI credit${creditsLeft !== 1 ? 's' : ''}</span>`
       : '';
     headerRight.innerHTML = `${creditsHtml}<a href="#" class="header-plan-badge" id="header-plan-link">${planLabel}</a>`;
     document.getElementById('header-plan-link')?.addEventListener('click', (e) => {
       e.preventDefault();
-      chrome.tabs.create({ url: 'https://autoapplymax.com/dashboard.html#upgrade' });
+      chrome.tabs.create({ url: 'https://autoapplymax.com/dashboard?section=upgrade&src=ext_popup_badge' });
     });
   }
+  applyLocalPremiumPrice(profile.country);
 
   // Show AI links for logged-in users
   if (dashLinkRow) dashLinkRow.style.display = '';
@@ -1233,13 +1256,14 @@ function setupDashboardLinks() {
   const BASE_URL = 'https://autoapplymax.com';
   const links = {
     'link-dashboard': '/dashboard.html',
+    'link-applications': '/dashboard.html#applications',
     'link-ai-resume': '/dashboard.html#cv-generator',
     'link-cover-letter': '/dashboard.html#cover-letter',
-    'link-analytics': '/dashboard.html#analytics',
     'view-dashboard-applications': '/dashboard.html#applications',
     'link-dashboard-logo': '/dashboard.html',
-    'header-sign-in-btn': '/auth.html',
-    'signin-card-btn': '/auth.html'
+    'header-sign-in-btn': '/auth.html?src=ext_popup',
+    'signin-card-btn': '/auth.html?mode=signup&src=ext_popup',
+    'signin-card-login': '/auth.html?src=ext_popup'
   };
 
   // Easy Apply filter on — the layout auto-apply is built for.
@@ -1268,7 +1292,10 @@ function setupDashboardLinks() {
   if (upgradeLink) {
     upgradeLink.addEventListener('click', (e) => {
       e.preventDefault();
-      chrome.tabs.create({ url: BASE_URL + '/premium?src=ext_popup' });
+      // Signed in → the dashboard upgrade section (the funnel's upgrade page,
+      // src kept for attribution); signed out → the public /premium page.
+      const signedIn = document.body.dataset.auth === 'in';
+      chrome.tabs.create({ url: BASE_URL + (signedIn ? '/dashboard?section=upgrade&src=ext_popup' : '/premium?src=ext_popup') });
     });
   }
 

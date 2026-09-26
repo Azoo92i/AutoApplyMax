@@ -11,8 +11,8 @@
     <!-- Header — white bar like the dashboard navbar -->
     <header class="header">
       <a href="#" class="logo" id="link-dashboard-logo" title="Open your dashboard">
-        <img src="icons/icon48.png" alt="" width="24" height="24">
-        <span class="wordmark">AutoApply<span>Max</span></span>
+        <img src="icons/icon48.png" alt="" width="28" height="28">
+        <span class="wordmark">AutoApplyMax</span>
       </a>
       <div class="header-actions">
         <div class="header-right" id="header-right">
@@ -27,11 +27,17 @@
 
     <!-- Signed-out: one clear reason to connect -->
     <section class="signin-card" id="signin-card">
-      <div class="signin-text">
-        <strong>Connect your account</strong>
-        <span>Track every application on your dashboard, tailor CVs with AI and unlock AI answers.</span>
+      <div class="signin-head">
+        <span class="card-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </span>
+        <div class="signin-text">
+          <strong>Create your free account</strong>
+          <span>Track every application on your dashboard and tailor your CV to each job with AI.</span>
+        </div>
       </div>
-      <button type="button" class="btn btn-primary btn-sm" id="signin-card-btn">Sign in</button>
+      <button type="button" class="btn btn-primary btn-block" id="signin-card-btn">Sign up free</button>
+      <p class="signin-alt">Already have an account? <a href="#" id="signin-card-login">Sign in</a></p>
     </section>
 
     <!-- Run card — one primary action -->
@@ -62,7 +68,7 @@
           </svg>
           Autofill this form
         </button>
-        <span class="autofill-help">Indeed, Workday, Greenhouse or any career site — you review and submit.</span>
+        <span class="autofill-help">Fills any application form on any site — you review and submit.</span>
       </div>
     </section>
 
@@ -104,23 +110,23 @@
           </svg>
         </a>
         <div class="dash-block-row">
+          <a href="#" class="dash-block-item" id="link-applications">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>
+            </svg>
+            Applications
+          </a>
           <a href="#" class="dash-block-item" id="link-ai-resume">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
             </svg>
             Tailor CV
           </a>
           <a href="#" class="dash-block-item" id="link-cover-letter">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 4h16v16H4z"/><path d="M4 6l8 7 8-7"/>
             </svg>
             Cover letter
-          </a>
-          <a href="#" class="dash-block-item" id="link-analytics">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
-            </svg>
-            Analytics
           </a>
         </div>
       </div>
@@ -157,13 +163,13 @@
           <label for="phoneCountryCode">Country code</label>
           <select id="phoneCountryCode">
             <!-- North America -->
-            <optgroup label="🌎 North America">
+            <optgroup label="North America">
               <option value="+1">United States (+1)</option>
               <option value="+1">Canada (+1)</option>
             </optgroup>
 
             <!-- Europe -->
-            <optgroup label="🌍 Europe">
+            <optgroup label="Europe">
               <option value="+355">Albania (+355)</option>
               <option value="+376">Andorra (+376)</option>
               <option value="+43">Austria (+43)</option>
@@ -210,7 +216,7 @@
             </optgroup>
 
             <!-- Asia -->
-            <optgroup label="🌏 Asia">
+            <optgroup label="Asia">
               <option value="+93">Afghanistan (+93)</option>
               <option value="+374">Armenia (+374)</option>
               <option value="+994">Azerbaijan (+994)</option>
@@ -244,7 +250,7 @@
             </optgroup>
 
             <!-- Middle East -->
-            <optgroup label="🏜️ Middle East">
+            <optgroup label="Middle East">
               <option value="+973">Bahrain (+973)</option>
               <option value="+20">Egypt (+20)</option>
               <option value="+98">Iran (+98)</option>
@@ -262,7 +268,7 @@
             </optgroup>
 
             <!-- Africa -->
-            <optgroup label="🌍 Africa">
+            <optgroup label="Africa">
               <option value="+213">Algeria (+213)</option>
               <option value="+244">Angola (+244)</option>
               <option value="+229">Benin (+229)</option>
@@ -300,7 +306,7 @@
             </optgroup>
 
             <!-- Oceania -->
-            <optgroup label="🌊 Oceania">
+            <optgroup label="Oceania">
               <option value="+61">Australia (+61)</option>
               <option value="+679">Fiji (+679)</option>
               <option value="+64">New Zealand (+64)</option>
@@ -308,7 +314,7 @@
             </optgroup>
 
             <!-- Latin America & Caribbean -->
-            <optgroup label="🌎 Latin America & Caribbean">
+            <optgroup label="Latin America & Caribbean">
               <option value="+54">Argentina (+54)</option>
               <option value="+591">Bolivia (+591)</option>
               <option value="+55">Brazil (+55)</option>
@@ -500,20 +506,26 @@
     <!-- Premium (free plan only) -->
     <section class="premium-card" id="premium-card">
       <div class="premium-card-header">
-        <span class="premium-badge">Premium</span>
-        <h3>Let AI answer the hard questions</h3>
+        <span class="card-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/></svg>
+        </span>
+        <div>
+          <span class="premium-badge">Premium</span>
+          <h3>Let AI handle the hard parts</h3>
+        </div>
       </div>
       <ul class="premium-features">
         <li><a href="#" class="premium-feature-link" data-section="upgrade">AI answers to screening questions during auto-apply</a></li>
-        <li><a href="#" class="premium-feature-link" data-section="cv-generator">30 AI credits a month for tailored CVs</a></li>
-        <li><a href="#" class="premium-feature-link" data-section="cover-letter">AI cover letters, written from each job description</a></li>
+        <li><a href="#" class="premium-feature-link" data-section="cv-generator">30 AI credits a month: a tailored CV for each job</a></li>
+        <li><a href="#" class="premium-feature-link" data-section="cover-letter">AI cover letters written from each job description</a></li>
       </ul>
-      <a href="#" id="premium-upgrade-link" class="btn btn-primary btn-block btn-sm">See Premium plans</a>
+      <a href="#" id="premium-upgrade-link" class="btn btn-primary btn-block btn-sm"><span>See Premium — from <span id="premium-price">$6.99</span>/month</span></a>
+      <p class="premium-note">Cancel anytime.</p>
     </section>
 
     <!-- Footer -->
     <footer class="footer">
-      <a href="https://chromewebstore.google.com/detail/autoapplymax/oeaobljpdipleeanlfjppmlokkajodbk/reviews" target="_blank" class="footer-link">★ Leave a review</a>
+      <a href="https://chromewebstore.google.com/detail/autoapplymax/oeaobljpdipleeanlfjppmlokkajodbk/reviews" target="_blank" class="footer-link"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z"/></svg> Leave a review</a>
       <a href="https://www.autoapplymax.com/contact?subject=Bug%20Report&source=extension" target="_blank" class="footer-link" id="report-bug-btn">Report a bug</a>
       <span class="footer-version">AutoApplyMax <span id="ext-version">v2.5.88</span></span>
     </footer>
