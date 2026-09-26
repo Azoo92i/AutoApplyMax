@@ -1012,7 +1012,16 @@
         // Bot stopped during processing?
         if (!state.isRunning) break;
 
-        // Next page
+        // Next page — only when the popup's "Auto next page" toggle is on (default on).
+        if (state.config && state.config.autoNextPage === false) {
+          state.log('Auto next page is off — stopping at the end of this page');
+          await stopBot('Auto next page disabled', {
+            title: 'Finished this page',
+            body: '"Auto next page" is turned off in the extension settings, so the bot stopped at the end of this page.',
+            tone: 'info',
+          });
+          break;
+        }
         state.log('Looking for next page...');
         const nextPageOk = await adapter.goToNextPage();
         if (nextPageOk) {
@@ -1308,10 +1317,14 @@
               console.warn('[EAM] cross-tab mutex read failed, proceeding:', mutexErr?.message);
             }
 
+            // v2.5.88: + gender (form-filler / AI prompt read it but it was never
+            // loaded → always empty during auto-apply) + autoNextPage (popup toggle
+            // was saved but never honored — the bot always paginated).
             state.config = await chrome.storage.sync.get([
-              'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode',
+              'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'gender',
               'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'city', 'country', 'expectedSalary',
-              'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense'
+              'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense',
+              'autoNextPage'
             ]);
             // v2.5.87: ground AI screening answers in the real CV (education,
             // experience, skills). Auto-apply never loaded cvProfile, so the AI

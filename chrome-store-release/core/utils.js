@@ -201,7 +201,13 @@
     if (keywords.length === 0) return false;
     const jobText = (title + ' ' + company + ' ' + description).toLowerCase();
     for (const keyword of keywords) {
-      if (jobText.includes(keyword)) {
+      // v2.5.88: whole-word match (was substring: "intern" skipped every
+      // "international" job, "chef" skipped "Chef de projet"… via the description).
+      const esc = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+      let hit;
+      try { hit = new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '($|[^\\p{L}\\p{N}])', 'iu').test(jobText); }
+      catch (_) { hit = jobText.includes(keyword); }
+      if (hit) {
         log(`Skip (Blacklist): "${keyword}" found in job`);
         log(`   Title: ${title.substring(0, 50)}`);
         return true;

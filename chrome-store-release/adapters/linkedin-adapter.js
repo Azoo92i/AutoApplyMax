@@ -857,6 +857,20 @@
         link = jobCard.querySelector('a');
       }
       const idBefore = (window.location.href.match(/currentJobId=(\d+)/) || [])[1] || null;
+      // v2.5.88: same early exit as the search-results branch. The first card is
+      // usually the job already open in the right pane (URL ?currentJobId=X), so a
+      // click cannot change the id → it was skipped as "stale" (seen live 2026-09-26
+      // 14:30 on /jobs/search/, Job 1/25). The pane is already loaded → proceed.
+      try {
+        const cardJobId = (jobCard.getAttribute && (jobCard.getAttribute('data-occludable-job-id') || jobCard.getAttribute('data-job-id')))
+          || jobCard.querySelector?.('[data-job-id]')?.getAttribute('data-job-id')
+          || ((link && link.href) || '').match(/\/jobs\/view\/(\d+)/)?.[1]
+          || null;
+        if (cardJobId && idBefore && String(cardJobId) === String(idBefore)) {
+          console.log('[EAM] clickJobCard: card ' + cardJobId + ' already URL-focused → skip click, proceed');
+          return true;
+        }
+      } catch (_) {}
       if (link) {
         await u().click(link);
       } else {
