@@ -527,11 +527,10 @@
     //      signed in / hasn't synced CV; clicking opens dashboard so the
     //      auto-sync flow runs).
     const hasScore = !!(result && result.total > 0);
-    // Line sparkle icon (currentColor) instead of the emoji — Théo 2026-09-26.
-    const spark = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/></svg>';
+    // v2.5.92: back to the 2.5.90 look (emoji kept on this one button — Théo 2026-09-27).
     btn.innerHTML = hasScore
-      ? `${spark}${result.score}% Match · Tailor CV`
-      : `${spark}Get job match score`;
+      ? `✨&nbsp;${result.score}% Match · Tailor CV`
+      : `✨&nbsp;Get job match score`;
     const tooltip = result && result.total > 0
       ? `Open AutoApplyMax with this job pre-filled. ${result.matched.length}/${result.total} keywords match your CV.${result.missing.length ? ' Top missing: ' + result.missing.slice(0, 5).join(', ') : ''}`
       : 'Open AutoApplyMax with this job description pre-filled';

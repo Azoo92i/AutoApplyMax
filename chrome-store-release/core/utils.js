@@ -473,6 +473,49 @@
   // Returns { placed: bool, chip: HTMLElement | null }. Falls back to
   // _replaceRateLimitContent when there's no Easy Apply anchor
   // (e.g. rate-limit fired outside a job detail page).
+  // ─── v2.5.92: in-page placement rules (Théo 2026-09-27) ────────────────
+  // Our pause / daily-limit / stop messages live IN the page: a strip under
+  // the Easy Apply row, else a strip at the top of the job details pane,
+  // else nothing in-page (the popup + toolbar badge carry it). Never a
+  // popup rewritten in place, never a card pinned to a screen corner, and
+  // LinkedIn's application window (a dialog holding the form) is never
+  // hidden or rewritten — rewriting it broke the Easy Apply window before.
+  const APP_DIALOG_SEL = '.jobs-easy-apply-modal, [data-test-modal-id="easy-apply-modal"], .jobs-easy-apply-content';
+  function _isApplicationDialog(node) {
+    try {
+      if (!node || !node.querySelector) return false;
+      if (node.closest && node.closest(APP_DIALOG_SEL)) return true;
+      return !!node.querySelector(APP_DIALOG_SEL + ', input:not([type="hidden"]), select, textarea');
+    } catch (_) { return false; }
+  }
+  function _findDetailPane() {
+    const sels = [
+      '.jobs-search__job-details--container', '.jobs-search__job-details', '.scaffold-layout__detail',
+      '.jobs-details', '.job-view-layout', '[class*="jobs-details__main-content"]', '[data-view-name="job-details"]',
+    ];
+    for (const sel of sels) {
+      const hit = [...document.querySelectorAll(sel)].find(e => {
+        try { const r = e.getBoundingClientRect(); return r.width > 280 && r.height > 120 && !e.closest('[data-eam-rl-chip],[data-eam-bot-notice]'); } catch (_) { return false; }
+      });
+      if (hit) return hit;
+    }
+    return null;
+  }
+  // Returns 'below-actions' | 'detail-pane' | null.
+  function _placeInPage(node) {
+    try {
+      const anchor = _findEasyApplyAnchor();
+      if (anchor && _insertBelowActionsRow(node, anchor)) return 'below-actions';
+      const pane = _findDetailPane();
+      if (pane) {
+        node.style.margin = '12px 16px 4px';
+        pane.insertBefore(node, pane.firstChild);
+        return 'detail-pane';
+      }
+    } catch (_) {}
+    return null;
+  }
+
   function _dismissAndInlineChip(el, mode) {
     try {
       // Step 1 — dismiss LinkedIn's dialog. Prefer clicking its own
@@ -487,34 +530,23 @@
         return [...btns].find(b => /^got it$|^j.ai compris$|^fermer$|^ok$|^close$/i.test((b.textContent || '').trim())) || null;
       };
       const dialog = el.closest && (el.closest('[role="dialog"], .artdeco-modal, .artdeco-toast-item') || el);
-      const dismissBtn = findDismissBtn(dialog) || findDismissBtn(document);
+      // v2.5.92: a warning shown INSIDE the application window is left alone
+      // (no click on its buttons, no hiding) — the engine discards that
+      // application itself; touching it broke LinkedIn's Easy Apply window.
+      const inAppWindow = _isApplicationDialog(dialog);
+      const dismissBtn = inAppWindow ? null : (findDismissBtn(dialog) || null);
       if (dismissBtn) {
         try { dismissBtn.click(); } catch (_) {}
       }
-      // Two hide helpers — chip path is aggressive (kill everything); fallback
-      // path only hides the dim overlay backdrop, keeping el + dialog visible
-      // so _replaceRateLimitContent can render our shadow-DOM banner inside
-      // el without a black backdrop competing for attention.
-      const hideOverlayBackdropOnly = () => {
+      // v2.5.92: hide LinkedIn's standalone warning (toast / small dialog
+      // with no form) so it doesn't sit next to ours — but never an ancestor
+      // of the Easy Apply control or of our strip, never the application
+      // window, never an overlay that belongs to the apply window.
+      const hideStandaloneWarning = (keep) => {
+        if (inAppWindow) return;
         try {
-          // Kill only sibling backdrop overlays that are NOT ancestors of el
-          // — hiding an ancestor cascades display:none onto el and blanks
-          // our injected banner.
-          document.querySelectorAll('.artdeco-modal-overlay, [data-test-modal-container]').forEach(o => {
-            if (o.contains(el)) return; // ancestor — leave alone
-            o.style.setProperty('display', 'none', 'important');
-            o.setAttribute('data-eam-hidden', 'rate-limit');
-          });
-        } catch (_) {}
-      };
-      const forceHide = (keep) => {
-        try {
-          // v2.5.88: never hide an ANCESTOR of our chip / the Easy Apply control.
-          // On /jobs/search/ the matched "applying at a fast pace" element can be a
-          // container that also holds the Easy Apply row → display:none blanked the
-          // row AND our chip (live 2026-09-26 15:03: chip in DOM, invisible). In
-          // that case hide only LinkedIn's own message nodes inside it.
           const hideEl = (node) => {
+            if (!node || _isApplicationDialog(node)) return;
             const holdsOurs = (keep || []).some(k => k && node.contains(k));
             if (!holdsOurs) { node.style.setProperty('display', 'none', 'important'); node.setAttribute('data-eam-hidden', 'rate-limit'); return; }
             node.querySelectorAll('.artdeco-inline-feedback, [role="alert"], .artdeco-toast-item').forEach(m => {
@@ -524,73 +556,56 @@
           };
           hideEl(el);
           if (dialog && dialog !== el) hideEl(dialog);
-          document.querySelectorAll('.artdeco-modal-overlay, [data-test-modal-container]').forEach(o => {
-            o.style.setProperty('display', 'none', 'important');
-            o.setAttribute('data-eam-hidden', 'rate-limit');
-          });
+          // The dim backdrop of that warning dialog — only when no application
+          // window is open behind it.
+          if (!document.querySelector(APP_DIALOG_SEL)) {
+            document.querySelectorAll('.artdeco-modal-overlay, [data-test-modal-container]').forEach(o => {
+              if ((keep || []).some(k => k && o.contains(k))) return;
+              o.style.setProperty('display', 'none', 'important');
+              o.setAttribute('data-eam-hidden', 'rate-limit');
+            });
+          }
         } catch (_) {}
       };
 
-      // Step 2 — find the Easy Apply anchor. LinkedIn selector rot is
-      // real (memory linkedin_selector_rot_2026_08) — try several.
-      // v2.5.87: shared finder — also matches the Aug-2026 <a aria-label=
-      // "Easy Apply to this job"> on /jobs/search-results/ (the button-only
-      // lookup missed it) and never the "Easy Apply" filter chip in the toolbar.
-      const easyApplyBtn = _findEasyApplyAnchor();
-
-      if (!easyApplyBtn) {
-        // No anchor — fall back to old in-place replacement so the user
-        // still sees the message, just not next to Easy Apply. Also hide
-        // sibling backdrop overlays that would compete for attention with
-        // our shadow-DOM banner (but never ancestors of el, or el would
-        // cascade to display:none).
-        const result = _replaceRateLimitContent(el, mode);
-        hideOverlayBackdropOnly();
-        return result;
-      }
-
-      // Step 3 — idempotent: one chip at a time.
+      // Step 2 — idempotent: one strip at a time.
       document.querySelectorAll('[data-eam-rl-chip]').forEach(n => n.remove());
 
-      // Step 4 — build the chip. Neutral amber for pause, green for
-      // daily-cap. Sits inline in the same row as Easy Apply.
+      // Step 3 — build the strip. Amber for pause, green for the daily cap.
       const chipCopy = mode === 'daily' ? {
-        title: 'Daily LinkedIn limit reached',
-        body: 'Bot stopped. Click Start again once Easy Apply is back (usually within a day).',
+        title: 'LinkedIn daily Easy Apply limit reached',
+        body: 'Try again tomorrow.',
         bg: '#ecfdf5', border: '#a7f3d0', fg: '#065f46',
+        icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
       } : {
-        title: 'Bot paused',
-        body: 'Resumes in a few minutes to stay under LinkedIn\'s rate limit.',
+        title: 'Auto-apply paused',
+        body: 'LinkedIn asked us to slow down — resumes automatically in a few minutes.',
         bg: '#fef3c7', border: '#fcd34d', fg: '#92400e',
+        icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>',
       };
-      const chip = document.createElement('span');
-      chip.setAttribute('data-eam-rl-chip', '1');
+      const chip = document.createElement('div');
+      chip.setAttribute('data-eam-rl-chip', mode === 'daily' ? 'daily' : 'rate');
       chip.setAttribute('role', 'status');
       chip.setAttribute('aria-live', 'polite');
-      chip.style.cssText = 'display:flex;width:fit-content;max-width:100%;box-sizing:border-box;align-items:center;gap:8px;margin:8px 0 0 0;padding:6px 12px;background:' + chipCopy.bg + ';border:1px solid ' + chipCopy.border + ';color:' + chipCopy.fg + ';border-radius:16px;font:600 12px/1.2 ' + AAM_FONT + ';white-space:nowrap;vertical-align:middle;box-shadow:0 1px 2px rgba(15,23,42,0.06)';
-      const icon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+      chip.style.cssText = 'display:flex;width:fit-content;max-width:100%;box-sizing:border-box;align-items:center;gap:8px;margin:8px 0 0 0;padding:7px 12px;background:' + chipCopy.bg + ';border:1px solid ' + chipCopy.border + ';color:' + chipCopy.fg + ';border-radius:16px;font:600 12px/1.35 ' + AAM_FONT + ';white-space:normal;box-shadow:0 1px 2px rgba(15,23,42,0.06)';
       const closeIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-      chip.innerHTML = icon +
+      chip.innerHTML = '<span style="display:inline-flex;flex-shrink:0">' + chipCopy.icon + '</span>' +
         '<span><strong style="font-weight:700">' + chipCopy.title + '</strong> — ' + chipCopy.body + '</span>' +
-        '<button data-eam-chip-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:2px;line-height:1;color:' + chipCopy.fg + ';opacity:0.6">' + closeIcon + '</button>';
+        '<button data-eam-chip-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:2px;line-height:1;color:' + chipCopy.fg + ';opacity:0.6;display:inline-flex">' + closeIcon + '</button>';
       chip.querySelector('[data-eam-chip-close]')?.addEventListener('click', () => { try { chip.remove(); } catch (_) {} });
 
-      // Step 5 — inject inline after the Easy Apply button, THEN force-hide
-      // LinkedIn's original popup + overlay so they don't coexist with the
-      // chip. Bug #889 (2026-09-20): dismiss-btn click alone left LinkedIn's
-      // popup rendered on top of our chip on the old /jobs/search/ layout.
-      easyApplyBtn.setAttribute('data-eam-rl-anchor', '1');
-      // v2.5.87: placed BELOW the Easy Apply / Save / Match row, not inside
-      // it — inside the row it stretched the row and squeezed Save + Match·
-      // Tailor (overlap/clip seen 2026-09-24 on /jobs/search/).
-      _insertBelowActionsRow(chip, easyApplyBtn);
-      forceHide([chip, easyApplyBtn]);
-
-      return { placed: true, mode: 'inline-chip', chip };
+      // Step 4 — place it in the page (under Easy Apply, else at the top of
+      // the job details pane). The Easy Apply control itself is never touched.
+      const where = _placeInPage(chip);
+      const anchor = where === 'below-actions' ? _findEasyApplyAnchor() : null;
+      if (anchor) anchor.setAttribute('data-eam-rl-anchor', '1');
+      hideStandaloneWarning([chip, anchor].filter(Boolean));
+      if (!where) return { placed: false, mode: 'popup-only' };
+      return { placed: true, mode: where === 'below-actions' ? 'inline-chip' : 'detail-pane', chip };
     } catch (e) {
-      // Any failure — fall back to old behavior so the user still sees
-      // SOMETHING and the bot doesn't silently bail.
-      return _replaceRateLimitContent(el, mode);
+      // Never fall back to rewriting LinkedIn's window — the popup + toolbar
+      // badge still tell the user what is going on.
+      return { placed: false, mode: 'error', error: e && e.message };
     }
   }
   // Remove any inline chip we injected — engine.js calls this when the
@@ -684,7 +699,9 @@
     try {
       const banner = document.createElement('div');
       banner.id = 'eam-easy-apply-hint';
-      banner.style.cssText = 'position:fixed;top:80px;right:20px;z-index:2147483646;background:linear-gradient(135deg,#fefce8,#fef3c7);border:1px solid #fbbf24;border-radius:10px;padding:14px 18px;max-width:340px;box-shadow:0 8px 24px rgba(180,120,10,0.18);font-family:' + AAM_FONT + ';color:#78350f;font-size:13px;line-height:1.45';
+      // v2.5.92: in the page (top of the job details pane), never a card
+      // pinned to a screen corner.
+      banner.style.cssText = 'box-sizing:border-box;max-width:520px;background:#fefce8;border:1px solid #fcd34d;border-radius:12px;padding:10px 14px;font-family:' + AAM_FONT + ';color:#78350f;font-size:13px;line-height:1.45';
       banner.innerHTML =
         '<div style="display:flex;gap:10px;align-items:flex-start">' +
         '<span style="display:inline-flex;flex-shrink:0;color:#b45309">' + AAM_ICON.info + '</span>' +
@@ -698,7 +715,10 @@
         try { sessionStorage.setItem('eam-easy-apply-hint-dismissed', '1'); } catch (_) {}
         banner.remove();
       });
-      document.body.appendChild(banner);
+      const pane = _findDetailPane();
+      if (!pane) return;
+      banner.style.margin = '12px 16px 4px';
+      pane.insertBefore(banner, pane.firstChild);
       setTimeout(() => banner.remove(), 25000);
     } catch (_) {}
   }
@@ -762,18 +782,17 @@
         : { bg: '#fef3c7', border: '#fcd34d', fg: '#92400e' };
       const esc = (s) => String(s || '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
       const closeBtn = '<button data-eam-notice-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:0 2px;line-height:1;opacity:0.6;display:inline-flex">' + AAM_ICON.close + '</button>';
-      const anchor = _findEasyApplyAnchor();
-      const n = document.createElement(anchor ? 'span' : 'div');
+      const n = document.createElement('div');
       n.setAttribute('data-eam-bot-notice', '1');
       n.setAttribute('role', 'status');
       n.setAttribute('aria-live', 'polite');
       n.innerHTML = '<span style="display:inline-flex;flex-shrink:0">' + AAM_ICON.info + '</span><span><strong style="font-weight:700">AutoApplyMax — ' + esc(title) + '</strong><br>' + esc(body) + '</span>' + closeBtn;
-      const base = 'align-items:flex-start;gap:8px;padding:8px 12px;background:' + c.bg + ';border:1px solid ' + c.border + ';color:' + c.fg + ';border-radius:12px;font:500 12px/1.4 ' + AAM_FONT + ';box-shadow:0 1px 2px rgba(15,23,42,0.06);max-width:360px;white-space:normal';
+      const base = 'align-items:flex-start;gap:8px;padding:8px 12px;background:' + c.bg + ';border:1px solid ' + c.border + ';color:' + c.fg + ';border-radius:12px;font:500 12px/1.4 ' + AAM_FONT + ';box-shadow:0 1px 2px rgba(15,23,42,0.06);max-width:420px;white-space:normal';
       n.style.cssText = 'display:flex;width:fit-content;box-sizing:border-box;margin:8px 0 0 0;' + base;
-      if (!anchor || !_insertBelowActionsRow(n, anchor)) {
-        n.style.cssText = 'display:flex;position:fixed;top:80px;right:20px;z-index:2147483646;' + base;
-        document.body.appendChild(n);
-      }
+      // v2.5.92: in the page only (under Easy Apply / top of the job pane) —
+      // no card pinned to a screen corner. Nowhere to put it → the popup
+      // shows the same reason.
+      if (!_placeInPage(n)) return null;
       n.querySelector('[data-eam-notice-close]')?.addEventListener('click', () => { try { n.remove(); } catch (_) {} });
       return n;
     } catch (_) { return null; }
@@ -1008,17 +1027,10 @@
       const hit = _scanRateLimitModalsOnly(rateLimitPatterns) || _structuralRateLimit();
       if (hit) {
         log(`Rate-limit safeguard triggered — replacing LinkedIn popup content. Pattern: "${hit.pattern}"`);
-        // Capture the toast/dialog's bounding rect BEFORE mutating (in case
-        // fallback path fires and we need to pin our floating banner at the
-        // same viewport corner).
-        let rect = null;
-        try { rect = hit.element.getBoundingClientRect(); } catch (_) {}
-        // v2.5.85: prefer inline chip next to Easy Apply. Falls back to
-        // in-place replacement internally when no anchor is found.
-        const result = _dismissAndInlineChip(hit.element);
-        if (!result || (!result.placed && !result.replaced)) {
-          _showFriendlyRateLimitBanner(rect);
-        }
+        // v2.5.92: strip in the page (under Easy Apply, else top of the job
+        // pane) — no corner banner, no rewritten LinkedIn window. When it
+        // can't be placed, the popup + toolbar badge show the pause.
+        _dismissAndInlineChip(hit.element);
         return true;
       }
       return false;
@@ -1117,7 +1129,18 @@
   }
 
   // ─── Export as namespace ──────────────────────────────────────────────
+  // v2.5.92: a CV summary that is really a job description (pasted by
+  // mistake: "Looking for someone with…", "…required") must never be sent to
+  // an employer as the candidate's own text.
+  function cleanProfileSummary(s) {
+    const t = String(s || '').trim();
+    if (!t) return '';
+    if (/\b(looking for (someone|a |an )|we(?:'re| are) (looking|hiring|seeking)|you will\b|must have\b|requirements?\b|responsibilities\b|required\b|the ideal candidate|job description)/i.test(t)) return '';
+    return t;
+  }
+
   window.EAM.utils = {
+    cleanProfileSummary,
     // Logging & waiting
     log,
     wait,
@@ -1152,6 +1175,9 @@
     _restoreHiddenRateLimit,
     _removeInlineChip,
     _dismissAndInlineChip,
+    _placeInPage,
+    _isApplicationDialog,
+    _findDetailPane,
     _showEasyApplyFilterHint,
     _showBotNotice,
     _clearBotNotice,

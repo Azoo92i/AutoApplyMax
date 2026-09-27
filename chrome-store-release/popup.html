@@ -47,6 +47,10 @@
         <div class="run-stats">
           <span class="stat"><b id="applied-count">0</b> applied</span>
           <span class="stat"><b id="skipped-count">0</b> skipped</span>
+          <span class="stat stat-streak" id="streak" title="Weekdays in a row with at least one application (from this browser)" hidden>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.2 1-3.6 2.2-4.8.4 1.6 1.3 2.6 2.3 2.8C11 7.5 11.2 4.6 12 2z"/></svg>
+            <span><b id="streak-count">0</b>-day streak</span>
+          </span>
         </div>
       </div>
 
@@ -58,17 +62,33 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
         Stop auto-apply
       </button>
-      <p class="run-hint">LinkedIn Easy Apply only · <a href="#" id="open-linkedin-search">Find Easy Apply jobs&nbsp;→</a></p>
+      <p class="run-hint">LinkedIn Easy Apply — <a href="#" id="open-linkedin-search">Find jobs&nbsp;→</a></p>
 
-      <div class="autofill-row">
-        <button id="autofill-btn" class="btn btn-secondary">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Autofill this form
-        </button>
-        <span class="autofill-help">Fills any application form on any site — you review and submit.</span>
+      <!-- Context-aware second action (popup.js sets body[data-context]):
+           LinkedIn job page → Tailor CV for this job; any other site →
+           Autofill this form + Track this job. -->
+      <div class="secondary-actions">
+        <div class="sa-row sa-linkedin">
+          <button id="tailor-cv-btn" class="btn btn-soft btn-block">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg>
+            Tailor my CV to this job
+          </button>
+        </div>
+        <div class="sa-row sa-other">
+          <button id="autofill-btn" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Autofill this form
+          </button>
+          <button id="track-job-btn" class="btn btn-secondary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+            Track this job
+          </button>
+        </div>
+        <p class="sa-help sa-linkedin">Opens your CV generator with this job pre-filled.</p>
+        <p class="sa-help sa-other">Autofill fills any application form on any site — you review and submit. Track saves the job to your dashboard.</p>
       </div>
     </section>
 
@@ -96,39 +116,30 @@
       <div id="track-auto" class="track-auto" style="display:none"></div>
     </div>
 
-    <!-- Dashboard shortcuts -->
+    <!-- Dashboard shortcuts — three tiles + "open dashboard" -->
     <nav class="dashboard-links" aria-label="Dashboard shortcuts">
-      <div class="dash-block">
-        <a href="#" class="dash-block-header" id="link-dashboard">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
-            <rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>
-          </svg>
-          <span>Open your dashboard</span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dash-external-icon">
-            <path d="M7 17L17 7M9 7h8v8"/>
-          </svg>
+      <div class="dash-head">
+        <span class="dash-title">Your dashboard</span>
+        <a href="#" class="dash-open" id="link-dashboard">Open
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg>
         </a>
-        <div class="dash-block-row">
-          <a href="#" class="dash-block-item" id="link-applications">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>
-            </svg>
-            Applications
-          </a>
-          <a href="#" class="dash-block-item" id="link-ai-resume">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
-            </svg>
-            Tailor CV
-          </a>
-          <a href="#" class="dash-block-item" id="link-cover-letter">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 4h16v16H4z"/><path d="M4 6l8 7 8-7"/>
-            </svg>
-            Cover letter
-          </a>
-        </div>
+      </div>
+      <div class="dash-tiles">
+        <a href="#" class="dash-tile" id="link-applications">
+          <span class="dash-tile-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg></span>
+          <span class="dash-tile-label">Applications</span>
+          <span class="dash-tile-sub">Track them all</span>
+        </a>
+        <a href="#" class="dash-tile" id="link-ai-resume">
+          <span class="dash-tile-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
+          <span class="dash-tile-label">Tailor CV</span>
+          <span class="dash-tile-sub">AI, per job</span>
+        </a>
+        <a href="#" class="dash-tile" id="link-ats-score">
+          <span class="dash-tile-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></span>
+          <span class="dash-tile-label">ATS score</span>
+          <span class="dash-tile-sub">Check your CV</span>
+        </a>
       </div>
     </nav>
 
@@ -479,8 +490,8 @@
     <!-- Applied tab -->
     <div id="applied-tab" class="tab-content">
       <div class="applied-jobs-header">
-        <h3>Applied on this browser (<span id="applied-jobs-count">0</span>)</h3>
-        <button id="clear-applied-jobs" class="btn-small">Clear</button>
+        <h3>Latest applications</h3>
+        <span class="applied-total"><span id="applied-jobs-count">0</span> on this browser</span>
       </div>
 
       <div id="applied-jobs-list" class="applied-jobs-list">
@@ -489,10 +500,11 @@
           <small>Start auto-apply on LinkedIn and they'll show up here.</small>
         </div>
       </div>
-      <a href="#" id="view-dashboard-applications" class="view-dashboard-link">
-        See every application &amp; its status on your dashboard
+      <a href="#" id="view-dashboard-applications" class="btn btn-primary btn-block btn-sm view-all-apps">
+        See all your applications
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg>
       </a>
+      <p class="applied-note">Statuses, interviews and every application from all your devices live on your dashboard.</p>
     </div>
 
     <!-- Auto-save indicator -->
@@ -515,11 +527,12 @@
         </div>
       </div>
       <ul class="premium-features">
-        <li><a href="#" class="premium-feature-link" data-section="upgrade">AI answers to screening questions during auto-apply</a></li>
-        <li><a href="#" class="premium-feature-link" data-section="cv-generator">30 AI credits a month: a tailored CV for each job</a></li>
+        <li><a href="#" class="premium-feature-link" data-section="upgrade">AI answers screening questions during auto-apply — fewer skipped jobs</a></li>
+        <li><a href="#" class="premium-feature-link" data-section="cv-generator">A tailored AI CV for every job</a></li>
         <li><a href="#" class="premium-feature-link" data-section="cover-letter">AI cover letters written from each job description</a></li>
+        <li><a href="#" class="premium-feature-link" data-section="upgrade">30 AI credits a month instead of 2</a></li>
       </ul>
-      <a href="#" id="premium-upgrade-link" class="btn btn-primary btn-block btn-sm"><span>See Premium — from <span id="premium-price">$6.99</span>/month</span></a>
+      <a href="#" id="premium-upgrade-link" class="btn btn-primary btn-block btn-sm"><span>Go Premium — <span id="premium-price">$6.99</span>/month</span></a>
       <p class="premium-note">Cancel anytime.</p>
     </section>
 

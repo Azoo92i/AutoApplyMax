@@ -216,26 +216,28 @@ const OB_STEPS = [
   {
     icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
     title: 'Create your free account',
-    text: 'Your applications, CV and AI credits stay in sync between this extension and your dashboard.',
-    points: ['Every application tracked on your dashboard', 'A CV tailored to each job with AI', 'Uses the profile you already filled in'],
+    text: 'Optional, but recommended: your applications, CV and AI credits stay in sync between this extension and your dashboard.',
+    points: ['Every application tracked on your dashboard', 'A CV tailored to each job with AI', 'Your info pre-filled from your account'],
     primary: { label: 'Sign up free', url: '/auth.html?mode=signup&src=ext_onboarding' },
     secondary: { label: 'I already have an account — sign in', url: '/auth.html?src=ext_onboarding' },
+    later: 'Continue without an account',
     doneWhenSignedIn: 'You\'re signed in',
   },
   {
-    icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg>',
-    title: 'Check your profile & CV',
-    text: 'Auto-apply fills each form with your details. The more complete your profile, the fewer applications get skipped.',
-    points: ['Name, email, phone and city', 'Years of experience and work authorization', 'Your CV, uploaded once'],
-    primary: { label: 'Review my profile on the dashboard', url: '/dashboard.html#smart-profile' },
-    secondary: { label: 'Fill it in the extension instead', action: 'personal' },
+    icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+    title: 'Fill in your info',
+    text: 'Auto-apply answers each application with these details. The more complete they are, the fewer applications get skipped.',
+    points: ['Name, email, phone and city', 'Years of experience and expected salary', 'Work authorization, notice period, relocation'],
+    primary: { label: 'Fill my info', action: 'personal' },
+    secondary: { label: 'Review my full profile on the dashboard', url: '/dashboard.html#smart-profile' },
   },
   {
     icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l14 8-14 8V4z"/></svg>',
-    title: 'Open LinkedIn Easy Apply jobs',
-    text: 'Search for your role with the Easy Apply filter, then open this extension and click <b>Start auto-apply</b>.',
-    note: '<b>Applying on another site?</b> Open the application form and click <b>Autofill this form</b> — it works on any site: the extension fills it, you review and submit. Click <b>?</b> at the top any time for a refresher.',
-    primary: { label: 'Open Easy Apply jobs on LinkedIn', url: 'https://www.linkedin.com/jobs/search/?f_AL=true', external: true, finish: true },
+    title: 'Start auto-applying',
+    text: 'Open LinkedIn jobs with the Easy Apply filter, then open this extension and click <b>Start auto-apply</b>.',
+    note: '<b>Applying on another site?</b> Open the application form and click <b>Autofill this form</b> — the extension fills it, you review and submit. Click <b>?</b> at the top any time for a refresher.',
+    primary: { label: 'Find Easy Apply jobs on LinkedIn', linkedin: true, finish: true },
+    secondary: { label: 'Finish — I\'ll open LinkedIn later', finishOnly: true },
   },
 ];
 
@@ -270,6 +272,20 @@ function showOnboarding(startStep = 0, signedIn = false) {
     overlay.remove();
   }
 
+  // Step 2: go straight to "Your info" (pre-filled from the account when
+  // signed in); the flow resumes on "Start auto-applying" at the next open.
+  async function goFillInfo() {
+    step = 2; saveStep(step);
+    overlay.remove();
+    document.querySelector('[data-tab="personal"]')?.click();
+    try {
+      if (signedIn && window.prefillFromAccountFromSession) await window.prefillFromAccountFromSession();
+    } catch (_) {}
+    const first = ['firstName', 'lastName', 'email', 'phone', 'city'].map(id => document.getElementById(id)).find(el => el && !el.value.trim());
+    (first || document.getElementById('firstName'))?.focus();
+    try { showToast('Fill in your info — it saves automatically. Reopen the extension to finish setup.', 'info', 5000); } catch (_) {}
+  }
+
   function render() {
     const s = OB_STEPS[step];
     const progress = OB_STEPS.map((_, i) => '<span class="' + (i <= step ? 'done' : '') + '"></span>').join('');
@@ -292,15 +308,25 @@ function showOnboarding(startStep = 0, signedIn = false) {
         points + note +
         '<div class="ob-actions">' +
           '<button type="button" class="btn btn-primary btn-block" id="ob-primary">' + primaryLabel + '</button>' +
+          // "Continue without an account" carries the same weight as sign-up
+          // (Théo 2026-09-27: never force the sign-up).
+          (s.later && !(step === 0 && signedIn) ? '<button type="button" class="btn btn-secondary btn-block" id="ob-later">' + s.later + '</button>' : '') +
           (s.secondary && !(step === 0 && signedIn) ? '<button type="button" class="ob-link" id="ob-secondary">' + s.secondary.label + '</button>' : '') +
-          (step > 0 ? '<button type="button" class="ob-link" id="ob-back">← Back</button>'
-                    : '<button type="button" class="ob-link" id="ob-open-dashboard">I\'ll do it later</button>') +
+          (step > 0 ? '<button type="button" class="ob-link" id="ob-back">← Back</button>' : '') +
         '</div>' +
       '</div>';
 
     overlay.querySelector('#close-onboarding').addEventListener('click', finish);
     overlay.querySelector('#ob-primary').addEventListener('click', async () => {
       if (step === 0 && signedIn) { step = 1; saveStep(step); render(); return; }
+      if (s.primary.action === 'personal') { await goFillInfo(); return; }
+      if (s.primary.linkedin) {
+        let url = 'https://www.linkedin.com/jobs/search/?f_AL=true';
+        try { if (window.buildLinkedInSearchUrl) url = await window.buildLinkedInSearchUrl(); } catch (_) {}
+        openUrl(url, true);
+        await finish();
+        return;
+      }
       openUrl(s.primary.url, s.primary.external);
       if (s.primary.finish) { await finish(); return; }
       // Opening a tab closes the popup: resume on the next step next time.
@@ -308,10 +334,14 @@ function showOnboarding(startStep = 0, signedIn = false) {
       saveStep(step);
       render();
     });
+    overlay.querySelector('#ob-later')?.addEventListener('click', () => { step = 1; saveStep(step); render(); });
     overlay.querySelector('#ob-secondary')?.addEventListener('click', async () => {
+      if (s.secondary.finishOnly) { await finish(); return; }
       if (s.secondary.url) {
-        // Sign in (existing account): same resume logic as the primary step.
         openUrl(s.secondary.url, s.secondary.external);
+        // Sign in (step 1) resumes on the next step; "review on the dashboard"
+        // (step 2) keeps the user on "Fill in your info".
+        if (step > 0) return;
         step = Math.min(step + 1, OB_STEPS.length - 1);
         saveStep(step);
         render();
@@ -326,7 +356,6 @@ function showOnboarding(startStep = 0, signedIn = false) {
       }
     });
     overlay.querySelector('#ob-back')?.addEventListener('click', () => { step = Math.max(0, step - 1); saveStep(step); render(); });
-    overlay.querySelector('#ob-open-dashboard')?.addEventListener('click', () => { step = 1; saveStep(step); render(); });
   }
   render();
 }
@@ -343,6 +372,7 @@ const HELP_ICON = {
   list: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg>',
   edit: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
   spark: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/></svg>',
+  doc: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg>',
 };
 const HELP_STEPS = [
   {
@@ -365,10 +395,17 @@ const HELP_STEPS = [
     links: [{ label: 'See my applications', url: '/dashboard#applications' }],
   },
   {
+    icon: HELP_ICON.doc,
+    title: 'Tailor your CV to each job',
+    text: 'On a LinkedIn job page, the <b>Match · Tailor CV</b> button next to Easy Apply shows how well your CV matches that job.',
+    points: ['Click it: your CV generator opens with the job already filled in', 'The AI rewrites your real experience for this job — it never invents', 'Check any CV against a job with the <b>ATS score</b> on your dashboard'],
+    links: [{ label: 'Tailor my CV', url: '/dashboard.html#cv-generator' }, { label: 'ATS score', url: '/dashboard.html#ats-checker' }],
+  },
+  {
     icon: HELP_ICON.edit,
-    title: 'Any other site: Autofill',
+    title: 'Any other site: Autofill or Track',
     text: 'On any job site or career page, open the application form and click <b>Autofill this form</b>.',
-    points: ['Your name, email, phone and links are filled in', '<b>You</b> review the answers and click Submit on the site'],
+    points: ['Your name, email, phone and links are filled in', '<b>You</b> review the answers and click Submit on the site', '<b>Track this job</b> saves it to your dashboard'],
   },
   {
     icon: HELP_ICON.spark,
@@ -421,9 +458,12 @@ function showHelp(startStep = 0) {
     overlay.querySelector('#help-close').addEventListener('click', close);
     overlay.querySelector('#help-next').addEventListener('click', () => { if (last) { close(); return; } step++; render(); });
     overlay.querySelector('#help-back')?.addEventListener('click', () => { step--; render(); });
-    overlay.querySelectorAll('[data-help-link]').forEach(a => a.addEventListener('click', (e) => {
+    overlay.querySelectorAll('[data-help-link]').forEach(a => a.addEventListener('click', async (e) => {
       e.preventDefault();
       const l = s.links[Number(a.getAttribute('data-help-link'))];
+      if (/linkedin\.com\/jobs\/search/.test(l.url) && window.buildLinkedInSearchUrl) {
+        try { openUrl(await window.buildLinkedInSearchUrl(), true); return; } catch (_) {}
+      }
       openUrl(l.url, l.external);
     }));
     overlay.querySelector('#help-next').focus();

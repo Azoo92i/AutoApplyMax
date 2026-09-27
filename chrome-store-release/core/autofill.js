@@ -258,7 +258,8 @@
     if (config.currentCompany) values.currentCompany = config.currentCompany;
     if (config.currentTitle) values.currentTitle = config.currentTitle;
     if (config.portfolioUrl) values.portfolioUrl = config.portfolioUrl;
-    if (config.summary) values.summary = config.summary;
+    const _cs = (window.EAM && window.EAM.utils && window.EAM.utils.cleanProfileSummary) || ((x) => x || '');
+    if (_cs(config.summary)) values.summary = _cs(config.summary);
 
     // Fill text/email/tel/number inputs
     const inputs = deepAll('input[type="text"], input[type="email"], input[type="tel"], input[type="number"], input[type="url"], input:not([type]), textarea');
@@ -407,6 +408,40 @@
         filled++;
       }
     }
+
+    // v2.5.92: yes/no RADIO groups for the deterministic screening questions
+    // (sponsorship, work authorization, relocation, driving licence) —
+    // answered from settings; any other radio question is left to the user.
+    try {
+      const groups = new Map();
+      deepAll('input[type="radio"]').forEach(r => {
+        if (!r.name || r.disabled) return;
+        if (!groups.has(r.name)) groups.set(r.name, []);
+        groups.get(r.name).push(r);
+      });
+      for (const radios of groups.values()) {
+        if (radios.some(r => r.checked) || radios.length > 4) continue;
+        const labelOf = (r) => (r.labels && r.labels[0] ? r.labels[0].textContent : (r.closest('label') ? r.closest('label').textContent : r.value || '')).replace(/\s+/g, ' ').trim();
+        const opts = radios.map(r => ({ r, t: labelOf(r).toLowerCase() }));
+        const yes = opts.find(o => /^(yes|oui|sí|si|ja)\b/.test(o.t));
+        const no = opts.find(o => /^(no|non|nein)\b/.test(o.t));
+        if (!yes || !no) continue;
+        // The question: the group's legend / label, else the nearest container text.
+        let q = '';
+        for (let n = radios[0].parentElement, i = 0; n && i < 6 && !q; n = n.parentElement, i++) {
+          const leg = n.querySelector && n.querySelector('legend, .application-label, [class*="question"], [class*="label"]');
+          const txt = (leg && !leg.contains(radios[0]) ? leg.textContent : '') || '';
+          if (/\?|sponsor|authori[sz]|relocat|licen[cs]e|permis/i.test(txt)) q = txt;
+          else if (i >= 2 && /\?/.test(n.textContent || '') && (n.textContent || '').length < 600) q = n.textContent;
+        }
+        const ans = deterministicAnswer(q, config);
+        if (!ans) continue;
+        const pick = ans === 'Yes' ? yes.r : no.r;
+        pick.click();
+        if (!pick.checked) { pick.checked = true; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+        if (pick.checked) { pick.dataset.eamFilled = 'true'; filled++; }
+      }
+    } catch (_) {}
 
     // v2.5.90: don't claim fields the page wiped (autocomplete widgets,
     // controlled inputs that reset on blur) — honest count + outline.

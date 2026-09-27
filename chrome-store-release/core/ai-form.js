@@ -192,7 +192,8 @@
     const languages = Array.isArray(cv.languages)
       ? cv.languages.map(l => typeof l === 'string' ? l : (l.name || '')).filter(Boolean).join(', ')
       : '';
-    const summary = config.summary || cv.summary || '';
+    const _cs = (window.EAM && window.EAM.utils && window.EAM.utils.cleanProfileSummary) || ((x) => x || '');
+    const summary = _cs(config.summary) || _cs(cv.summary) || '';
 
     const prompt = `You are filling a job application form. Give a SHORT, CONCISE answer for this form field. Plain text only, no markdown.
 
@@ -255,10 +256,14 @@ Answer:`;
           if (response.error === 'premium_required') {
             log()('AI [premium]: AI form answers require Premium plan — skipping all AI calls this session');
             premiumBlocked = true;
-            // v2.5.88: flag for the one-time popup notice (never re-armed once seen).
+            // v2.5.92: popup notice "some applications were skipped — Premium AI
+            // answers them", once per session: a notice seen more than 12 h ago
+            // is re-armed for this new session; the engine counts the skips.
             try {
               chrome.storage.local.get(['eam_ai_premium_notice'], (r) => {
-                if (!r || !r.eam_ai_premium_notice) chrome.storage.local.set({ eam_ai_premium_notice: { at: Date.now(), seen: false } });
+                const n = r && r.eam_ai_premium_notice;
+                const stale = n && n.seen && (Date.now() - (n.at || 0)) > 12 * 3600 * 1000;
+                if (!n || stale) chrome.storage.local.set({ eam_ai_premium_notice: { at: Date.now(), seen: false, skipped: 0 } });
               });
             } catch (_) {}
           } else if (response.error === 'session_expired' || response.error === 'unauthorized' ||
@@ -303,6 +308,7 @@ Answer:`;
 
   window.EAM.aiForm = {
     askAI,
+    isPremiumBlocked: () => premiumBlocked,
     findCached,
     isMarketingOptIn,
     _cacheKey: cacheKey, // exposed for unit tests

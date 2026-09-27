@@ -20,6 +20,20 @@
     } catch (_) {}
   }
 
+  // v2.5.92: an application dropped because a screening question needed AI
+  // on the free plan — the popup explains it once after the run and offers
+  // Premium (Théo 2026-09-27). Counts only while AI is premium-blocked.
+  function _notePremiumSkip() {
+    try {
+      const ai = window.EAM && window.EAM.aiForm;
+      if (!ai || !ai.isPremiumBlocked || !ai.isPremiumBlocked()) return;
+      chrome.storage.local.get(['eam_ai_premium_notice'], (r) => {
+        const n = (r && r.eam_ai_premium_notice) || { at: Date.now(), seen: false };
+        chrome.storage.local.set({ eam_ai_premium_notice: { ...n, skipped: (n.skipped || 0) + 1 } });
+      });
+    } catch (_) {}
+  }
+
   let activeAdapter = null;
 
   // ─── Main loop ────────────────────────────────────────────────────────
@@ -39,8 +53,9 @@
     const strikes = state.rateLimitStrikes;
 
     if (strikes >= RATE_LIMIT_STRIKE_LIMIT) {
-      const msg = 'Auto-apply paused to protect your LinkedIn account. Take a 15-minute break, then click Start auto-apply to continue.';
+      const msg = 'LinkedIn keeps asking us to slow down, so auto-apply stopped to protect your account. Wait about 15 minutes, then click Start auto-apply again.';
       state.log('⏸ ' + msg);
+      try { await chrome.storage.local.remove('eam_pause_state'); } catch (_) {}
       try { await adapter.discardApplication(); } catch (e) {}
       try {
         chrome.runtime.sendMessage({
@@ -55,7 +70,7 @@
             type: 'basic',
             iconUrl: chrome.runtime.getURL('icons/icon128.png'),
             title: 'AutoApplyMax — short break',
-            message: 'Paused to protect your LinkedIn account. Take a 15-minute break, then click Start auto-apply to continue.',
+            message: 'LinkedIn keeps asking us to slow down. Wait about 15 minutes, then click Start auto-apply again.',
             priority: 2,
           });
         }
@@ -71,14 +86,18 @@
     _diag('rate_limit_throttle', { phase: 'pause', strike: strikes, pause_min: Math.round(pauseMinutes * 10) / 10, source });
     state.log('⏳ Waiting ~' + Math.round(pauseMinutes) + ' min to avoid LinkedIn rate limit — this keeps your account safe. Will resume automatically.');
     try { await adapter.discardApplication(); } catch (e) {}
+    // v2.5.92: the popup + toolbar badge read this to show "Paused — resumes
+    // in N min" (the popup never knew about a pause before, it said Running).
+    try { await chrome.storage.local.set({ eam_pause_state: { until: Date.now() + pauseMs, strike: strikes, minutes: Math.round(pauseMinutes) } }); } catch (_) {}
     // v2.5.87: a silent throttle has no LinkedIn dialog for checkRateLimit to
     // replace — show our own pause notice so the user sees why nothing moves.
     try {
       if (!document.querySelector('[data-eam-rl-chip], [data-eam-rate-limit-replacement], #eam-rate-limit-banner') && state._showBotNotice) {
-        state._showBotNotice('Paused ~' + Math.round(pauseMinutes) + ' min', 'LinkedIn is slowing Easy Apply down. Auto-apply resumes automatically — keep this tab open.', 'info');
+        state._showBotNotice('Paused ~' + Math.round(pauseMinutes) + ' min', 'LinkedIn asked us to slow down — auto-apply resumes automatically. Keep this tab open.', 'info');
       }
     } catch (_) {}
     await state.wait(pauseMs);
+    try { await chrome.storage.local.remove('eam_pause_state'); } catch (_) {}
     try { state._clearBotNotice && state._clearBotNotice(); } catch (_) {}
     // v2.5.87: LinkedIn re-shows the same "temporarily paused" dialog DURING
     // our pause (live 2026-09-25 13:14:08, 48 s into the pause). The 2.5 s
@@ -905,6 +924,7 @@
             if (modal && adapter.hasValidationErrors(modal)) {
               state.log('Validation error detected - discarding');
               await adapter.discardApplication();
+              _notePremiumSkip();
               state.skippedCount++;
               state.updateSkippedCount();
               step = 999;
@@ -947,6 +967,7 @@
               state.log('Stuck on unanswerable fields (' + state._unknownFieldFails +
                         ' fails) — discarding and moving on');
               await adapter.discardApplication();
+              _notePremiumSkip();
               state.skippedCount++;
               state.updateSkippedCount();
               break;
@@ -1309,6 +1330,8 @@
     state.isRunning = false;
     state.userExplicitlyClickedStart = false;
     await chrome.storage.local.set({ isRunning: false });
+    try { await chrome.storage.local.remove('eam_pause_state'); } catch (_) {}
+    if (/daily limit/i.test(String(reason))) { try { await chrome.storage.local.set({ eam_daily_limit_at: Date.now() }); } catch (_) {} }
     // Release cross-tab engine claim so other tabs can start after this one.
     try { await chrome.storage.local.remove(['engineOwnerTabId', 'engineOwnerClaimedAt']); } catch (_) {}
     try {
@@ -1321,9 +1344,9 @@
     const actionable = /unsupported page layout/i.test(reason)
       ? { message: 'This LinkedIn view isn\'t supported. Switch to /jobs/search/?f_AL=true (Easy Apply filter) for the reliable in-place modal flow.', tone: 'warning' }
       : /daily limit/i.test(reason)
-      ? { message: 'LinkedIn daily Easy Apply limit hit. The bot stopped cleanly — try again in ~24h.', tone: 'info' }
+      ? { message: 'LinkedIn daily Easy Apply limit reached — try again tomorrow.', tone: 'info' }
       : /rate limit/i.test(reason)
-      ? { message: reason + '. Wait 15-30 min then relaunch, or scroll manually for a bit before retrying.', tone: 'warning' }
+      ? { message: 'LinkedIn keeps asking us to slow down, so auto-apply stopped to protect your account. Wait about 15 minutes, then click Start auto-apply again.', tone: 'warning' }
       : null;
     if (actionable) {
       try { chrome.runtime.sendMessage({ type: 'botActionableStop', message: actionable.message, tone: actionable.tone, reason }); } catch (e) {}
@@ -1405,7 +1428,7 @@
                 const latest = (cvProfile.experience || [])[0];
                 if (latest?.company) state.config.currentCompany = latest.company;
                 if (latest?.title) state.config.currentTitle = latest.title;
-                if (cvProfile.summary) state.config.summary = cvProfile.summary;
+                if (cvProfile.summary) state.config.summary = (window.EAM.utils && window.EAM.utils.cleanProfileSummary) ? window.EAM.utils.cleanProfileSummary(cvProfile.summary) : cvProfile.summary;
                 state.config.cvProfile = {
                   summary: cvProfile.summary, skills: cvProfile.skills, experience: cvProfile.experience,
                   education: cvProfile.education, languages: cvProfile.languages,
@@ -1442,6 +1465,9 @@
             state._emptyScans = 0;
             try { state._clearBotNotice && state._clearBotNotice(); } catch (_) {}
             await chrome.storage.local.set({ isRunning: true });
+            // v2.5.92: a fresh run clears the previous pause / daily-limit state
+            // (popup alert + toolbar badge).
+            try { await chrome.storage.local.remove(['eam_pause_state', 'eam_daily_limit_at']); } catch (_) {}
 
             sendResponse({ success: true, message: 'Bot started' });
             try { chrome.runtime.sendMessage({ type: 'botStarted' }); } catch (e) {}

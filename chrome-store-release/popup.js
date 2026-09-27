@@ -249,41 +249,45 @@ async function loadRunningState() {
 }
 
 // ─── Track section logic ─────────────────────────────────────────────────
+// v2.5.92: the form opens from the "Track this job" button (it used to pop
+// open by itself on every non-LinkedIn page). An already-tracked page still
+// shows its "Already tracked" line on its own.
+let _trackTab = null;
+let _trackWired = false;
 async function initTrackSection(tab) {
+  _trackTab = tab || null;
+  const section = document.getElementById('track-section');
+  const already = document.getElementById('track-already');
+  if (!section || !tab?.url || !tab.url.startsWith('http') || /autoapplymax\.com/i.test(tab.url)) return;
+  const { appliedJobs = [] } = await chrome.storage.local.get(['appliedJobs']);
+  const normalized = normalizeUrl(tab.url);
+  if (appliedJobs.some(j => normalizeUrl(j.link) === normalized)) {
+    section.style.display = 'block';
+    already.style.display = 'flex';
+    const btn = document.getElementById('track-job-btn');
+    if (btn) { btn.disabled = true; btn.lastChild.textContent = ' Tracked'; }
+  }
+}
+
+async function openTrackForm() {
+  const tab = _trackTab;
+  if (!tab || !tab.url || !/^https?:\/\//.test(tab.url) || /autoapplymax\.com/i.test(tab.url)) {
+    showToast('Open the job\'s page first, then click Track this job.', 'info');
+    return;
+  }
+  if (/linkedin\.com/i.test(tab.url)) {
+    showToast('LinkedIn applications sent by auto-apply are tracked automatically.', 'info');
+    return;
+  }
   const section = document.getElementById('track-section');
   const detected = document.getElementById('track-detected');
   const already = document.getElementById('track-already');
-  const auto = document.getElementById('track-auto');
-
-  if (!section || !tab?.url) return;
-
-  // Hide for non-HTTP pages
-  if (!tab.url.startsWith('http')) return;
-
-  // Hide on our own site
-  if (/autoapplymax\.com/i.test(tab.url)) return;
-
-  const site = detectSite(tab.url);
-
-  // On supported auto-apply sites, no need to show tracking info
-  if (site && site.key !== 'manual') {
-    return;
-  }
-
-  // Check if URL already tracked
-  const { appliedJobs = [] } = await chrome.storage.local.get(['appliedJobs']);
-  const normalized = normalizeUrl(tab.url);
-  const alreadyTracked = appliedJobs.some(j => normalizeUrl(j.link) === normalized);
-
-  if (alreadyTracked) {
-    section.style.display = 'block';
-    already.style.display = 'flex';
-    return;
-  }
-
-  // Show tracking form with auto-fill
+  if (!section || !detected) return;
   section.style.display = 'block';
+  already.style.display = 'none';
   detected.style.display = 'block';
+  if (_trackWired) { document.getElementById('track-title')?.focus(); return; }
+  _trackWired = true;
 
   const titleInput = document.getElementById('track-title');
   const companyInput = document.getElementById('track-company');
@@ -322,12 +326,16 @@ async function initTrackSection(tab) {
     });
 
     document.getElementById('applied-count').textContent = appliedCount + 1;
+    // v2.5.92: also sync it to the dashboard (it used to stay on this browser only).
+    try { chrome.runtime.sendMessage({ type: 'jobApplied', ...newJob }); } catch (_) {}
 
     // Switch to "already tracked" state
     detected.style.display = 'none';
     already.style.display = 'flex';
+    const tb = document.getElementById('track-job-btn');
+    if (tb) { tb.disabled = true; tb.lastChild.textContent = ' Tracked'; }
 
-    showToast('Application tracked!', 'success');
+    showToast('Job tracked — it is on your dashboard.', 'success');
   });
 
   // Dismiss button
@@ -349,35 +357,130 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Auth state + dashboard links
   checkAuthState();
   setupDashboardLinks();
-  showAiPremiumNoticeOnce();
+  setupSecondaryActions();
+  renderRunExtras();
 
   // Detect current site and update badge + init track section
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const site = detectSite(tab?.url);
     updateSiteBadge(site);
+    setPageContext(tab);
     await initTrackSection(tab);
   } catch (e) {}
 });
 
-// v2.5.88: one-time, non-blocking notice when auto-apply met a screening question
-// it could only answer with AI (Premium) — set by core/ai-form.js on premium_required.
-// Auto-apply itself never asks the user anything; this only explains afterwards
-// why some applications were skipped. Dismiss = never shown again.
-async function showAiPremiumNoticeOnce() {
+// ─── v2.5.92: context-aware second action ─────────────────────────────
+// body[data-context]: 'linkedin' → "Tailor my CV to this job";
+// 'other' (any other website) → Autofill this form + Track this job, and
+// Autofill becomes the primary action; 'none' (new tab, chrome://) → same
+// buttons as 'other', they explain what to open first.
+let _pageTab = null;
+function setPageContext(tab) {
+  _pageTab = tab || null;
+  const url = (tab && tab.url) || '';
+  const ctx = /^https?:\/\/([^/]*\.)?linkedin\.com\//i.test(url) ? 'linkedin'
+    : /^https?:\/\//i.test(url) && !/autoapplymax\.com/i.test(url) ? 'other' : 'none';
+  document.body.dataset.context = ctx;
+}
+
+function setupSecondaryActions() {
+  document.getElementById('track-job-btn')?.addEventListener('click', () => openTrackForm());
+  document.getElementById('tailor-cv-btn')?.addEventListener('click', async () => {
+    const tab = _pageTab;
+    // On a LinkedIn job with our in-page "Match · Tailor CV" button, reuse it:
+    // it stores the job description so the CV generator opens pre-filled.
+    if (tab && tab.id && /linkedin\.com\/jobs\//i.test(tab.url || '')) {
+      try {
+        const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => {
+          const b = document.getElementById('aam-tailor-cv-btn');
+          if (b) { b.click(); return true; }
+          return false;
+        } });
+        if (res && res.result) { window.close(); return; }
+      } catch (_) {}
+    }
+    chrome.tabs.create({ url: 'https://www.autoapplymax.com/dashboard.html#cv-generator' });
+  });
+}
+
+// ─── v2.5.92: streak + pause + Premium notice (refreshed every 2 s) ────────
+// Streak: same rule as the dashboard (weekdays in a row with ≥1 application),
+// computed from applications saved on this browser.
+function computeStreak(jobs) {
+  if (!Array.isArray(jobs) || jobs.length === 0) return { count: 0, todayDone: false };
+  const days = new Set();
+  for (const j of jobs) {
+    const d = new Date(j.date || j.appliedAt || j.created_at || '');
+    if (!isNaN(d.getTime())) days.add(d.toISOString().slice(0, 10));
+  }
+  if (!days.size) return { count: 0, todayDone: false };
+  const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
+  const dayStr = (d) => d.toISOString().slice(0, 10);
+  const now = new Date();
+  const todayDone = days.has(dayStr(now));
+  const anchor = new Date(now);
+  while (isWeekend(anchor)) anchor.setDate(anchor.getDate() - 1);
+  if (!isWeekend(now) && !todayDone) {
+    anchor.setDate(anchor.getDate() - 1);
+    while (isWeekend(anchor)) anchor.setDate(anchor.getDate() - 1);
+  }
+  let count = 0;
+  const cursor = new Date(anchor);
+  for (let i = 0; i < 365; i++) {
+    if (!days.has(dayStr(cursor))) break;
+    count++;
+    do { cursor.setDate(cursor.getDate() - 1); } while (isWeekend(cursor));
+  }
+  return { count, todayDone };
+}
+
+let _pauseActive = false;
+async function renderRunExtras() {
   try {
-    const { eam_ai_premium_notice: n, isPremium, plan } = await chrome.storage.local.get(['eam_ai_premium_notice', 'isPremium', 'plan']);
-    if (!n || n.seen || isPremium || ['premium', 'pro', 'unlimited'].includes(plan)) return;
-    if (document.getElementById('ai-premium-notice')) return;
-    const box = buildAlert({
-      id: 'ai-premium-notice',
-      tone: 'info',
-      title: 'Some applications were skipped',
-      body: 'They had screening questions only AI can answer. AI answers are a Premium feature — everything else keeps working on the free plan.',
-      link: { text: 'See Premium', url: 'https://autoapplymax.com/premium?src=ext_ai_skipped' },
-      onClose: async () => { try { await chrome.storage.local.set({ eam_ai_premium_notice: { ...n, seen: true } }); } catch (_) {} },
-    });
-    document.getElementById('alert-slot')?.appendChild(box);
+    const { appliedJobs = [], eam_pause_state: p, eam_ai_premium_notice: n, isRunning: running, plan, isPremium } =
+      await chrome.storage.local.get(['appliedJobs', 'eam_pause_state', 'eam_ai_premium_notice', 'isRunning', 'plan', 'isPremium']);
+    // Streak
+    const st = computeStreak(appliedJobs);
+    const el = document.getElementById('streak');
+    if (el) { el.hidden = st.count < 1; const c = document.getElementById('streak-count'); if (c) c.textContent = st.count; }
+    // Pause (set by the engine while it waits out a LinkedIn slow-down)
+    const now = Date.now();
+    if (p && p.until > now) {
+      const mins = Math.max(1, Math.ceil((p.until - now) / 60000));
+      _pauseActive = true;
+      const statusEl = document.getElementById('status');
+      if (statusEl) { statusEl.textContent = 'Paused · resumes in ~' + mins + ' min'; statusEl.className = 'status-value paused'; }
+      const body = 'LinkedIn asked us to slow down — auto-apply resumes automatically in about ' + mins + ' min. If it doesn\'t, click Start auto-apply again.';
+      let box = document.getElementById('eam-pause-alert');
+      if (!box) {
+        box = buildAlert({ id: 'eam-pause-alert', bodyId: 'eam-pause-alert-text', tone: 'warning', title: 'Auto-apply paused', body });
+        document.getElementById('alert-slot')?.prepend(box);
+      } else {
+        const t = document.getElementById('eam-pause-alert-text'); if (t) t.textContent = body;
+      }
+    } else if (_pauseActive) {
+      _pauseActive = false;
+      document.getElementById('eam-pause-alert')?.remove();
+      updateStatusDisplay(isRunning ? 'Running' : 'Stopped', isRunning);
+    }
+    // Premium notice — after a run that skipped applications on questions
+    // only AI can answer (free plan). Once per session (ai-form re-arms it).
+    const paid = isPremium || ['premium', 'pro', 'unlimited'].includes(plan) || ['premium', 'pro', 'unlimited'].includes(document.body.dataset.plan);
+    if (n && !n.seen && (n.skipped || 0) > 0 && !running && !paid && !document.getElementById('ai-premium-notice')) {
+      const price = (document.getElementById('premium-price')?.textContent || '$6.99').trim();
+      const box = buildAlert({
+        id: 'ai-premium-notice',
+        tone: 'info',
+        title: 'Some applications were skipped',
+        body: (n.skipped > 1 ? n.skipped + ' applications' : 'One application') + ' had complex screening questions. Go Premium to let AI answer them.',
+        // Resolved at click time: auth may still be loading when the notice renders.
+        action: { text: 'Go Premium — ' + price + '/mo', url: () => 'https://www.autoapplymax.com' + (document.body.dataset.auth === 'in' ? '/dashboard?section=upgrade&src=ext_ai_skipped' : '/premium?src=ext_ai_skipped') },
+        onClose: async () => { try { await chrome.storage.local.set({ eam_ai_premium_notice: { ...n, seen: true } }); } catch (_) {} },
+        closeOnAction: true,
+      });
+      document.getElementById('alert-slot')?.appendChild(box);
+    }
   } catch (_) {}
 }
 
@@ -388,7 +491,7 @@ const ALERT_ICONS = {
   info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
   success: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
 };
-function buildAlert({ id, tone = 'warning', title, body, bodyId, link, onClose }) {
+function buildAlert({ id, tone = 'warning', title, body, bodyId, link, action, closeOnAction, onClose }) {
   const box = document.createElement('div');
   if (id) box.id = id;
   box.className = 'alert alert-' + tone;
@@ -408,6 +511,20 @@ function buildAlert({ id, tone = 'warning', title, body, bodyId, link, onClose }
     a.href = '#'; a.textContent = link.text + ' →';
     a.addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: link.url }); });
     txt.appendChild(a);
+  }
+  if (action) {
+    // v2.5.92: a real button ("See dashboard", "Go Premium") under the text.
+    const wrap = document.createElement('div');
+    wrap.className = 'alert-action';
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn btn-primary btn-sm'; b.textContent = action.text;
+    if (action.id) b.id = action.id;
+    b.addEventListener('click', () => {
+      chrome.tabs.create({ url: typeof action.url === 'function' ? action.url() : action.url });
+      if (closeOnAction) { box.remove(); if (onClose) onClose(); }
+    });
+    wrap.appendChild(b);
+    txt.appendChild(wrap);
   }
   const x = document.createElement('button');
   x.type = 'button'; x.className = 'alert-close'; x.setAttribute('aria-label', 'Dismiss');
@@ -459,7 +576,9 @@ async function loadConfig() {
   document.getElementById('expectedSalary').value = config.expectedSalary || '';
   document.getElementById('noticePeriod').value = config.noticePeriod || '';
   document.getElementById('blacklistKeywords').value = config.blacklistKeywords || '';
+  // v2.5.92: on by default for new installs; a saved choice is always kept.
   document.getElementById('autoNextPage').checked = config.autoNextPage !== false;
+  if (config.autoNextPage === undefined) { try { chrome.storage.sync.set({ autoNextPage: true }); } catch (_) {} }
   document.getElementById('visaSponsorship').value = config.visaSponsorship || 'no';
   document.getElementById('legallyAuthorized').value = config.legallyAuthorized || 'yes';
   document.getElementById('willingToRelocate').value = config.willingToRelocate || 'yes';
@@ -544,7 +663,7 @@ document.getElementById('start-btn').addEventListener('click', async () => {
     const site = detectSite(tab?.url);
 
     if (!site || site.key !== 'linkedin') {
-      showToast('Auto-apply works on LinkedIn only. Use Autofill for other sites!', 'info', 6000);
+      showToast('Auto-apply works on LinkedIn Easy Apply. On other sites, use Autofill or Track job.', 'info', 6000);
       return;
     }
 
@@ -663,7 +782,8 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
           if (latest.company) config.currentCompany = latest.company;
           if (latest.title) config.currentTitle = latest.title;
         }
-        if (cvProfile.summary) config.summary = cvProfile.summary;
+        // v2.5.92: never send a pasted job description as the candidate's summary.
+        if (cvProfile.summary && !/\b(looking for (someone|a |an )|we(?:'re| are) (looking|hiring|seeking)|you will\b|must have\b|requirements?\b|responsibilities\b|required\b|the ideal candidate|job description)/i.test(cvProfile.summary)) config.summary = cvProfile.summary;
         // Full profile so the AI prompt can ground answers in real CV data
         config.cvProfile = {
           summary: cvProfile.summary,
@@ -759,6 +879,7 @@ function updateButtons() {
 // Update status display
 function updateStatusDisplay(text, running) {
   const statusEl = document.getElementById('status');
+  if (_pauseActive && running) return; // "Paused · resumes in ~N min" wins while paused
   if (currentSiteInfo) {
     statusEl.textContent = running ? `Running · ${currentSiteInfo.name}` : `${text} · ${currentSiteInfo.name}`;
   } else {
@@ -839,9 +960,10 @@ function renderRateLimitBanner(payload) {
 
   const isDaily = /daily/i.test(payload.message + ' ' + (payload.reason || ''));
   const tone = payload.tone === 'info' || isDaily ? 'info' : 'warning';
-  const title = isDaily ? 'Daily LinkedIn limit reached'
+  const title = isDaily ? 'LinkedIn daily Easy Apply limit reached'
     : /unsupported|isn't supported/i.test(payload.message) ? 'This LinkedIn page isn\'t supported'
-    : 'Auto-apply paused';
+    : 'Auto-apply stopped';
+  if (isDaily) payload = { ...payload, message: 'Try again tomorrow. Review your applications on your dashboard.' };
   const existing = document.getElementById('eam-rate-limit-banner');
   if (existing) existing.remove();
   const banner = buildAlert({
@@ -850,7 +972,7 @@ function renderRateLimitBanner(payload) {
     tone,
     title,
     body: payload.message,
-    link: isDaily ? { text: 'See today\'s applications', url: 'https://autoapplymax.com/dashboard.html#applications' } : null,
+    action: isDaily ? { id: 'daily-see-dashboard', text: 'See dashboard', url: 'https://www.autoapplymax.com/dashboard.html#applications' } : null,
     onClose: () => { try { chrome.storage.local.remove(['eam_rate_limit_banner', 'eam_actionable_stop_banner']); } catch (e) {} },
   });
   const slot = document.getElementById('alert-slot');
@@ -866,7 +988,7 @@ function renderRateLimitBanner(payload) {
 })();
 
 // Update status (counters) every 2 seconds
-setInterval(async () => { await updateStatus(); }, 2000);
+setInterval(async () => { await updateStatus(); await renderRunExtras(); }, 2000);
 
 // Export jobs to CSV
 document.getElementById('export-csv-btn').addEventListener('click', async () => {
@@ -957,7 +1079,8 @@ async function loadAppliedJobs() {
       return;
     }
 
-    const sortedJobs = [...appliedJobs].sort((a, b) => new Date(b.date) - new Date(a.date));
+    // v2.5.92: the 3 latest here — the full list lives on the dashboard.
+    const sortedJobs = [...appliedJobs].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 3);
     listContainer.innerHTML = sortedJobs.map(job => {
       const source = job.source || 'linkedin';
       const siteInfo = SUPPORTED_SITES[source] || { name: source, color: '#666' };
@@ -1091,7 +1214,7 @@ async function checkAuthState() {
     }
 
     const fetchProfile = (token) => fetch(
-      `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=plan,ai_credits_used,ai_credits_total,credits_reset_date,email,first_name,country`,
+      `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=plan,ai_credits_used,ai_credits_total,credits_reset_date,email,first_name,last_name,phone,city,country,years_of_experience`,
       { headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY } }
     );
 
@@ -1149,6 +1272,7 @@ async function checkAuthState() {
         }).catch(e => console.warn('Credit reset failed:', e));
       }
       showLoggedInState(profile, eam_session);
+      prefillFromAccount(profile, eam_session);
     } else {
       // Profile exists in auth but no user_profiles row yet
       showLoggedInState({
@@ -1164,6 +1288,48 @@ async function checkAuthState() {
     showLoggedOutState();
   }
 }
+
+// v2.5.92: "Your info" pre-filled from the AutoApplyMax account — only the
+// fields still empty in this browser; a value the user typed is never
+// overwritten. Runs after sign-in and from the onboarding "fill your info" step.
+async function prefillFromAccount(profile, session) {
+  try {
+    if (!profile) return 0;
+    const saved = await chrome.storage.sync.get(['firstName', 'lastName', 'email', 'phone', 'city', 'yearsOfExperience']);
+    const digits = String(profile.phone || '').replace(/\D/g, '');
+    const map = {
+      firstName: profile.first_name,
+      lastName: profile.last_name,
+      email: profile.email || session?.user?.email || session?.email,
+      phone: digits.length >= 7 && digits.length <= 15 ? digits : '',
+      city: profile.city,
+      yearsOfExperience: profile.years_of_experience != null && profile.years_of_experience !== '' ? String(profile.years_of_experience) : '',
+    };
+    let filled = 0;
+    for (const [id, val] of Object.entries(map)) {
+      const v = String(val || '').trim();
+      if (!v || String(saved[id] || '').trim()) continue;
+      const el = document.getElementById(id);
+      if (el) { el.value = v; filled++; }
+    }
+    if (filled) await saveConfig();
+    return filled;
+  } catch (_) { return 0; }
+}
+window.prefillFromAccount = prefillFromAccount;
+// Used by the onboarding "Fill my info" step.
+window.prefillFromAccountFromSession = async function () {
+  try {
+    const { eam_session } = await chrome.storage.local.get(['eam_session']);
+    const uid = eam_session && (eam_session.user_id || eam_session.user?.id);
+    if (!uid || !eam_session.access_token) return 0;
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${uid}&select=email,first_name,last_name,phone,city,years_of_experience`,
+      { headers: { 'Authorization': `Bearer ${eam_session.access_token}`, 'apikey': SUPABASE_ANON_KEY } });
+    if (!r.ok) return 0;
+    const rows = await r.json();
+    return rows && rows[0] ? prefillFromAccount(rows[0], eam_session) : 0;
+  } catch (_) { return 0; }
+};
 
 // Local Premium price, same rule as the site (localizePrices): India → ₹,
 // eurozone → €, else $. Country from the profile when signed in, otherwise
@@ -1197,7 +1363,7 @@ function showLoggedOutState() {
     headerRight.innerHTML = '<button id="header-sign-in-btn" class="header-sign-in">Sign in</button>';
     document.getElementById('header-sign-in-btn')?.addEventListener('click', (e) => {
       e.preventDefault();
-      chrome.tabs.create({ url: 'https://autoapplymax.com/auth.html?src=ext_popup' });
+      chrome.tabs.create({ url: 'https://www.autoapplymax.com/auth.html?src=ext_popup' });
     });
   }
   if (premiumCard) premiumCard.style.display = '';
@@ -1227,12 +1393,16 @@ function showLoggedInState(profile, session) {
       ? `<span class="header-credits" title="AI credits left this month">${creditsLeft} AI credit${creditsLeft !== 1 ? 's' : ''}</span>`
       : '';
     headerRight.innerHTML = `${creditsHtml}<a href="#" class="header-plan-badge" id="header-plan-link">${planLabel}</a>`;
+    // Free → the upgrade section; paid → the same section, which shows the
+    // current plan + "Manage subscription" (Stripe portal).
     document.getElementById('header-plan-link')?.addEventListener('click', (e) => {
       e.preventDefault();
-      chrome.tabs.create({ url: 'https://autoapplymax.com/dashboard?section=upgrade&src=ext_popup_badge' });
+      chrome.tabs.create({ url: 'https://www.autoapplymax.com/dashboard?section=upgrade&src=' + (plan === 'free' ? 'ext_badge' : 'ext_badge_manage') });
     });
+    document.getElementById('header-plan-link')?.setAttribute('title', plan === 'free' ? 'See Premium plans' : 'Manage your subscription');
   }
   applyLocalPremiumPrice(profile.country);
+  try { chrome.storage.local.set({ plan }); } catch (_) {}
 
   // Show AI links for logged-in users
   if (dashLinkRow) dashLinkRow.style.display = '';
@@ -1251,14 +1421,31 @@ chrome.storage.onChanged.addListener((changes) => {
   }
 });
 
+// ─── LinkedIn Easy Apply search URL ──────────────────────────────────────
+async function buildLinkedInSearchUrl() {
+  const u = new URL('https://www.linkedin.com/jobs/search/');
+  u.searchParams.set('f_AL', 'true');
+  u.searchParams.set('sortBy', 'DD');
+  try {
+    const { cvProfile } = await chrome.storage.local.get(['cvProfile']);
+    const { city } = await chrome.storage.sync.get(['city']);
+    const role = (cvProfile && (cvProfile.targetRole || cvProfile.target_role || cvProfile.title ||
+      (Array.isArray(cvProfile.experience) && cvProfile.experience[0] && cvProfile.experience[0].title))) || '';
+    if (role && String(role).length <= 60) u.searchParams.set('keywords', String(role).trim());
+    if (city && String(city).length <= 60) u.searchParams.set('location', String(city).trim());
+  } catch (_) {}
+  return u.toString();
+}
+window.buildLinkedInSearchUrl = buildLinkedInSearchUrl;
+
 // ─── Dashboard link handlers ────────────────────────────────────────────
 function setupDashboardLinks() {
-  const BASE_URL = 'https://autoapplymax.com';
+  const BASE_URL = 'https://www.autoapplymax.com';
   const links = {
     'link-dashboard': '/dashboard.html',
     'link-applications': '/dashboard.html#applications',
     'link-ai-resume': '/dashboard.html#cv-generator',
-    'link-cover-letter': '/dashboard.html#cover-letter',
+    'link-ats-score': '/dashboard.html#ats-checker',
     'view-dashboard-applications': '/dashboard.html#applications',
     'link-dashboard-logo': '/dashboard.html',
     'header-sign-in-btn': '/auth.html?src=ext_popup',
@@ -1267,9 +1454,11 @@ function setupDashboardLinks() {
   };
 
   // Easy Apply filter on — the layout auto-apply is built for.
-  document.getElementById('open-linkedin-search')?.addEventListener('click', (e) => {
+  // v2.5.92: prefilled with the target role from the synced CV profile and
+  // the city from "Your info" when known; Easy Apply filter on, newest first.
+  document.getElementById('open-linkedin-search')?.addEventListener('click', async (e) => {
     e.preventDefault();
-    chrome.tabs.create({ url: 'https://www.linkedin.com/jobs/search/?f_AL=true' });
+    chrome.tabs.create({ url: await buildLinkedInSearchUrl() });
   });
 
   for (const [id, path] of Object.entries(links)) {
@@ -1295,7 +1484,7 @@ function setupDashboardLinks() {
       // Signed in → the dashboard upgrade section (the funnel's upgrade page,
       // src kept for attribution); signed out → the public /premium page.
       const signedIn = document.body.dataset.auth === 'in';
-      chrome.tabs.create({ url: BASE_URL + (signedIn ? '/dashboard?section=upgrade&src=ext_popup' : '/premium?src=ext_popup') });
+      chrome.tabs.create({ url: BASE_URL + (signedIn ? '/dashboard?section=upgrade&src=ext_card' : '/premium?src=ext_card') });
     });
   }
 
@@ -1305,7 +1494,7 @@ function setupDashboardLinks() {
       e.preventDefault();
       const section = link.dataset.section;
       if (section) {
-        chrome.tabs.create({ url: `https://autoapplymax.com/dashboard.html#${section}` });
+        chrome.tabs.create({ url: `https://www.autoapplymax.com/dashboard.html#${section}` });
       }
     });
   });
