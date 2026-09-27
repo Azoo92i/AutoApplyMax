@@ -1363,29 +1363,57 @@
       submitBtn.scrollIntoView({ block: 'end', behavior: 'smooth' });
       await u().wait(800);
 
-      // v2.5.88: the native-dialog form (2026-09-26) uses React ids («rr») — also
-      // find the "Follow <company>" checkbox by its label text.
-      const labelOf = (cb) => { try { return (cb.id && modal.querySelector(`label[for="${CSS.escape(cb.id)}"]`)) || cb.closest('label'); } catch (_) { return cb.closest('label'); } };
-      const followByText = () => [...modal.querySelectorAll('input[type="checkbox"]')].find(cb => {
-        const lab = labelOf(cb) || cb.parentElement;
-        return /^\s*(follow|suivre|seguir|folgen)\b/i.test((lab && lab.textContent) || '');
-      });
-      const followCheckbox = modal.querySelector('input[id="follow-company-checkbox"]') ||
-                            modal.querySelector('input[id*="follow-company"][type="checkbox"]') ||
-                            followByText();
-      if (followCheckbox && followCheckbox.checked) {
-        followCheckbox.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        await u().wait(500);
-        const label = labelOf(followCheckbox);
-        if (label) {
-          await u().click(label);
-          u().log('Company UNFOLLOWED');
-        } else {
-          followCheckbox.click();
-          u().log('Company UNFOLLOWED (fallback)');
+      await this.ensureUnfollowed(modal);
+      await u().wait(500);
+    }
+
+    // v2.5.93: "Follow <company>" must be unchecked before Submit (reported left
+    // checked, 2026-09-27). Search the form, its root node (native <dialog>,
+    // interop shadow root) and the document; support <input type=checkbox> and
+    // custom role="checkbox" markup; verify the state after each attempt and
+    // retry with a different click path. Returns true when nothing is followed.
+    findFollowControl(modal) {
+      const FOLLOW_RE = /^\s*(follow|suivre|seguir|folgen|segui|volg)\b/i;
+      const roots = [modal, modal && modal.getRootNode && modal.getRootNode(),
+        document.getElementById('interop-outlet')?.shadowRoot, document]
+        .filter((r, i, a) => r && r.querySelectorAll && a.indexOf(r) === i);
+      const labelOf = (cb, root) => { try { return (cb.id && root.querySelector(`label[for="${CSS.escape(cb.id)}"]`)) || cb.closest('label'); } catch (_) { return cb.closest('label'); } };
+      const textOf = (el, root) => {
+        const lab = labelOf(el, root);
+        const lb = el.getAttribute('aria-labelledby');
+        const byAria = lb && root.getElementById ? (root.getElementById(lb)?.textContent || '') : '';
+        return ((lab && lab.textContent) || el.getAttribute('aria-label') || byAria || (el.parentElement && el.parentElement.textContent) || '').replace(/\s+/g, ' ').trim();
+      };
+      for (const root of roots) {
+        const byId = root.querySelector('input#follow-company-checkbox, input[id*="follow-company"][type="checkbox"]');
+        if (byId) return { el: byId, label: labelOf(byId, root) };
+        for (const el of root.querySelectorAll('input[type="checkbox"], [role="checkbox"]')) {
+          if (FOLLOW_RE.test(textOf(el, root))) return { el, label: labelOf(el, root) };
         }
       }
-      await u().wait(500);
+      return null;
+    }
+
+    async ensureUnfollowed(modal) {
+      const isOn = (el) => el.tagName === 'INPUT' ? el.checked : el.getAttribute('aria-checked') === 'true';
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const f = this.findFollowControl(modal);
+        if (!f || !isOn(f.el)) {
+          if (attempt > 0) u().log('Company UNFOLLOWED (verified)');
+          return true;
+        }
+        f.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        await u().wait(400);
+        if (attempt === 0 && f.label) await u().click(f.label);
+        else if (attempt === 1) f.el.click();
+        else f.el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        u().log(`Unfollow attempt ${attempt + 1} (${attempt === 0 && f.label ? 'label' : 'control'})`);
+        await u().wait(500);
+      }
+      const f = this.findFollowControl(modal);
+      const ok = !f || !isOn(f.el);
+      u().log(ok ? 'Company UNFOLLOWED (verified)' : 'WARNING: follow checkbox still checked after 3 attempts');
+      return ok;
     }
 
     // ── Done button (post-submit) ───────────────────────────────────────

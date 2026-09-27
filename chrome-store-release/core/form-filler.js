@@ -236,6 +236,37 @@
   const _CUR_BY_COUNTRY = { france: 'EUR', fr: 'EUR', germany: 'EUR', de: 'EUR', spain: 'EUR', es: 'EUR', italy: 'EUR', it: 'EUR', belgium: 'EUR', netherlands: 'EUR', portugal: 'EUR', ireland: 'EUR', austria: 'EUR',
     india: 'INR', in: 'INR', 'united states': 'USD', usa: 'USD', us: 'USD', 'united kingdom': 'GBP', uk: 'GBP', gb: 'GBP', canada: 'CAD', ca: 'CAD', switzerland: 'CHF', ch: 'CHF', australia: 'AUD', au: 'AUD' };
   const _CUR_BY_DIAL = { '+33': 'EUR', '+49': 'EUR', '+34': 'EUR', '+39': 'EUR', '+32': 'EUR', '+31': 'EUR', '+351': 'EUR', '+353': 'EUR', '+43': 'EUR', '+91': 'INR', '+44': 'GBP', '+41': 'CHF', '+61': 'AUD' };
+  // v2.5.93: start-date questions ("What is your earliest starting date?", mm/dd/yyyy
+  // artdeco-date field) got "January 2022" from the AI. Answer = today + notice period
+  // (min 2 weeks), formatted for the field.
+  const START_DATE_RE = /earliest.{0,20}start|start(ing)?\s*date|when.{0,20}can.{0,10}you.{0,10}(start|join|begin)|available\s+to\s+start|availability\s+date|date.{0,15}d[ée]but|d[ée]but.{0,15}(poste|contrat|mission)|disponible.{0,20}partir|partir\s+de\s+quand|date.{0,15}disponibilit|fecha.{0,15}(inicio|incorporaci)|eintrittsdatum|startdatum|data.{0,15}inizio/i;
+  function isDateField(input) {
+    if (!input) return false;
+    if (input.type === 'date') return true;
+    const s = [input.placeholder, input.getAttribute && input.getAttribute('aria-label'), input.className, input.name, input.id].join(' ');
+    return /\b(mm|dd|jj)\s*[\/.-]\s*(dd|mm|jj)\s*[\/.-]\s*(yyyy|aaaa|yy|aa)\b|yyyy-mm-dd|artdeco-date|datepicker|date-picker/i.test(s);
+  }
+  function startDateAnswer(question, config, input, now) {
+    const today = now ? new Date(now) : new Date();
+    const raw = String((config && config.noticePeriod) || '1').toLowerCase();
+    const n = parseFloat(raw.replace(',', '.'));
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    if (!isFinite(n)) d.setMonth(d.getMonth() + 1);
+    else if (/week|semaine|semana|woche|settiman/.test(raw)) d.setDate(d.getDate() + Math.round(n * 7));
+    else if (/day|jour|d[ií]a|tag|giorn/.test(raw)) d.setDate(d.getDate() + Math.round(n));
+    else d.setMonth(d.getMonth() + Math.round(n));
+    const min = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 14);
+    if (d < min) d.setTime(min.getTime());
+    const p = (x) => String(x).padStart(2, '0');
+    const iso = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const hint = input ? [input.placeholder, input.getAttribute && input.getAttribute('aria-label'), input.className].join(' ') : '';
+    if ((input && input.type === 'date') || /yyyy-mm-dd/i.test(hint)) return iso;
+    if (/\bmm\s*[\/.-]\s*dd\b/i.test(hint)) return `${p(d.getMonth() + 1)}/${p(d.getDate())}/${d.getFullYear()}`;
+    if (/\b(dd|jj)\s*[\/.-]\s*mm\b/i.test(hint)) return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
+    const fr = /[àâçéèêëîïôûù]|\b(date|quand|partir|début|vous|poste)\b/i.test(String(question)) && !/\b(what|when|your|the)\b/i.test(String(question));
+    return fr ? `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}` : `${p(d.getMonth() + 1)}/${p(d.getDate())}/${d.getFullYear()}`;
+  }
+
   function salaryAnswer(question, config, input) {
     const raw = String((config && config.expectedSalary) || '').trim();
     if (!raw) return '';
@@ -344,6 +375,13 @@
         // numeric field. Fixes the "AI called repeatedly because the field
         // can't accept '1 month'" bug.
         const rawValue = (config.noticePeriod || '1').toString().trim();
+        const fieldIsNumeric = input.type === 'number' || input.getAttribute('inputmode') === 'numeric'
+          || /\(\s*(mois|months?|meses|monate|mesi|weeks?|semaines?)\s*\)|how many|combien|notice/i.test(haystack);
+        if (isDateField(input) || (!fieldIsNumeric && START_DATE_RE.test(haystack))) {
+          const sd = startDateAnswer(getFieldQuestion(input, modal), config, input);
+          u().fill(input, sd);
+          u().log(`Start date filled: ${sd}`);
+        } else {
         const labelExpectsNumber =
           input.type === 'number' ||
           input.getAttribute('inputmode') === 'numeric' ||
@@ -354,6 +392,7 @@
           : rawValue;
         u().fill(input, noticePeriod);
         u().log(`Notice period filled: ${noticePeriod}`);
+        }
       }
       // Email — use word-boundary and run on short-signal-or-truncated
       // haystack to avoid false positives on long help text like
@@ -414,6 +453,11 @@
         // Final fallback: no label/type pattern matched → ask the AI.
         // Restored from v2.1.0 (dropped in v2.2 refactor). Covers date,
         // availability, salary, custom employer questions, etc.
+        else if (label && isDateField(input) && START_DATE_RE.test(getFieldQuestion(input, modal))) {
+          const sd = startDateAnswer(getFieldQuestion(input, modal), config, input);
+          u().fill(input, sd);
+          u().log(`Start date filled: ${sd}`);
+        }
         else if (label && window.EAM && window.EAM.aiForm) {
           const question = getFieldQuestion(input, modal);
           const aiAnswer = await window.EAM.aiForm.askAI(question, config, input.type);
@@ -1402,6 +1446,9 @@
     profileUrlKind,
     yearsQuestionSkill,
     yearsForQuestion,
-    salaryAnswer
+    salaryAnswer,
+    START_DATE_RE,
+    isDateField,
+    startDateAnswer
   };
 })();

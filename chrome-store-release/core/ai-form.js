@@ -128,6 +128,14 @@
       return neg || 'skip';
     }
 
+    // v2.5.93: start-date questions → today + notice period (the AI answered "January 2022").
+    if (FF && FF.startDateAnswer && FF.START_DATE_RE.test(String(question)) && !(Array.isArray(options) && options.length)
+        && fieldType !== 'number' && fieldType !== 'checkbox' && fieldType !== 'radio') {
+      const sd = FF.startDateAnswer(question, config, null);
+      log()(`AI [start-date guard]: "${String(question).substring(0, 50)}" → "${sd}"`);
+      return sd;
+    }
+
     await loadCache();
 
     // Check cache first
@@ -206,6 +214,7 @@
     const summary = _cs(config.summary) || _cs(cv.summary) || '';
 
     const prompt = `You are filling a job application form. Give a SHORT, CONCISE answer for this form field. Plain text only, no markdown.
+Today's date: ${new Date().toISOString().slice(0, 10)} (any availability / start date must be in the future).
 
 CANDIDATE:
 Name: ${config.firstName || ''} ${config.lastName || ''}

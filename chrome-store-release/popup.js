@@ -771,6 +771,13 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
       }
     }
 
+    // v2.5.93: country for "Country" dropdowns/comboboxes, from the phone country code.
+    {
+      const CC = { '33': 'France', '91': 'India', '1': 'United States', '44': 'United Kingdom', '49': 'Germany', '34': 'Spain', '39': 'Italy', '32': 'Belgium', '41': 'Switzerland', '31': 'Netherlands', '351': 'Portugal', '352': 'Luxembourg', '212': 'Morocco', '216': 'Tunisia', '213': 'Algeria', '971': 'United Arab Emirates', '92': 'Pakistan', '61': 'Australia', '353': 'Ireland', '48': 'Poland' };
+      const cc = String(config.phoneCountryCode || '').replace(/[^\d]/g, '');
+      if (CC[cc]) config.country = CC[cc];
+    }
+
     // Enrich with cvProfile data (Smart Profile from uploaded CV).
     try {
       const { cvProfile } = await chrome.storage.local.get(['cvProfile']);

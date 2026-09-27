@@ -22,7 +22,7 @@
     linkedinUrl: /\b(linkedin|linked.?in)\b/i,
     currentCompany: /\b(current.?company|entreprise.?actuelle|company.?name|société|current.?employer|employeur)\b/i,
     currentTitle: /\b(current.?title|titre.?actuel|job.?title|poste.?actuel|current.?role|current.?position)\b/i,
-    city:      /\b(city|ville|ciudad|stadt|città|location|localisation|ubicación|standort|adresse|address)\b/i,
+    city:      /\b(city|ville|ciudad|stadt|stad|woonplaats|città|location|localisation|ubicación|standort|adresse|address)\b/i,
     yearsOfExperience: /\b(experience|years|expérience|années|años|jahre|anni)\b/i,
     expectedSalary:    /\b(salary|compensation|remuneration|salaire|rémunération|sueldo|gehalt|stipendio)\b/i,
     portfolioUrl: /\b(portfolio|website|site.?web|personal.?site|github|personal.?url)\b/i,
@@ -125,8 +125,20 @@
     if (/(legally )?(authori[sz]ed|eligible|right) to work|work (authori[sz]ation|permit)|autoris[ée] à travailler/.test(s)) return yn(config.legallyAuthorized);
     if (/relocat|déménag/.test(s)) return yn(config.willingToRelocate);
     if (/driv(er'?s|ing) licen[cs]e|permis de conduire/.test(s)) return yn(config.driversLicense);
+    // v2.5.93: self-declarations (worked for us before, relatives, conflicts, restrictive
+    // agreements) → No, same policy as the LinkedIn engine (FormFiller when loaded).
+    const FF = window.EAM && window.EAM.FormFiller;
+    if ((FF && FF.isSelfDeclarationQuestion && FF.isSelfDeclarationQuestion(q)) || SELF_DECL_LITE.test(s)) return 'No';
+    // "Are you currently located in Bangalore?" → compare with the profile city / country.
+    const m = String(q || '').match(/\b(?:located|based|living|residing|reside|live)\s+in\s+([^?*\n]{2,60})/i);
+    if (m && /^\s*(are|do)\s+you\b/i.test(String(q)) && (config.city || config.country)) {
+      const place = m[1].toLowerCase();
+      const mine = [config.city, config.country].filter(Boolean).map(x => String(x).toLowerCase());
+      return mine.some(x => place.includes(x) || x.includes(place.trim())) ? 'Yes' : 'No';
+    }
     return null;
   }
+  const SELF_DECL_LITE = /\b(previously|formerly|ever|currently|presently)\b.{0,30}\b(worked|employed|consulted)\b.{0,20}\b(at|for|by|with)\b|\b(former|current|ex[- ])\s*employee\b|\bconflict of interest\b|\brelatives?\b.{0,40}\b(work|employ)|\bpost-employment\b|\bnon-?compete\b|\bemployment agreements?\b/i;
 
   function classifyField(el) {
     // 1. autocomplete attribute
@@ -237,6 +249,141 @@
     el.dispatchEvent(new Event('blur', { bubbles: true }));
   }
 
+  // ─── v2.5.93: option picking for selects + comboboxes ───────────────
+  // What the question needs: a deterministic yes/no, the user's country, or
+  // their city. Anything else is left to the user (never guessed).
+  function comboTarget(q, config) {
+    const s = String(q || '');
+    if (!s || EEO_RE.test(s)) return null;
+    const det = deterministicAnswer(s, config);
+    if (det) return { kind: 'yesno', value: det };
+    if (/\b(country|pays)\b/i.test(s) && config.country
+        && (!/\?/.test(s) || /\b(country|pays)\b.{0,40}\b(reside|live|based|located|currently|résid|habit)|\b(reside|live|based|located|résid|habit).{0,40}\b(country|pays)\b/i.test(s))) return { kind: 'country', value: config.country };
+    if (/\b(current location|location|city|ville|localisation|where are you (based|located)|lieu)\b/i.test(s) && !/(relocat|sponsor|remote|onsite|on-site|willing)/i.test(s) && config.city) return { kind: 'city', value: config.city };
+    return null;
+  }
+  const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  function pickOption(items, q, config) {
+    const tgt = comboTarget(q, config);
+    if (!tgt) return null;
+    const list = items.filter(x => x.text && !/^\s*(select|choose|sélectionner|choisir|--|please select)/i.test(x.text));
+    if (tgt.kind === 'yesno') return list.find(x => (tgt.value === 'Yes' ? /^\s*(yes|oui)\b/i : /^\s*(no|non)\b/i).test(x.text)) || null;
+    const v = norm(tgt.value);
+    if (tgt.kind === 'city') {
+      // "Paris, Île-de-France, FRA" before "Paris, TX, USA": prefer the suggestion in the user's country.
+      const c = String(config.country || '');
+      const inCountry = (t) => c && (norm(t).includes(norm(c)) || new RegExp('\\b' + c.slice(0, 3).toUpperCase() + '\\b').test(t));
+      const cands = list.filter(x => norm(x.text) === v || norm(x.text).startsWith(v + ',') || norm(x.text).startsWith(v + ' '));
+      const best = cands.find(x => inCountry(x.text));
+      if (best) return best;
+      if (c && cands.length > 1) return null;   // ambiguous city, none in the user's country → leave it
+    }
+    return list.find(x => norm(x.text) === v) || list.find(x => norm(x.text).startsWith(v + ',') || norm(x.text).startsWith(v + ' ')) || list.find(x => norm(x.text).startsWith(v)) || null;
+  }
+  function visibleOptions(input) {
+    const ids = (input.getAttribute('aria-controls') || input.getAttribute('aria-owns') || '').split(/\s+/).filter(Boolean);
+    const root = input.getRootNode && input.getRootNode();
+    let opts = [];
+    for (const id of ids) { const lb = (root && root.getElementById ? root.getElementById(id) : null) || document.getElementById(id); if (lb) opts.push(...lb.querySelectorAll('[role="option"]')); }
+    if (!opts.length) opts = deepAll('[role="option"], .select__option, [class*="option" i][id*="option" i], .dropdown-location');
+    return opts.filter(o => o.getBoundingClientRect().width > 0 && o.getAttribute('aria-disabled') !== 'true'
+      && !o.closest('.iti__country-list, .iti__dropdown-content'));   // intl-tel-input flag list is not this field's menu
+  }
+  function pressOption(o) {
+    for (const t of ['mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) o.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window, button: 0 }));
+  }
+  // Character-by-character typing: Lever's location autocomplete only queries on key events.
+  async function typeChars(input, text) {
+    const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value');
+    let v = '';
+    for (const ch of String(text)) {
+      v += ch;
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keypress', { key: ch, charCode: ch.charCodeAt(0), bubbles: true }));
+      if (d && d.set) d.set.call(input, v); else input.value = v;
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, data: ch, inputType: 'insertText' }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+      await new Promise(r => setTimeout(r, 60));
+    }
+  }
+  let rsSeq = 0;
+  const rsBridge = (marker, action, label) => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: 'eam-react-select', marker, action, label }, (resp) => {
+        if (chrome.runtime.lastError) resolve({ err: chrome.runtime.lastError.message }); else resolve(resp || { err: 'noresp' });
+      });
+    } catch (e) { resolve({ err: String(e.message || e) }); }
+    setTimeout(() => resolve({ err: 'timeout' }), 4000);
+  });
+  function isReactSelect(input) {
+    return /\bselect__input\b/.test(input.className || '') || !!input.closest('[class*="select__control" i]');
+  }
+  async function fillComboboxes(config) {
+    let n = 0;
+    const boxes = deepAll('input[role="combobox"], input[aria-autocomplete], input#location-input, input.location-input, input[data-qa="location-input"]');
+    for (const input of boxes) {
+      if (input.dataset.eamFilled === 'true' || input.disabled || input.readOnly || input.offsetParent === null) continue;
+      // react-select shows the chosen value in a sibling, not in input.value
+      const holder = input.closest('[class*="select__control" i], [class*="-control" i]');
+      if ((input.value && input.value.trim()) || (holder && holder.querySelector('[class*="single-value" i], [class*="singleValue" i]'))) continue;
+      const q = questionText(input) || input.getAttribute('placeholder') || '';
+      const tgt = comboTarget(q, config);
+      const ai = window.EAM && window.EAM.aiForm;
+      const rs = isReactSelect(input) && window.chrome && chrome.runtime && chrome.runtime.sendMessage;
+      // no deterministic answer: only react-select with a known option list can go to the AI (premium)
+      if (!tgt && !(rs && ai && q && !EEO_RE.test(q))) continue;
+      // react-select: synthetic events are ignored → pick through the MAIN-world bridge.
+      if (rs) {
+        const marker = 'rs' + (++rsSeq) + '_' + Date.now();
+        input.setAttribute('data-eam-rs', marker);
+        const lst = await rsBridge(marker, 'list');
+        const labels = lst && Array.isArray(lst.labels) ? lst.labels : [];
+        let pick = tgt ? pickOption(labels.map(t => ({ text: t })), q, config) : null;
+        if (!tgt && labels.length && labels.length <= 40) {
+          // CHOICE MODE: the AI must reply with one exact label (free plan → premium_required → null)
+          let ans = null;
+          try { ans = await ai.askAI(q, config, 'select', labels); } catch (e) { ans = null; }
+          const hit = ans && ans !== 'skip' ? labels.find(l => norm(l) === norm(ans)) : null;
+          if (hit) pick = { text: hit };
+        }
+        let ok = false;
+        if (pick) { const r = await rsBridge(marker, 'select', pick.text); ok = !!(r && r.ok); }
+        input.removeAttribute('data-eam-rs');
+        console.log(`[EAM Autofill] react-select "${String(q).slice(0, 50)}" → ${ok ? '"' + pick.text + '"' : 'not filled (' + ((lst && lst.err) || (pick ? 'select failed' : 'no matching option')) + ')'}`);
+        if (ok) {
+          await new Promise(r => setTimeout(r, 150));
+          (holder || input).style.outline = '2px solid #10b981';
+          input.dataset.eamFilled = 'true';
+          n++;
+          continue;
+        }
+        if (labels.length || !tgt) continue;   // options known, none fits → leave to the user
+      }
+      input.focus();
+      input.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      input.click();
+      const typed = tgt.kind === 'yesno' ? tgt.value : String(tgt.value).split(',')[0].trim();
+      await typeChars(input, typed);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      let pick = null;
+      for (let t = 0; t < 14 && !pick; t++) {
+        await new Promise(r => setTimeout(r, 250));
+        pick = pickOption(visibleOptions(input).map(o => ({ o, text: o.textContent })), q, config);
+      }
+      if (pick) {
+        pressOption(pick.o);
+        await new Promise(r => setTimeout(r, 200));
+        input.style.outline = '2px solid #10b981';
+        input.dataset.eamFilled = 'true';
+        n++;
+      } else {
+        setNativeValue(input, '');
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      }
+    }
+    return n;
+  }
+
   // ─── Main autofill logic ────────────────────────────────────────────
 
   async function autofill(config) {
@@ -272,6 +419,7 @@
       // drop typed text unless an option is picked — leave them to the user
       // rather than showing a fake "filled" outline.
       if (input.getAttribute('role') === 'combobox' || input.getAttribute('aria-autocomplete')) continue;
+      if (input.matches('#location-input, .location-input, [data-qa="location-input"]')) continue;   // v2.5.93: fillComboboxes picks a suggestion
       const ph = (input.getAttribute('placeholder') || '').toLowerCase();
       if (/pick date|dd\/mm|mm\/dd|jj\/mm|yyyy/.test(ph)) continue;
 
@@ -361,6 +509,23 @@
       }
       const combined = hints.join(' ').toLowerCase();
 
+      // v2.5.93: yes/no screening questions and "Country" as native <select>
+      // (classic Greenhouse boards) — same deterministic answers as radios/text.
+      {
+        const q = questionText(select) || combined;
+        if (EEO_RE.test(q)) continue;
+        const pick = pickOption(Array.from(select.options).map(o => ({ o, text: o.text })).filter(x => x.o.value !== ''), q, config);
+        if (pick) {
+          select.value = pick.o.value;
+          select.dispatchEvent(new Event('input', { bubbles: true }));
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          select.style.outline = '2px solid #10b981';
+          select.dataset.eamFilled = 'true';
+          filled++;
+          continue;
+        }
+      }
+
       if (combined.match(/proficiency|level|langue|language|english|anglais|french|français/)) {
         const options = Array.from(select.options);
         let best = options.find(o => o.text.toLowerCase().match(/native|bilingual|bilingue|langue maternelle/));
@@ -375,6 +540,13 @@
         }
       }
     }
+
+    // v2.5.93: autocomplete comboboxes (Lever "Current location", Greenhouse
+    // react-select yes/no + Country + Location, Ashby location). Type the
+    // value, wait for the suggestions and PICK a matching option — typed text
+    // alone is dropped by these widgets. No matching option → cleared, so
+    // nothing looks filled that isn't.
+    try { filled += await fillComboboxes(config); } catch (e) { /* never block the rest of the fill */ }
 
     // Check consent/CGU checkboxes
     const checkboxes = deepAll('input[type="checkbox"]');

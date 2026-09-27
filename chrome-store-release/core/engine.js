@@ -153,9 +153,14 @@
     return true; // signal: keep looping
   }
 
-  async function mainLoop(adapter) {
+  // v2.5.93: one main loop at a time (see the 'start' handler).
+  let loopGen = 0;
+  let loopPromise = null;
+
+  async function mainLoop(adapter, gen = loopGen) {
     activeAdapter = adapter;
     const state = u();
+    const stale = () => gen !== loopGen;
 
     // Reset rate-limit strikes for this session — cumulative across the
     // whole bot run, but cleared on every fresh Start click.
@@ -225,7 +230,7 @@
       return;
     }
 
-    while (state.isRunning) {
+    while (state.isRunning && !stale()) {
       try {
         // Detect if LinkedIn stripped our search filter mid-run (e.g.
         // rate-limit response redirects to /jobs/search-results/ without
@@ -1024,6 +1029,10 @@
               continue;
             }
 
+            // v2.5.93: last check right before Submit — LinkedIn can re-render the
+            // review step (and re-check "Follow <company>") after handlePreSubmit.
+            if (isSubmit && adapter.ensureUnfollowed) await adapter.ensureUnfollowed(modal);
+
             await state.click(nextBtn);
             await state.wait(1000);
 
@@ -1221,6 +1230,7 @@
       // Pre-submit actions
       if (isSubmit) {
         await adapter.handlePreSubmit(form, nextBtn);
+        if (adapter.ensureUnfollowed) await adapter.ensureUnfollowed(form); // v2.5.93: re-verify right before Submit
       }
 
       await state.click(nextBtn);
@@ -1452,6 +1462,20 @@
 
             if (state.resumeFile) state.log(`Resume loaded: ${state.resumeFileName}`);
 
+            // v2.5.93: a quick Stop → Start used to spawn a SECOND main loop while the
+            // first was still mid-job (it saw isRunning=true again and kept going):
+            // two loops fought over the same form ("Cleanup failed 3/2", jobs
+            // discarded — fixture STOPSTART 2026-09-27). Let the previous loop exit
+            // first (bounded wait), and stamp each loop with a generation id so a
+            // stale loop can never continue.
+            const myGen = ++loopGen;
+            if (loopPromise) {
+              state.isRunning = false;
+              state.log('Waiting for the previous run to stop before restarting…');
+              await Promise.race([loopPromise.catch(() => {}), new Promise(r => setTimeout(r, 20000))]);
+            }
+            if (myGen !== loopGen) { sendResponse({ success: false, error: 'Superseded by a newer Start' }); return; }
+
             state.isRunning = true;
             state.userExplicitlyClickedStart = true;
             state.updateActivity();  // Refresh activity clock so isStuck can't fire before first iteration
@@ -1485,7 +1509,9 @@
             state.log(`Using adapter: ${adapter.siteName}`);
             let _fp = null; try { _fp = adapter.layoutFingerprint ? adapter.layoutFingerprint() : null; } catch (_) {}
             _diag('session_start', { layout: /search-results/.test(location.pathname) ? 'search-results' : 'search', filter: state._startHadFilter, fp: _fp });
-            mainLoop(adapter);
+            const p = mainLoop(adapter, myGen);
+            loopPromise = p;
+            p.finally(() => { if (loopPromise === p) loopPromise = null; });
 
           } else if (request.action === 'stop') {
             await stopBot('User clicked Stop');

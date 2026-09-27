@@ -581,7 +581,41 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'eam-diag-flush') flushDiagBuffer();
 });
 
+// v2.5.93: react-select (Greenhouse job-boards) ignores synthetic key/mouse events, so the
+// isolated-world autofill can't open it. This runs in the page's MAIN world, finds the
+// react-select instance from the input's React fiber and lists / selects an option.
+// The input is located by a data-eam-rs marker set by core/autofill.js.
+function eamReactSelectBridge(marker, action, label) {
+  const input = document.querySelector('[data-eam-rs="' + String(marker).replace(/"/g, '') + '"]');
+  if (!input) return { err: 'noinput' };
+  const fk = Object.keys(input).find(k => k.startsWith('__reactFiber'));
+  if (!fk) return { err: 'nofiber' };
+  let f = input[fk], inst = null;
+  for (let d = 0; f && d < 80; d++, f = f.return) {
+    const s = f.stateNode;
+    if (s && typeof s.selectOption === 'function' && s.props) { inst = s; break; }
+  }
+  if (!inst) return { err: 'noinstance' };
+  const flat = [];
+  for (const o of (inst.props.options || [])) { if (o && Array.isArray(o.options)) flat.push(...o.options); else flat.push(o); }
+  const lab = (o) => { try { return String(inst.props.getOptionLabel ? inst.props.getOptionLabel(o) : o.label); } catch (e) { return String(o && o.label); } };
+  if (action === 'list') return { labels: flat.map(lab).slice(0, 400) };
+  const opt = flat.find(o => lab(o) === label);
+  if (!opt) return { err: 'nolabel' };
+  inst.selectOption(opt);
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === 'eam-react-select' && sender.tab) {
+    chrome.scripting.executeScript({
+      target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+      world: 'MAIN', func: eamReactSelectBridge,
+      args: [message.marker, message.action, message.label || null],
+    }).then(r => sendResponse((r && r[0] && r[0].result) || { err: 'noresult' }))
+      .catch(e => sendResponse({ err: String((e && e.message) || e) }));
+    return true;
+  }
   // AI form-answer proxy — must be FIRST so we can `return true` to keep
   // the response channel open for the async fetch.
   if (message.type === 'ai-form-answer') {
