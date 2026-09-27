@@ -134,6 +134,13 @@
   function yearsQuestionSkill(question) {
     const q = String(question || '').replace(/\s+/g, ' ').replace(/[?*:]+\s*$/, '').trim();
     const pats = [
+      // v2.5.92 (live 2026-09-27): role / tool questions that used to fall back to the total
+      // ("worked as a Product Manager in ad-tech" → 3, "utilisez-vous Oracle Primavera" → 3,
+      // "en tant que Conseil" → skill "tant que Conseil" → 0).
+      /\b(?:worked|been\s+working|experience|exp[ée]rience)\s+(?:do\s+you\s+have\s+)?as\s+(?:an?\s+)?(.+)$/i,
+      /\ben\s+tant\s+que\s+(?:l'|la\s+|le\s+|les\s+)?(.+)$/i,
+      /\b(?:utilisez|pratiquez|maîtrisez|maitrisez)[- ]vous\s+(?:l'|la\s+|le\s+|les\s+)?(.+)$/i,
+      /\btravaillez[- ]vous\s+(?:avec|sur|dans)\s+(?:l'|la\s+|le\s+|les\s+)?(.+)$/i,
       /experience\s+(?:do\s+you\s+have\s+|have\s+you\s+got\s+)?(?:with|in|using|of|on|working\s+with|working\s+in)\s+(.+)$/i,
       /years?\s+of\s+(?:professional\s+|work\s+|relevant\s+|hands[- ]on\s+|practical\s+)?(.+?)\s+experience\b/i,
       /years?\s+(?:have\s+you\s+)?(?:worked|been\s+working|used|been\s+using)\s+(?:with|in|on)?\s*(.+)$/i,
@@ -158,6 +165,7 @@
     ['developpement', 'development'], ['comptabilite', 'accounting'], ['ressources humaines', 'human resources'], ['recrutement', 'recruitment'],
     ['vente', 'sales'], ['analyse de donnees', 'data analysis'], ['gestion de programme', 'program management'], ['service client', 'customer service'],
     ['gestion de projets', 'project management'], ['gestion del proyecto', 'project management'], ['gestion de proyectos', 'project management'],
+    ['conseil', 'consulting'], ['consultant', 'consulting'],
   ];
   function _norm(s) { return ' ' + _deaccent(s).toLowerCase().replace(/[^a-z0-9+#.]+/g, ' ').trim() + ' '; }
   function _tokens(s) {
@@ -179,8 +187,12 @@
     const need = core.length ? core : toks;
     return need.every(w => _hasWord(t, w));
   }
+  // Vendor prefix is not the skill ("Microsoft Excel" ~ "Excel"); the product word still has to match.
+  const _VENDOR_PREFIX = /^\s*(microsoft|ms|google|adobe|apple|amazon|oracle|sap|ibm|atlassian|salesforce)\s+(?=\S)/i;
   function _mentions(text, skill) {
     if (_mentionsOne(text, skill)) return true;
+    const bare = String(skill || '').replace(_VENDOR_PREFIX, '');
+    if (bare !== String(skill || '') && bare.trim().length >= 3 && _mentionsOne(text, bare)) return true;
     const s = _norm(skill).trim();
     for (const [a, b] of _SKILL_SYNONYMS) {
       if (s.includes(a) && _mentionsOne(text, s.replace(a, b))) return true;
@@ -295,6 +307,16 @@
         const v = (y.basis === 'total' && !y.years) ? (config.yearsOfExperience || '2') : String(y.years);
         u().fill(input, v);
         u().log(`Years exp: ${v} (${y.basis})`);
+      }
+      // v2.5.92: day rate / TJM (live: the AI typed "0"). Annual expected salary / 218 working
+      // days, rounded to 10 — never 0. No numeric salary → left to the AI/user flow.
+      else if (haystack.match(/day rate|daily rate|rate per day|\btjm\b|taux journalier|tarif journalier/)) {
+        const annual = parseInt(String(config.expectedSalary || '').replace(/[^\d]/g, ''), 10);
+        if (annual >= 5000) {
+          const rate = String(Math.round(annual / 218 / 10) * 10);
+          u().fill(input, rate);
+          u().log(`Day rate filled: ${rate} (expected salary ${annual} / 218 days)`);
+        }
       }
       // Salary / Compensation / Prétentions salariales
       else if (haystack.match(/salary|compensation|remuneration|salaire|rémunération|prétention|pretention|sueldo|salario|gehalt|stipendio|pay.*expect|expectation.*pay/)) {
@@ -681,6 +703,14 @@
     catch (_) { return false; }
   }
 
+  // v2.5.92: self-declaration questions (conflict of interest, current/former employee of a
+  // named group, relationship with staff, prior interview, criminal record…). The generic
+  // Yes default declared Théo a Booking Holdings employee + ex-Deloitte on a live Agoda form
+  // (2026-09-27). The default for these is always the negative answer.
+  const SELF_DECLARATION_RE = /\b(presently|currently|previously|formerly|ever)\b.{0,40}\b(employed|associated|affiliated)\b|\b(presently|currently|previously|formerly|ever)\b.{0,20}\bwork(ed|ing)?\s+(for|at)\b|\b(current|former)\s*(\/\s*(an\s+)?)?(ex[- ])?employee\b|\bex[- ]employee\b|\brelationship with\b|\brelated to (a|an|any)\b|\b(relatives?|family members?)\b.{0,60}\b(work|employ)|\bassociated with\b.{0,60}\b(entit|compan|subsidiar|firm|group)|\baffiliated with\b|conflict of interest|\b(previously|already|before)\b.{0,30}\b(applied|interviewed)\b|\binterview process\b.{0,80}\b(past|within|last)\b|\bapplied\b.{0,40}\b(before|previously|in the past)\b|\b(convicted|criminal record|felony|misdemeanou?r)\b|\bnon-?compete\b|government official|politically exposed|d[ée]j[àa] (postul|travaill)|actuellement (employ|salari)|ancien (salari|employ)|lien de parent|conflit d.int[ée]r[êe]t/i;
+  function isSelfDeclarationQuestion(text) { return SELF_DECLARATION_RE.test(String(text || '')); }
+  const NEGATIVE_OPTION_RE = /^(no|non|nein)\b|\b(i am not|i'm not|i have not|i haven't|have never|never|not (a|an|currently)|none)\b|^je (ne|n')/i;
+
   // ─── Checkboxes ───────────────────────────────────────────────────────
   async function fillCheckboxes(modal, config) {
     // Pass 1: standalone consent/GDPR checkboxes — auto-check.
@@ -1052,10 +1082,17 @@
         if (fillLanguageLevelRadio(fieldset, radioInputs, questionText, config.languages || [])) continue;
       }
 
+      // v2.5.92: never overwrite a group that already has an answer (LinkedIn's saved
+      // answer, the AI pick, or our previous pass on a re-run of the same step).
+      if (Array.from(radioInputs).some(r => r.checked)) continue;
+
       let desiredAnswer = 'yes';
       const isOptIn = isMarketingOptInLabel(questionText);
+      const isSelfDecl = isSelfDeclarationQuestion(questionText);
       if (isOptIn) {
         desiredAnswer = 'no'; // v2.5.87: marketing / SMS opt-in → No, never the Yes default
+      } else if (isSelfDecl) {
+        desiredAnswer = 'no';
       } else if (questionText.match(/visa|sponsor|sponsorship/i) && config.visaSponsorship) {
         desiredAnswer = config.visaSponsorship;
       } else if (questionText.match(/author|legal.*work|permit.*work|eligib.*work|right.*work/i) && config.legallyAuthorized) {
@@ -1077,10 +1114,20 @@
           if (!radio.checked) {
             radioLabel ? radioLabel.click() : radio.click();
             u().log(`Radio ${desiredAnswer}: ${questionText.substring(0, 30)}`);
-            answered = true;
           }
+          answered = true; // already on the wanted answer counts too (no Yes-default flip)
           break;
         }
+      }
+
+      if (!answered && isSelfDecl) {
+        // Non-"No" wording ("I am not…", "Never"): pick the negative option, else leave it.
+        for (const radio of radioInputs) {
+          const lbl = fieldset.querySelector(`label[for="${radio.id}"]`);
+          const t = (lbl ? lbl.textContent : radio.value || '').trim();
+          if (NEGATIVE_OPTION_RE.test(t)) { lbl ? lbl.click() : radio.click(); u().log(`Radio self-declaration → "${t.substring(0, 30)}"`); answered = true; break; }
+        }
+        if (!answered) { u().log(`Radio self-declaration left unanswered: ${questionText.substring(0, 40)}`); continue; }
       }
 
       if (!answered && !isOptIn) {
@@ -1237,6 +1284,13 @@
         }
       }
 
+      // v2.5.92: self-declaration selects ("Yes, I am a current/ex-employee of Deloitte…")
+      // take the negative option or stay unanswered — never the blind options[1].
+      if (!selectedOption && isSelfDeclarationQuestion(getFieldQuestion(select, modal) || labelText)) {
+        selectedOption = options.slice(1).find(o => NEGATIVE_OPTION_RE.test(o.text.trim()));
+        u().log(`Self-declaration select → ${selectedOption ? '"' + selectedOption.text.trim().substring(0, 40) + '"' : 'left unanswered'}: ${labelText.substring(0, 40)}`);
+        if (!selectedOption) continue;
+      }
       // v2.5.87: opt-in selects never fall back to options[1] (often "Yes").
       if (!selectedOption && isMarketingOptInLabel(labelText)) {
         selectedOption = options.find(o => /^(no|non|nein)\b|do not|don'?t|decline|opt[- ]?out|ne (souhaite|veux) pas/i.test(o.text.trim()));
@@ -1333,6 +1387,8 @@
 
   // ─── Export ───────────────────────────────────────────────────────────
   window.EAM.FormFiller = {
+    isSelfDeclarationQuestion,
+    NEGATIVE_OPTION_RE,
     fillFormStep,
     fillTextInputs,
     fillResumeInputs,

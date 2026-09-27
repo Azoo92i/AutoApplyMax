@@ -118,6 +118,16 @@
       return no;
     }
 
+    // v2.5.92: self-declaration choice (conflict of interest, current/former employee, relationship
+    // with staff, prior interview, criminal record) → the negative option, before cache and AI.
+    const FF = window.EAM && window.EAM.FormFiller;
+    if (FF && FF.isSelfDeclarationQuestion && Array.isArray(options) && options.length && fieldType !== 'checkbox'
+        && FF.isSelfDeclarationQuestion(question)) {
+      const neg = options.find(o => FF.NEGATIVE_OPTION_RE.test(String(o).trim())) || null;
+      log()(`AI [self-declaration guard]: "${String(question).substring(0, 50)}" → ${neg ? '"' + neg + '"' : '(no negative option — left unanswered)'}`);
+      return neg || 'skip';
+    }
+
     await loadCache();
 
     // Check cache first
