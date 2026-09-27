@@ -1,0 +1,1229 @@
+/**
+ * AutoApplyMax - Shared Utilities
+ * Extracted from content-simple.js
+ * Namespace: window.EAM.utils
+ */
+
+(function () {
+  'use strict';
+
+  // Initialize namespace
+  window.EAM = window.EAM || {};
+
+  // ─── State ────────────────────────────────────────────────────────────
+  let isRunning = false;
+  let userExplicitlyClickedStart = false;
+  let appliedCount = 0;
+  let skippedCount = 0;
+  let appliedJobs = [];
+  let lastActivityTime = Date.now();
+  let lastJobIndex = -1;
+  const STUCK_TIMEOUT = 120000; // 2 minutes
+
+  let config = {};
+  let resumeFile = null;
+  let resumeFileName = null;
+  let resumeFileType = null;
+
+  // ─── Logging ──────────────────────────────────────────────────────────
+  function log(msg) {
+    console.log('[EAM Bot]', msg);
+    try {
+      chrome.runtime.sendMessage({ type: 'log', message: msg });
+    } catch (e) {}
+  }
+
+  // ─── Wait ─────────────────────────────────────────────────────────────
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ─── Click (PROTECTED) ────────────────────────────────────────────────
+  async function click(element) {
+    if (!isRunning || !userExplicitlyClickedStart) {
+      console.error('SECURITY VIOLATION: Attempted click() but bot is NOT running!');
+      console.error('isRunning:', isRunning, '| userExplicitlyClickedStart:', userExplicitlyClickedStart);
+      console.trace('Call stack:');
+      return;
+    }
+    // For <a href>: install a one-shot capture-phase preventDefault BEFORE
+    // dispatching click. React's onClick handler still runs (in bubble
+    // phase) and opens the in-place modal, but the browser's default
+    // navigation is blocked. Without this, clicking the LinkedIn Easy
+    // Apply <a> on certain page layouts navigates to /jobs/view/JOBID/
+    // apply/ which breaks the bot's iteration (filter dropped, layout
+    // changes, user loses LinkedIn session). Idempotent — no-op for
+    // non-anchor elements.
+    if (element && element.tagName === 'A' && element.hasAttribute('href')) {
+      const blocker = (e) => { e.preventDefault(); };
+      element.addEventListener('click', blocker, { once: true, capture: true });
+    }
+    // Simple native click — the ONLY safe default for form-filler which
+    // clicks radios, selects, checkboxes, custom dropdowns, Next/Review/
+    // Submit buttons. The double-fire pattern (dispatchEvent chain + native
+    // click) that was here from v2.5.44→52 broke fillFormStep on some
+    // LinkedIn custom widgets: dispatchEvent opens a custom dropdown, then
+    // native click closes it → form-filler never sees the options → AI
+    // form-answer never fires. Correlated with the 2026-08-12 form-answer
+    // outage (17 calls/day → 0). The retry-chain that fixed Skas's card
+    // click no-op has been moved into the dedicated `clickWithRetry` used
+    // by linkedin-adapter.clickJobCard only.
+    element.click();
+    updateActivity();
+    await wait(500);
+  }
+
+  // ─── Click with retry (for card selection only, NOT form fields) ─────
+  // Used exclusively by linkedin-adapter.clickJobCard which needs the full
+  // pointer+mouse sequence to trigger React's onClick on virtualized job
+  // cards. Do NOT use on form fields — see rationale above the `click()`
+  // function.
+  async function clickWithRetry(element) {
+    if (!isRunning || !userExplicitlyClickedStart) {
+      console.error('SECURITY VIOLATION: Attempted clickWithRetry() but bot is NOT running!');
+      return;
+    }
+    // Guard inner anchors on the wrapper (blocks default navigation).
+    if (element && element.querySelectorAll && element.tagName !== 'A') {
+      element.querySelectorAll('a[href]').forEach(a => {
+        a.addEventListener('click', e => { e.preventDefault(); }, { once: true, capture: true });
+      });
+    }
+    // Dispatch full pointer+mouse+click sequence — React 17+ delegated
+    // onClick handlers on job cards need this. Fires with real coordinates
+    // and bubbles.
+    try {
+      const rect = element.getBoundingClientRect ? element.getBoundingClientRect() : { left: 0, top: 0, width: 1, height: 1 };
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
+      if (typeof PointerEvent === 'function') {
+        element.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse', isPrimary: true }));
+      }
+      element.dispatchEvent(new MouseEvent('mousedown', opts));
+      if (typeof PointerEvent === 'function') {
+        element.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse', isPrimary: true, buttons: 0 }));
+      }
+      element.dispatchEvent(new MouseEvent('mouseup', { ...opts, buttons: 0 }));
+      element.dispatchEvent(new MouseEvent('click', { ...opts, buttons: 0 }));
+    } catch (_) { /* fall through to native click */ }
+    try { element.click(); } catch (_) {}
+    updateActivity();
+    await wait(500);
+  }
+
+  // ─── Fill (PROTECTED) ─────────────────────────────────────────────────
+  function fill(input, value) {
+    if (!isRunning || !userExplicitlyClickedStart) {
+      console.error('SECURITY VIOLATION: Attempted fill() but bot is NOT running!');
+      console.error('isRunning:', isRunning, '| userExplicitlyClickedStart:', userExplicitlyClickedStart);
+      return;
+    }
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  // ─── Activity tracking ────────────────────────────────────────────────
+  let _lastHeartbeatWrite = 0;
+  function updateActivity() {
+    lastActivityTime = Date.now();
+    // Refresh the cross-tab engine claim heartbeat every 30s. Fire-and-
+    // forget — the claim only matters when a SECOND tab tries to Start.
+    // Extension edge-case audit 2026-08-14 added this + the mutex check
+    // in engine.js request.action==='start'. 90s TTL on the claim gives
+    // us 3 heartbeat windows of resilience against SW restarts.
+    if (isRunning && (lastActivityTime - _lastHeartbeatWrite) > 30000) {
+      _lastHeartbeatWrite = lastActivityTime;
+      try {
+        chrome.storage.local.set({ engineOwnerClaimedAt: lastActivityTime }).catch(() => {});
+      } catch (_) { /* fire-and-forget */ }
+    }
+  }
+
+  function isStuck() {
+    return (Date.now() - lastActivityTime) > STUCK_TIMEOUT;
+  }
+
+  // ─── File utilities ───────────────────────────────────────────────────
+  function base64ToFile(base64String, filename, mimeType) {
+    try {
+      const base64Data = base64String.includes(',') ? base64String.split(',')[1] : base64String;
+      const binaryString = atob(base64Data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return new File([bytes], filename, { type: mimeType });
+    } catch (error) {
+      log(`Error converting base64 to file: ${error.message}`);
+      return null;
+    }
+  }
+
+  async function fillFileInput(fileInput, file) {
+    try {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      fileInput.files = dataTransfer.files;
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+      log(`Resume uploaded: ${file.name}`);
+      return true;
+    } catch (error) {
+      log(`Error filling file input: ${error.message}`);
+      return false;
+    }
+  }
+
+  // ─── Storage helpers ──────────────────────────────────────────────────
+  function updateAppliedCount() {
+    chrome.storage.local.set({ appliedCount });
+    try {
+      chrome.runtime.sendMessage({ type: 'updateCount', count: appliedCount });
+    } catch (e) {}
+  }
+
+  function updateSkippedCount() {
+    chrome.storage.local.set({ skippedCount });
+    try {
+      chrome.runtime.sendMessage({ type: 'updateSkippedCount', count: skippedCount });
+    } catch (e) {}
+  }
+
+  function saveAppliedJobsToStorage() {
+    chrome.storage.local.set({ appliedJobs });
+  }
+
+  // ─── Skip logic ───────────────────────────────────────────────────────
+  function shouldSkipByBlacklist(title, company, description, blacklistKeywords) {
+    if (!blacklistKeywords || blacklistKeywords.trim() === '') return false;
+    const keywords = blacklistKeywords.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
+    if (keywords.length === 0) return false;
+    const jobText = (title + ' ' + company + ' ' + description).toLowerCase();
+    for (const keyword of keywords) {
+      // v2.5.88: whole-word match (was substring: "intern" skipped every
+      // "international" job, "chef" skipped "Chef de projet"… via the description).
+      const esc = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+      let hit;
+      try { hit = new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '($|[^\\p{L}\\p{N}])', 'iu').test(jobText); }
+      catch (_) { hit = jobText.includes(keyword); }
+      if (hit) {
+        log(`Skip (Blacklist): "${keyword}" found in job`);
+        log(`   Title: ${title.substring(0, 50)}`);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function extractYearsRequired(text) {
+    if (!text) return 0;
+    const patterns = [
+      /(\d+)\+?\s*(?:years?|yrs?)/gi,
+      /(\d+)\+?\s*(?:ans?|années?)/gi,
+      /(\d+)\+?\s*años?/gi,
+      /(\d+)\+?\s*jahre?/gi,
+      /(\d+)\+?\s*anni?/gi
+    ];
+    const years = [];
+    patterns.forEach(pattern => {
+      const matches = text.matchAll(pattern);
+      for (const match of matches) {
+        const num = parseInt(match[1]);
+        if (num > 0 && num <= 20) years.push(num);
+      }
+    });
+    return years.length > 0 ? Math.max(...years) : 0;
+  }
+
+  // v2.5.89: years REQUIRED by a job description (the "max years required" setting
+  // used to read only card titles, where LinkedIn never puts it). Only requirement
+  // phrasing counts — "5+ years of experience", "minimum 7 ans d'expérience",
+  // "at least 3 years" — and company-history phrasing is ignored ("our company has
+  // 20 years of experience", "depuis plus de 30 ans", "founded 15 years ago").
+  function extractRequiredYears(text) {
+    if (!text) return 0;
+    const t = String(text).replace(/\s+/g, ' ');
+    const found = [];
+    const pats = [
+      /(?:at\s+least|minimum(?:\s+of)?|min\.?|a\s+minimum\s+of|over|more\s+than|plus\s+de|au\s+moins|minimum\s+de|m[ií]nimo(?:\s+de)?|mindestens)?\s*(\d{1,2})\s*(?:\+|\s*-\s*\d{1,2}|\s*(?:to|à|a)\s*\d{1,2})?\s*(?:years?|yrs?)(?:'|’)?\s+(?:of\s+)?(?:(?:professional|relevant|proven|hands[- ]on|work(?:ing)?|industry|practical|solid|progressive|prior|previous|related|total|post[- ]qualification)\s+){0,3}(?:experience|exp\b)/gi,
+      /(\d{1,2})\s*(?:\+|\s*(?:à|a|-)\s*\d{1,2})?\s*(?:ans?|années?)\s+(?:d['’]\s*|minimum\s+d['’]\s*)?(?:exp[ée]rience)/gi,
+      /exp[ée]rience\s+(?:professionnelle\s+|significative\s+|confirm[ée]e\s+|r[ée]ussie\s+|similaire\s+)?(?:d['’]\s*au\s+moins|de\s+(?:plus\s+de\s+)?|minimum(?:\s+de)?|d['’])\s*(\d{1,2})\s*(?:\+|\s*(?:à|a|-)\s*\d{1,2})?\s*(?:ans?|années?)/gi,
+      /(?:minimum|at\s+least|au\s+moins)\s*(?:of\s+|de\s+)?(\d{1,2})\s*(?:\+)?\s*(?:years?|ans?|années?)/gi,
+      /(\d{1,2})\s*(?:\+)?\s*(?:años?)\s+de\s+experiencia/gi,
+      /(\d{1,2})\s*(?:\+)?\s*jahre?\s+(?:berufs)?erfahrung/gi,
+    ];
+    const companyCtx = /\b(we|we've|we have|our|company|firm|group|since|founded|history|legacy|over the (last|past)|for (more than|over)|depuis|notre|nous|fond[ée]e?|soci[ée]t[ée]|entreprise|cabinet|groupe|existence|nuestra|empresa|unser|seit)\b[^.]{0,40}$/i;
+    for (const re of pats) {
+      for (const m of t.matchAll(re)) {
+        const n = parseInt(m[1], 10);
+        if (!(n > 0 && n <= 25)) continue;
+        const before = t.slice(Math.max(0, m.index - 60), m.index);
+        if (companyCtx.test(before)) continue;
+        found.push(n);
+      }
+    }
+    return found.length ? Math.max(...found) : 0;
+  }
+
+  // ─── Daily limit detection ────────────────────────────────────────────
+  // Only scan VISIBLE modals/toasts/alerts — never raw body.innerText.
+  // Body text contains job descriptions, suggestions, ads, footer copy
+  // etc. which can legitimately contain words like "limit", "tomorrow",
+  // "apply" and false-trigger this check, causing the bot to call
+  // stopBot() mid-iteration and break the for loop with "Bot stopped"
+  // even though no real limit was hit (reported bug, Apr 2026).
+  function _scanDialogsForPatterns(patterns, returnElement) {
+    // Combine parent doc dialogs with shadow root dialogs (the new
+    // /jobs/search-results/ design renders limit modals in the shadow).
+    // LinkedIn's daily/rate-limit popup uses native <dialog> element
+    // (HTML5 tag, no explicit role="dialog"). querySelector on the role
+    // selector alone misses it — verified live 2026-08-13 that Théo hit
+    // the daily cap but bot kept applying because our scan returned false.
+    // Include the tag selector `dialog` to catch native HTML5 dialogs too.
+    // 2026-09-04: added `returnElement` opt-in so callers can hide the
+    // scary LinkedIn popup after detection (rate-limit UX pass).
+    const collect = (root) => [
+      ...root.querySelectorAll('dialog, [role="dialog"], [role="alert"], [role="alertdialog"], .artdeco-modal__content, .artdeco-toast-item, .artdeco-inline-feedback'),
+    ];
+    const scopes = [...collect(document)];
+    try {
+      const sr = document.getElementById('interop-outlet')?.shadowRoot;
+      if (sr) scopes.push(...collect(sr));
+    } catch (e) {}
+    // Normalize Unicode quotes so patterns with straight apostrophes match
+    // LinkedIn's curly ones (U+2019 in "today's"). Also collapse whitespace.
+    // Bug caught 2026-09-08 (v2.5.70): daily-limit popup uses "today’s"
+    // (curly) but our patterns used "today's" (straight) → includes() failed
+    // → bot never stopped when Théo hit the daily cap.
+    const norm = (s) => s.toLowerCase()
+      .replace(/[‘’ʼ]/g, "'")
+      .replace(/[“”]/g, '"')
+      .replace(/\s+/g, ' ');
+    const normalizedPatterns = patterns.map(norm);
+    for (const el of scopes) {
+      // Visibility check via bounding rect — offsetParent is null for
+      // position:fixed elements (per HTML5 spec), and LinkedIn's
+      // daily-limit / rate-limit modals are ALWAYS fixed-positioned.
+      // The old offsetParent-only check silently skipped them → users
+      // hit the daily cap, bot didn't detect, kept trying → burned the
+      // remaining cards each with a 20s timeout.
+      const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
+      if (rect.width === 0 && rect.height === 0 && el !== document.body) continue;
+      const text = norm(el.textContent || '');
+      for (let i = 0; i < normalizedPatterns.length; i++) {
+        if (text.includes(normalizedPatterns[i])) {
+          return returnElement ? { pattern: patterns[i], element: el } : patterns[i];
+        }
+      }
+    }
+    return null;
+  }
+
+  // ─── Replace LinkedIn rate-limit popup CONTENT with our friendly message ─
+  // LinkedIn's raw message ("automation tools may put your account at risk
+  // of restriction") scares users who signed up for a tool that automates
+  // job applications. Théo 2026-09-08: instead of hiding LinkedIn's popup
+  // and rendering our banner beside it, REPLACE the popup's inner HTML in
+  // place — user sees a single friendly message in LinkedIn's own container,
+  // preserving position and dismiss ergonomics. Falls back to hide+banner
+  // if the container structure is unexpected.
+  // Line icons for in-page notices (dashboard style, currentColor) — no emoji
+  // anywhere in the extension UI (Théo 2026-09-26).
+  const AAM_ICON = {
+    pause: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M10 9v6M14 9v6"/></svg>',
+    target: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+    info: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+    close: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+  };
+  const AAM_FONT = 'Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+
+  function _replaceRateLimitContent(el, mode) {
+    if (!el) return { replaced: false };
+    // mode: 'rate' (default) shows friendly pause message; 'daily' shows
+    // terminal "come back tomorrow" message with matching UX (2026-09-09).
+    // Both live in the same shadow-DOM to survive LinkedIn's cascade.
+    // Icons/font inlined (not AAM_ICON/AAM_FONT) so this function stays
+    // self-contained — tests/ext-rate-limit-inplace extracts it on its own.
+    const ICON_TARGET = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>';
+    const ICON_PAUSE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M10 9v6M14 9v6"/></svg>';
+    const FONT = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    const copy = mode === 'daily' ? {
+      icon: ICON_TARGET,
+      iconColor: '#059669',
+      title: 'You hit today’s LinkedIn Easy Apply limit',
+      // v2.5.87 (UX audit): LinkedIn publishes no fixed number (it hit after ~28 on
+      // 2026-09-25), and the bot does NOT restart by itself — the user clicks Start.
+      body: 'LinkedIn’s daily Easy Apply limit is reached, so the bot has stopped. Easy Apply usually comes back within a day — click Start again then.',
+      bg: 'linear-gradient(135deg, #ecfdf5, #d1fae5)',
+      border: '#a7f3d0',
+      shadow: 'rgba(5, 150, 105, 0.10)',
+    } : {
+      icon: ICON_PAUSE,
+      iconColor: '#0a66c2',
+      title: 'Short pause to protect your account',
+      body: 'Waiting a few minutes to avoid LinkedIn rate limit — this is a normal safety pause. Auto-apply will resume automatically. Keep this tab in the foreground for best results.',
+      bg: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
+      border: '#bfdbfe',
+      shadow: 'rgba(10, 102, 194, 0.10)',
+    };
+    try {
+      // Preserve original outerHTML so we can restore on resume.
+      const original = el.outerHTML;
+      el.setAttribute('data-eam-rate-limit-original', 'yes');
+      // Store original in a data attribute (base64 to survive round-trips).
+      try { el.dataset.eamOriginalHtml = btoa(unescape(encodeURIComponent(original)).slice(0, 32000)); } catch (_) {}
+      // Clear existing content
+      el.innerHTML = '';
+
+      // v2.5.70: build DOM via createElement. LinkedIn's .artdeco-toast-item
+      // cascade uses descendant selectors that beat inline `!important` on
+      // inner divs. Solution: attach an isolated Shadow DOM to a fresh
+      // wrapper — shadow-scoped CSS is unreachable to the host page's
+      // stylesheets, so our layout renders as authored.
+      const host = document.createElement('div');
+      host.setAttribute('data-eam-rate-limit-replacement', '1');
+      host.style.cssText = 'display: block; width: 100%;';
+      let shadow;
+      try {
+        shadow = host.attachShadow({ mode: 'open' });
+      } catch (_) { shadow = null; }
+
+      const cssText = [
+        ':host { display: block; contain: layout style; }',
+        `.aam-rl-root { all: initial; display: block; padding: 14px 18px; font-family: ${FONT}; line-height: 1.45; color: #0f172a; background: ${copy.bg}; border-radius: 8px; border: 1px solid ${copy.border}; box-shadow: 0 4px 14px ${copy.shadow}; box-sizing: border-box; }`,
+        '.aam-rl-root, .aam-rl-root * { box-sizing: border-box; }',
+        '.aam-rl-row { display: flex; gap: 10px; align-items: flex-start; }',
+        `.aam-rl-icon { display: inline-flex; flex-shrink: 0; margin-top: 1px; color: ${copy.iconColor}; }`,
+        '.aam-rl-col { flex: 1; display: block; min-width: 0; }',
+        '.aam-rl-title { display: block; font-weight: 700; color: #0f172a; margin: 0 0 5px 0; font-size: 15px; }',
+        '.aam-rl-body { display: block; color: #334155; font-size: 13px; margin: 0; }',
+      ].join('\n');
+
+      const root = document.createElement('div');
+      root.className = 'aam-rl-root';
+      const row = document.createElement('div');
+      row.className = 'aam-rl-row';
+      const icon = document.createElement('span');
+      icon.className = 'aam-rl-icon';
+      icon.innerHTML = copy.icon;
+      const col = document.createElement('div');
+      col.className = 'aam-rl-col';
+      const title = document.createElement('div');
+      title.className = 'aam-rl-title';
+      title.textContent = copy.title;
+      const body = document.createElement('div');
+      body.className = 'aam-rl-body';
+      body.textContent = copy.body;
+      col.appendChild(title); col.appendChild(body);
+      row.appendChild(icon); row.appendChild(col);
+      root.appendChild(row);
+
+      if (shadow) {
+        // Preferred: adoptedStyleSheets (Chrome 73+, all supported ext hosts)
+        try {
+          const sheet = new CSSStyleSheet();
+          sheet.replaceSync(cssText);
+          shadow.adoptedStyleSheets = [sheet];
+        } catch (_) {
+          // Fallback for older browsers: <style> element
+          const s = document.createElement('style');
+          s.textContent = cssText;
+          shadow.appendChild(s);
+        }
+        shadow.appendChild(root);
+        el.appendChild(host);
+      } else {
+        // No-shadow fallback: inline everything (partial CSS isolation only)
+        const s = document.createElement('style');
+        s.textContent = cssText;
+        host.appendChild(s);
+        host.appendChild(root);
+        el.appendChild(host);
+      }
+
+      // Never let the replaced element be display:none — some LinkedIn CSS
+      // hides `.artdeco-toast-item` after N seconds; keep ours visible for
+      // the full pause window (up to 3 min per strike).
+      el.style.setProperty('display', 'block', 'important');
+      el.style.setProperty('visibility', 'visible', 'important');
+      el.style.setProperty('opacity', '1', 'important');
+      return { replaced: true, mode: shadow ? 'shadow-dom' : 'in-place-fallback' };
+    } catch (e) {
+      // Fall back to hide + banner if in-place replacement fails
+      try {
+        el.style.setProperty('display', 'none', 'important');
+        el.setAttribute('data-eam-hidden', 'rate-limit');
+      } catch (_) {}
+      return { replaced: false, mode: 'fallback-hide', error: e.message };
+    }
+  }
+
+  // Legacy alias kept for callers that were pinned to the older name.
+  function _hideRateLimitPopup(el) { return _replaceRateLimitContent(el); }
+
+  // ─── v2.5.85: dismiss LinkedIn dialog + inline chip near Easy Apply ────
+  // Théo 2026-09-18: prior UX replaced LinkedIn's dialog content in-place,
+  // but LinkedIn's dialog uses a modal backdrop that blocks the page even
+  // with our friendly copy inside. New UX: kill LinkedIn's dialog and
+  // drop a small chip inline next to the Easy Apply button on the job
+  // detail panel. No overlay, no page-blocking, page stays browsable
+  // during the cooldown.
+  //
+  // Returns { placed: bool, chip: HTMLElement | null }. Falls back to
+  // _replaceRateLimitContent when there's no Easy Apply anchor
+  // (e.g. rate-limit fired outside a job detail page).
+  // ─── v2.5.92: in-page placement rules (Théo 2026-09-27) ────────────────
+  // Our pause / daily-limit / stop messages live IN the page: a strip under
+  // the Easy Apply row, else a strip at the top of the job details pane,
+  // else nothing in-page (the popup + toolbar badge carry it). Never a
+  // popup rewritten in place, never a card pinned to a screen corner, and
+  // LinkedIn's application window (a dialog holding the form) is never
+  // hidden or rewritten — rewriting it broke the Easy Apply window before.
+  const APP_DIALOG_SEL = '.jobs-easy-apply-modal, [data-test-modal-id="easy-apply-modal"], .jobs-easy-apply-content';
+  function _isApplicationDialog(node) {
+    try {
+      if (!node || !node.querySelector) return false;
+      if (node.closest && node.closest(APP_DIALOG_SEL)) return true;
+      return !!node.querySelector(APP_DIALOG_SEL + ', input:not([type="hidden"]), select, textarea');
+    } catch (_) { return false; }
+  }
+  function _findDetailPane() {
+    const sels = [
+      '.jobs-search__job-details--container', '.jobs-search__job-details', '.scaffold-layout__detail',
+      '.jobs-details', '.job-view-layout', '[class*="jobs-details__main-content"]', '[data-view-name="job-details"]',
+    ];
+    for (const sel of sels) {
+      const hit = [...document.querySelectorAll(sel)].find(e => {
+        try { const r = e.getBoundingClientRect(); return r.width > 280 && r.height > 120 && !e.closest('[data-eam-rl-chip],[data-eam-bot-notice]'); } catch (_) { return false; }
+      });
+      if (hit) return hit;
+    }
+    return null;
+  }
+  // Returns 'below-actions' | 'detail-pane' | null.
+  function _placeInPage(node) {
+    try {
+      const anchor = _findEasyApplyAnchor();
+      if (anchor && _insertBelowActionsRow(node, anchor)) return 'below-actions';
+      const pane = _findDetailPane();
+      if (pane) {
+        node.style.margin = '12px 16px 4px';
+        pane.insertBefore(node, pane.firstChild);
+        return 'detail-pane';
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function _dismissAndInlineChip(el, mode) {
+    try {
+      // Step 1 — dismiss LinkedIn's dialog. Prefer clicking its own
+      // Got it / Close / Dismiss button; fall back to display:none.
+      const findDismissBtn = (root) => {
+        if (!root || !root.querySelector) return null;
+        const bySel = root.querySelector(
+          'button[aria-label*="Got it" i], button[aria-label*="Dismiss" i], button[aria-label*="Close" i], .artdeco-modal__dismiss'
+        );
+        if (bySel) return bySel;
+        const btns = root.querySelectorAll ? root.querySelectorAll('button') : [];
+        return [...btns].find(b => /^got it$|^j.ai compris$|^fermer$|^ok$|^close$/i.test((b.textContent || '').trim())) || null;
+      };
+      const dialog = el.closest && (el.closest('[role="dialog"], .artdeco-modal, .artdeco-toast-item') || el);
+      // v2.5.92: a warning shown INSIDE the application window is left alone
+      // (no click on its buttons, no hiding) — the engine discards that
+      // application itself; touching it broke LinkedIn's Easy Apply window.
+      const inAppWindow = _isApplicationDialog(dialog);
+      const dismissBtn = inAppWindow ? null : (findDismissBtn(dialog) || null);
+      if (dismissBtn) {
+        try { dismissBtn.click(); } catch (_) {}
+      }
+      // v2.5.92: hide LinkedIn's standalone warning (toast / small dialog
+      // with no form) so it doesn't sit next to ours — but never an ancestor
+      // of the Easy Apply control or of our strip, never the application
+      // window, never an overlay that belongs to the apply window.
+      const hideStandaloneWarning = (keep) => {
+        if (inAppWindow) return;
+        try {
+          const hideEl = (node) => {
+            if (!node || _isApplicationDialog(node)) return;
+            const holdsOurs = (keep || []).some(k => k && node.contains(k));
+            if (!holdsOurs) { node.style.setProperty('display', 'none', 'important'); node.setAttribute('data-eam-hidden', 'rate-limit'); return; }
+            node.querySelectorAll('.artdeco-inline-feedback, [role="alert"], .artdeco-toast-item').forEach(m => {
+              if ((keep || []).some(k => k && (m.contains(k) || k.contains(m)))) return;
+              m.style.setProperty('display', 'none', 'important'); m.setAttribute('data-eam-hidden', 'rate-limit');
+            });
+          };
+          hideEl(el);
+          if (dialog && dialog !== el) hideEl(dialog);
+          // The dim backdrop of that warning dialog — only when no application
+          // window is open behind it.
+          if (!document.querySelector(APP_DIALOG_SEL)) {
+            document.querySelectorAll('.artdeco-modal-overlay, [data-test-modal-container]').forEach(o => {
+              if ((keep || []).some(k => k && o.contains(k))) return;
+              o.style.setProperty('display', 'none', 'important');
+              o.setAttribute('data-eam-hidden', 'rate-limit');
+            });
+          }
+        } catch (_) {}
+      };
+
+      // Step 2 — idempotent: one strip at a time.
+      document.querySelectorAll('[data-eam-rl-chip]').forEach(n => n.remove());
+
+      // Step 3 — build the strip. Amber for pause, green for the daily cap.
+      const chipCopy = mode === 'daily' ? {
+        title: 'LinkedIn daily Easy Apply limit reached',
+        body: 'Try again tomorrow.',
+        bg: '#ecfdf5', border: '#a7f3d0', fg: '#065f46',
+        icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+      } : {
+        title: 'Auto-apply paused',
+        body: 'LinkedIn asked us to slow down — resumes automatically in a few minutes.',
+        bg: '#fef3c7', border: '#fcd34d', fg: '#92400e',
+        icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>',
+      };
+      const chip = document.createElement('div');
+      chip.setAttribute('data-eam-rl-chip', mode === 'daily' ? 'daily' : 'rate');
+      chip.setAttribute('role', 'status');
+      chip.setAttribute('aria-live', 'polite');
+      chip.style.cssText = 'display:flex;width:fit-content;max-width:100%;box-sizing:border-box;align-items:center;gap:8px;margin:8px 0 0 0;padding:7px 12px;background:' + chipCopy.bg + ';border:1px solid ' + chipCopy.border + ';color:' + chipCopy.fg + ';border-radius:16px;font:600 12px/1.35 ' + AAM_FONT + ';white-space:normal;box-shadow:0 1px 2px rgba(15,23,42,0.06)';
+      const closeIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+      chip.innerHTML = '<span style="display:inline-flex;flex-shrink:0">' + chipCopy.icon + '</span>' +
+        '<span><strong style="font-weight:700">' + chipCopy.title + '</strong> — ' + chipCopy.body + '</span>' +
+        '<button data-eam-chip-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:2px;line-height:1;color:' + chipCopy.fg + ';opacity:0.6;display:inline-flex">' + closeIcon + '</button>';
+      chip.querySelector('[data-eam-chip-close]')?.addEventListener('click', () => { try { chip.remove(); } catch (_) {} });
+
+      // Step 4 — place it in the page (under Easy Apply, else at the top of
+      // the job details pane). The Easy Apply control itself is never touched.
+      const where = _placeInPage(chip);
+      const anchor = where === 'below-actions' ? _findEasyApplyAnchor() : null;
+      if (anchor) anchor.setAttribute('data-eam-rl-anchor', '1');
+      hideStandaloneWarning([chip, anchor].filter(Boolean));
+      if (!where) return { placed: false, mode: 'popup-only' };
+      return { placed: true, mode: where === 'below-actions' ? 'inline-chip' : 'detail-pane', chip };
+    } catch (e) {
+      // Never fall back to rewriting LinkedIn's window — the popup + toolbar
+      // badge still tell the user what is going on.
+      return { placed: false, mode: 'error', error: e && e.message };
+    }
+  }
+  // Remove any inline chip we injected — engine.js calls this when the
+  // pause ends and the bot resumes.
+  function _removeInlineChip() {
+    try {
+      document.querySelectorAll('[data-eam-rl-chip]').forEach(n => n.remove());
+      document.querySelectorAll('[data-eam-rl-anchor]').forEach(a => a.removeAttribute('data-eam-rl-anchor'));
+    } catch (_) {}
+  }
+
+  // Called when rate-limit resolves — restore original LinkedIn content so
+  // the user can interact with the actual popup again if it re-fires later,
+  // and any hidden fallbacks come back too.
+  function _restoreHiddenRateLimit() {
+    try {
+      // First: elements we replaced in-place — restore original outerHTML.
+      const replaced = document.querySelectorAll('[data-eam-rate-limit-original="yes"]');
+      replaced.forEach((n) => {
+        try {
+          const raw = n.dataset.eamOriginalHtml;
+          if (raw) {
+            const orig = decodeURIComponent(escape(atob(raw)));
+            n.outerHTML = orig; // note: replaces the node itself with restored markup
+            return;
+          }
+        } catch (_) {}
+        // Fallback: at least remove our injected block so it doesn't linger.
+        n.removeAttribute('data-eam-rate-limit-original');
+        delete n.dataset.eamOriginalHtml;
+        const injected = n.querySelector('[data-eam-rate-limit-replacement="1"]');
+        if (injected) injected.remove();
+      });
+      // Second: legacy hidden elements (from the fallback path).
+      const hidden = document.querySelectorAll('[data-eam-hidden="rate-limit"]');
+      hidden.forEach((n) => {
+        n.style.removeProperty('display');
+        n.removeAttribute('data-eam-hidden');
+      });
+      // Third (v2.5.85): remove any inline chip we placed next to Easy Apply.
+      try { _removeInlineChip(); } catch (_) {}
+    } catch (_) {}
+  }
+
+  function _showFriendlyRateLimitBanner(rect) {
+    // Idempotent — one banner at a time.
+    if (document.getElementById('eam-rate-limit-banner')) return;
+    try {
+      // Adaptive placement: pin to the same viewport corner where LinkedIn's
+      // hidden toast/dialog was, so the user's eye lands where the warning
+      // used to be. Default = bottom-left (LinkedIn's default artdeco-toast
+      // position). rect is captured in checkRateLimit BEFORE the hide.
+      let pos = 'bottom:20px;left:20px;'; // default
+      try {
+        if (rect && (rect.width > 0 || rect.height > 0)) {
+          const vw = window.innerWidth || 1280;
+          const vh = window.innerHeight || 720;
+          const cx = rect.left + rect.width / 2;
+          const cy = rect.top + rect.height / 2;
+          const vertical = cy < vh / 2 ? `top:${Math.max(10, Math.round(rect.top))}px;` : `bottom:${Math.max(10, Math.round(vh - rect.bottom))}px;`;
+          const horizontal = cx < vw / 2 ? `left:${Math.max(10, Math.round(rect.left))}px;` : `right:${Math.max(10, Math.round(vw - rect.right))}px;`;
+          pos = vertical + horizontal;
+        }
+      } catch (_) {}
+      const banner = document.createElement('div');
+      banner.id = 'eam-rate-limit-banner';
+      banner.style.cssText = 'position:fixed;' + pos + 'z-index:2147483647;background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #93c5fd;border-radius:10px;padding:14px 18px;max-width:360px;box-shadow:0 8px 24px rgba(30,64,175,0.18);font-family:' + AAM_FONT + ';color:#1e3a8a;font-size:13px;line-height:1.45';
+      banner.innerHTML =
+        '<div style="display:flex;gap:10px;align-items:flex-start">' +
+        '<span style="display:inline-flex;flex-shrink:0;color:#0a66c2">' + AAM_ICON.pause + '</span>' +
+        '<div style="flex:1">' +
+        '<div style="font-weight:600;color:#0f172a;margin-bottom:4px">Short pause to protect your account</div>' +
+        '<div style="color:#475569">Waiting a few minutes to avoid LinkedIn rate limit — this is a normal safety pause. Auto-apply will resume automatically. Keep this tab in the foreground for best results.</div>' +
+        '</div>' +
+        '<button type="button" aria-label="Dismiss" style="background:transparent;border:0;color:#64748b;font-size:18px;cursor:pointer;padding:0 2px;line-height:1;margin-left:4px">' + AAM_ICON.close + '</button>' +
+        '</div>';
+      banner.querySelector('button').addEventListener('click', () => banner.remove());
+      document.body.appendChild(banner);
+      // Auto-remove after 90s so the banner doesn't linger after the pause.
+      setTimeout(() => banner.remove(), 90000);
+    } catch (_) {}
+  }
+
+  // ─── Easy Apply filter nudge ───────────────────────────────────────────
+  // Show ONCE per tab. User dismissed → don't nag. Ege 2026-09-07 lesson:
+  // when the bot is launched on unfiltered search results, most jobs are
+  // external Apply → all skipped → user thinks "the paid feature is broken".
+  function _showEasyApplyFilterHint() {
+    if (document.getElementById('eam-easy-apply-hint')) return;
+    if (sessionStorage.getItem('eam-easy-apply-hint-dismissed') === '1') return;
+    try {
+      const banner = document.createElement('div');
+      banner.id = 'eam-easy-apply-hint';
+      // v2.5.92: in the page (top of the job details pane), never a card
+      // pinned to a screen corner.
+      banner.style.cssText = 'box-sizing:border-box;max-width:520px;background:#fefce8;border:1px solid #fcd34d;border-radius:12px;padding:10px 14px;font-family:' + AAM_FONT + ';color:#78350f;font-size:13px;line-height:1.45';
+      banner.innerHTML =
+        '<div style="display:flex;gap:10px;align-items:flex-start">' +
+        '<span style="display:inline-flex;flex-shrink:0;color:#b45309">' + AAM_ICON.info + '</span>' +
+        '<div style="flex:1">' +
+        '<div style="font-weight:600;color:#7c2d12;margin-bottom:4px">Enable the "Easy Apply" filter</div>' +
+        '<div style="color:#78350f">Most external-Apply jobs are being skipped. Click the <b>Easy Apply</b> chip in LinkedIn\'s filter row to only show jobs the bot can auto-apply to.</div>' +
+        '</div>' +
+        '<button type="button" aria-label="Dismiss" style="background:transparent;border:0;color:#92400e;font-size:18px;cursor:pointer;padding:0 2px;line-height:1;margin-left:4px">' + AAM_ICON.close + '</button>' +
+        '</div>';
+      banner.querySelector('button').addEventListener('click', () => {
+        try { sessionStorage.setItem('eam-easy-apply-hint-dismissed', '1'); } catch (_) {}
+        banner.remove();
+      });
+      const pane = _findDetailPane();
+      if (!pane) return;
+      banner.style.margin = '12px 16px 4px';
+      pane.insertBefore(banner, pane.firstChild);
+      setTimeout(() => banner.remove(), 25000);
+    } catch (_) {}
+  }
+
+  // ─── v2.5.87: visible stop/recovery notice (replaces page reloads) ─────
+  // The bot must NEVER reload the page: LinkedIn scripts are injected by the
+  // popup, so a reload kills the engine (isRunning lost) and often drops the
+  // Easy Apply filter. When in-place recovery fails we stop cleanly and tell
+  // the user why — inline next to Easy Apply when there is one, otherwise a
+  // small fixed card. One notice at a time; cleared on the next Start.
+  // The job's own Easy Apply control (both layouts) — never the "Easy Apply"
+  // filter chip in the search toolbar, never a job card in the list.
+  function _findEasyApplyAnchor() {
+    const visible = (e) => { try { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (_) { return false; } };
+    const notToolbar = (e) => !e.closest('[class*="search-reusables"], [role="radiogroup"], [aria-label*="filter" i], div[componentkey^="job-card-component-"], li[data-occludable-job-id], [data-eam-bot-notice]') &&
+      !e.hasAttribute('aria-pressed') && !e.hasAttribute('aria-checked');
+    const bySel = [
+      '.jobs-apply-button',
+      'button[data-live-test-job-apply-button]',
+      'a[aria-label*="Easy Apply to" i]', 'button[aria-label*="Easy Apply to" i]',
+      'a[aria-label*="Candidature simplifi" i]', 'button[aria-label*="Candidature simplifi" i]',
+    ];
+    for (const sel of bySel) {
+      const hit = [...document.querySelectorAll(sel)].find(e => visible(e) && notToolbar(e));
+      if (hit) return hit;
+    }
+    return [...document.querySelectorAll('button, a')].find(b =>
+      /^easy apply$|^candidature simplifi/i.test((b.textContent || '').trim()) && visible(b) && notToolbar(b) &&
+      b.getBoundingClientRect().left > window.innerWidth * 0.35) || null;
+  }
+  // Insert `node` on its own line right below the row that holds Easy Apply +
+  // Save (+ our Match·Tailor button). Falls back to right after the anchor.
+  function _insertBelowActionsRow(node, anchor) {
+    try {
+      let row = null, el = anchor.parentElement;
+      for (let i = 0; i < 6 && el && el !== document.body; i++) {
+        const cs = getComputedStyle(el);
+        if ((cs.display === 'flex' || cs.display === 'inline-flex') && !/column/.test(cs.flexDirection) &&
+            el.querySelectorAll('button, a').length >= 2) { row = el; break; }
+        el = el.parentElement;
+      }
+      if (row) {
+        // Aug-2026 layout wraps the row in a single-child CSS grid whose
+        // children stack in one cell — step out of it or the notice overlaps
+        // the buttons (seen on /jobs/search-results/).
+        let target = row;
+        while (target.parentElement && target.parentElement !== document.body &&
+               target.parentElement.children.length === 1 &&
+               getComputedStyle(target.parentElement).display === 'grid') target = target.parentElement;
+        if (target.parentNode) { target.parentNode.insertBefore(node, target.nextSibling); return true; }
+      }
+      if (anchor.parentNode) { anchor.parentNode.insertBefore(node, anchor.nextSibling); return true; }
+    } catch (_) {}
+    return false;
+  }
+  function _showBotNotice(title, body, tone) {
+    try {
+      _clearBotNotice();
+      const c = tone === 'info'
+        ? { bg: '#eff6ff', border: '#93c5fd', fg: '#1e3a8a' }
+        : { bg: '#fef3c7', border: '#fcd34d', fg: '#92400e' };
+      const esc = (s) => String(s || '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+      const closeBtn = '<button data-eam-notice-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:0 2px;line-height:1;opacity:0.6;display:inline-flex">' + AAM_ICON.close + '</button>';
+      const n = document.createElement('div');
+      n.setAttribute('data-eam-bot-notice', '1');
+      n.setAttribute('role', 'status');
+      n.setAttribute('aria-live', 'polite');
+      n.innerHTML = '<span style="display:inline-flex;flex-shrink:0">' + AAM_ICON.info + '</span><span><strong style="font-weight:700">AutoApplyMax — ' + esc(title) + '</strong><br>' + esc(body) + '</span>' + closeBtn;
+      const base = 'align-items:flex-start;gap:8px;padding:8px 12px;background:' + c.bg + ';border:1px solid ' + c.border + ';color:' + c.fg + ';border-radius:12px;font:500 12px/1.4 ' + AAM_FONT + ';box-shadow:0 1px 2px rgba(15,23,42,0.06);max-width:420px;white-space:normal';
+      n.style.cssText = 'display:flex;width:fit-content;box-sizing:border-box;margin:8px 0 0 0;' + base;
+      // v2.5.92: in the page only (under Easy Apply / top of the job pane) —
+      // no card pinned to a screen corner. Nowhere to put it → the popup
+      // shows the same reason.
+      if (!_placeInPage(n)) return null;
+      n.querySelector('[data-eam-notice-close]')?.addEventListener('click', () => { try { n.remove(); } catch (_) {} });
+      return n;
+    } catch (_) { return null; }
+  }
+  function _clearBotNotice() {
+    try { document.querySelectorAll('[data-eam-bot-notice]').forEach(x => x.remove()); } catch (_) {}
+  }
+
+  function _structuralDailyLimit() {
+    const LIMIT_WORD = /limit|limite|límite|tomorrow|demain|mañana|morgen|domani|amanhã/i;
+    const btns = document.querySelectorAll('button.jobs-apply-button[disabled], button.jobs-apply-button.artdeco-button--disabled, button#jobs-apply-button-id[disabled]');
+    for (const b of btns) {
+      if (b.closest('[class*="sticky-header"]') || /\{:/.test(b.getAttribute('aria-label') || '')) continue;
+      const r = b.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      const card = b.closest('.job-details-jobs-unified-top-card__container--two-pane, .jobs-unified-top-card, .job-details-jobs-unified-top-card__container, .jobs-details__main-content') || b.parentElement;
+      const fb = card && card.querySelector('.artdeco-inline-feedback--error, [role="alert"].artdeco-inline-feedback');
+      const text = fb ? (fb.innerText || fb.textContent || '').trim() : '';
+      if (text && LIMIT_WORD.test(text)) return { element: fb, text };
+    }
+    return null;
+  }
+
+  function checkDailyLimit() {
+    try {
+      const limitPatterns = [
+        "you've reached today's easy apply limit",
+        "you have reached today's easy apply limit",
+        "you reached today's easy apply limit",
+        "reached today's easy apply limit",
+        "exceeded the daily application limit",
+        "save this job and continue applying tomorrow",
+        "great effort applying today",
+        "we limit easy apply submissions",
+        "limit daily submissions",
+      ];
+      // v2.5.86 (2026-09-20): switched from narrow _scanDialogsForPatterns
+      // to broader _scanRateLimitModalsOnly. The narrow scanner missed the
+      // daily-limit popup on /jobs/search/ and /jobs/search-results/ because
+      // LinkedIn ships it in variable wrapper classes outside dialog/modal.
+      // The broader scanner does a text-walk fallback + norm-lowercases text
+      // so curly quotes match (verified 2026-09-20 with Théo live).
+      const hit = _scanRateLimitModalsOnly(limitPatterns);
+      if (hit) {
+        log('DAILY LIMIT REACHED!');
+        log(`   Pattern: "${hit.pattern}"`);
+        log(`   Applied: ${appliedCount} | Skipped: ${skippedCount}`);
+        // Replace LinkedIn's scary "come back tomorrow" toast in place with
+        // our friendly terminal message. Uses the same dismiss+chip flow as
+        // rate-limit for UX consistency (chip near Easy Apply, no page-blocking
+        // overlay). Falls back to shadow-DOM in-place replacement if no anchor.
+        try {
+          _dismissAndInlineChip(hit.element, 'daily');
+        } catch (_) {}
+        return true;
+      }
+      // v2.5.87 — REAL signal captured live 2026-09-25 00:52 Paris (Théo's account,
+      // after LinkedIn's own "You reached today's Easy Apply limit" dialog was dismissed):
+      //   button#jobs-apply-button-id.jobs-apply-button.artdeco-button--disabled[disabled]
+      //   + sibling div.artdeco-inline-feedback--error[role=alert] "We limit daily submissions…"
+      // Structural check (greyed top-card Easy Apply + LinkedIn inline error) so a
+      // non-English UI is still caught. The hidden sticky-header copy of the button is
+      // ALWAYS disabled (aria-label "Apply to {:jobTitle}…") and is excluded.
+      const structural = _structuralDailyLimit();
+      if (structural) {
+        log('DAILY LIMIT REACHED (greyed Easy Apply + LinkedIn inline error)');
+        log(`   LinkedIn message: "${structural.text.slice(0, 140)}"`);
+        try { _dismissAndInlineChip(structural.element, 'daily'); } catch (_) {}
+        return true;
+      }
+      return false;
+    } catch (error) {
+      log(`Error checking daily limit: ${error.message}`);
+      return false;
+    }
+  }
+
+  // ─── Rate limit detection (LinkedIn "fast pace" warning) ─────────────
+  // Scans dialogs + toasts + modal wrappers. Includes .artdeco-toast-item
+  // (LinkedIn's real rate-limit UI in 2026 is a TOAST, not a modal —
+  // verified 2026-09-06 with Théo live: v2.5.61 strict-scan missed it).
+  // Skip .artdeco-inline-feedback (form errors, too broad).
+  //
+  // Size guard: never touch elements wider than 90% viewport AND taller
+  // than 70% — that's the scaffold, never a popup.
+  function _scanRateLimitModalsOnly(patterns) {
+    const sel = [
+      'dialog',
+      '[role="dialog"]',
+      '[role="alertdialog"]',
+      '[role="alert"]',
+      '.artdeco-modal__content',
+      '.artdeco-modal',
+      '.artdeco-modal-overlay',
+      '.artdeco-toast-item',
+      '.artdeco-inline-feedback',
+      '.jobs-easy-apply-modal',
+      // Fallback: any small fixed-positioned popup at the viewport top/right
+      '[class*="toast"]',
+      '[class*="notice"]',
+      '[class*="banner"]',
+      '[class*="alert"]',
+    ].join(', ');
+    const scopes = Array.from(document.querySelectorAll(sel));
+    try {
+      const sr = document.getElementById('interop-outlet')?.shadowRoot;
+      if (sr) scopes.push(...sr.querySelectorAll(sel));
+    } catch (e) {}
+    const vpW = window.innerWidth;
+    const vpH = window.innerHeight;
+    // Normalize Unicode quotes + whitespace so patterns with straight
+    // apostrophes match LinkedIn's curly ones (U+2019 in "today's").
+    // Added 2026-09-20 (v2.5.86) — daily-limit detection was silently
+    // failing because the broader scanner wasn't norm-ing text.
+    const norm = (s) => s.toLowerCase()
+      .replace(/[‘’ʼ]/g, "'")
+      .replace(/[“”]/g, '"')
+      .replace(/\s+/g, ' ');
+    const normalizedPatterns = patterns.map(norm);
+    for (const el of scopes) {
+      const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
+      if (rect.width === 0 && rect.height === 0) continue;
+      // Size guard — never touch scaffold-sized elements.
+      if (rect.width > vpW * 0.9 && rect.height > vpH * 0.7) continue;
+      const text = norm(el.textContent || '');
+      for (let i = 0; i < normalizedPatterns.length; i++) {
+        if (text.includes(normalizedPatterns[i])) return { pattern: patterns[i], element: el };
+      }
+    }
+    // Selector-based scan missed — fall back to a text-based walk of
+    // small visible elements. LinkedIn ships this warning inside variable
+    // wrapper classes (verified 2026-09-07 Théo live test: strict scan
+    // returned false while the toast was visible). Walk every direct
+    // child of body + shadow-root children up to 640px wide (typical
+    // toast/banner size), look for any pattern text, and return the
+    // narrowest match (deepest element that still contains all the text).
+    try {
+      const all = Array.from(document.querySelectorAll('body *'));
+      let best = null;
+      for (const el of all) {
+        const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
+        if (rect.width === 0 || rect.width > 640) continue;
+        if (rect.height === 0 || rect.height > vpH * 0.6) continue;
+        const text = norm(el.textContent || '');
+        for (let i = 0; i < normalizedPatterns.length; i++) {
+          if (text.includes(normalizedPatterns[i])) {
+            // Prefer a smaller (deeper) match to avoid hiding the whole body.
+            if (!best || rect.width * rect.height < best.rect.width * best.rect.height) {
+              best = { pattern: patterns[i], element: el, rect };
+            }
+          }
+        }
+      }
+      if (best) return { pattern: best.pattern, element: best.element };
+    } catch (_) {}
+    return null;
+  }
+
+  // Background poller — LinkedIn's rate-limit toast can appear between
+  // the engine's discrete checkRateLimit() calls (only at 2 points in the
+  // main loop), and stay visible while the engine sleeps on isLoading()
+  // or form-fill. Poll every 2.5s while the bot is running so we detect
+  // + hide + pause fast. Runs as a top-level interval owned by utils.
+  // Idempotent — reuses one interval per page.
+  let _rateLimitPollHandle = null;
+  function _startRateLimitPoller() {
+    if (_rateLimitPollHandle) return;
+    _rateLimitPollHandle = setInterval(() => {
+      try {
+        // Poll only while the bot is actively running. Otherwise no need
+        // to hide LinkedIn's own UI on a page where the user is idle.
+        if (!isRunning) return;
+        if (checkRateLimit()) {
+          // checkRateLimit already hid the popup + showed our banner.
+          // Set a pending flag the engine can respect at its next await.
+          _pendingRateLimitPause = true;
+        }
+      } catch (_) {}
+    }, 2500);
+  }
+  function _stopRateLimitPoller() {
+    if (_rateLimitPollHandle) { clearInterval(_rateLimitPollHandle); _rateLimitPollHandle = null; }
+  }
+  let _pendingRateLimitPause = false;
+
+  // v2.5.87: structural "applying too fast" (temporary throttle) detector —
+  // wording-independent fallback for checkRateLimit. A small LinkedIn
+  // dialog / toast / inline error (no form fields) that talks about Easy
+  // Apply AND a slow-down / pause, but NOT about today / tomorrow (that is
+  // the DAILY limit, handled by checkDailyLimit → stop until tomorrow).
+  // Throttle = pause + auto-resume; daily = stop. Never the same handler.
+  const THROTTLE_EA_RE = /easy apply|candidature simplifi|postuler|apply/i;
+  const THROTTLE_WORD_RE = /\b(fast pace|too (fast|quickly)|so (fast|quickly)|applying quickly|slow down|briefly paused|paused|pausing|safeguard|automated|rythme (rapide|soutenu)|trop (vite|rapidement)|mis en pause|temporairement|momentan[ée]ment|automatis)/i;
+  const DAILY_WORD_RE = /today|tomorrow|daily|per day|demain|aujourd|quotidien|du jour|par jour/i;
+  function _structuralRateLimit() {
+    const sel = 'dialog, [role="dialog"], [role="alertdialog"], .artdeco-modal, .artdeco-toast-item, .artdeco-inline-feedback--error';
+    const scopes = [...document.querySelectorAll(sel)];
+    try { const sr = document.getElementById('interop-outlet')?.shadowRoot; if (sr) scopes.push(...sr.querySelectorAll(sel)); } catch (_) {}
+    for (const el of scopes) {
+      if (el.closest && el.closest('[data-eam-rl-chip],[data-eam-bot-notice],[data-eam-rate-limit-replacement],#eam-rate-limit-banner')) continue;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
+      if (!r.width || !r.height) continue;
+      if (el.querySelector && el.querySelector('input, select, textarea')) continue; // an application form, not a warning
+      const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 600) continue;
+      if (THROTTLE_EA_RE.test(text) && THROTTLE_WORD_RE.test(text) && !DAILY_WORD_RE.test(text)) {
+        return { pattern: 'structural: ' + text.slice(0, 80), element: el };
+      }
+    }
+    return null;
+  }
+
+  function checkRateLimit() {
+    try {
+      // Very specific phrases from LinkedIn's actual rate-limit warning
+      // (verified 2026-09-06 with Théo's live test). Kept ONLY strings
+      // that would never appear in innocent LinkedIn UI.
+      const rateLimitPatterns = [
+        "applying at a fast pace",
+        "briefly paused easy apply as a safeguard",
+        "briefly paused easy apply",
+        "safeguard against automated inauthentic",
+        "safeguard against automated",
+        "third-party automation tools may put your account",
+        "automation tools may put your account at risk",
+        // French variants
+        "candidatures à un rythme rapide",
+        "nous avons temporairement mis en pause easy apply",
+        "outils d'automatisation tiers",
+        "outils d'automatisation",
+      ];
+      const hit = _scanRateLimitModalsOnly(rateLimitPatterns) || _structuralRateLimit();
+      if (hit) {
+        log(`Rate-limit safeguard triggered — replacing LinkedIn popup content. Pattern: "${hit.pattern}"`);
+        // v2.5.92: strip in the page (under Easy Apply, else top of the job
+        // pane) — no corner banner, no rewritten LinkedIn window. When it
+        // can't be placed, the popup + toolbar badge show the pause.
+        _dismissAndInlineChip(hit.element);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      log(`Error checking rate limit: ${error.message}`);
+      return false;
+    }
+  }
+
+  // ─── Loading detection ────────────────────────────────────────────────
+  async function isPageLoadingSlow() {
+    // Only signal "loading" when an actual visible loader/spinner is up.
+    // Previous version also returned true whenever `.jobs-easy-apply-modal`
+    // was missing — a false positive during normal browsing that stalled
+    // the engine's inner step-loop for 20s per card (2026-08 selector rot).
+    try {
+      if (document.readyState !== 'complete') return true;
+      // Only match LinkedIn-specific loaders. Generic .spinner/.loading match
+      // decorative page elements (avatars, image lazy-loaders) and cause
+      // false-positive "loading" for the whole session.
+      const spinners = document.querySelectorAll(
+        '.artdeco-loader:not([aria-hidden="true"]), ' +
+        '[class^="artdeco-loader"]:not([aria-hidden="true"]), ' +
+        '.jobs-easy-apply-modal [role="progressbar"], ' +
+        '[data-test-jobs-easy-apply-modal] [role="progressbar"]'
+      );
+      for (const spinner of spinners) {
+        // v2.5.89: a DETERMINATE progress bar (aria-valuenow = the form's own
+        // "0% / 50% / 100%" step bar) is not a loader — it is visible on every
+        // step of LinkedIn's newer Easy Apply form, which made every application
+        // "load" 20 s and get discarded (fixture repro 2026-09-26).
+        if (spinner.getAttribute('role') === 'progressbar' && spinner.hasAttribute('aria-valuenow')) continue;
+        if (spinner.offsetParent !== null) return true;
+      }
+      return false;
+    } catch (error) {
+      return false; // fail-open — don't block engine on utility error
+    }
+  }
+
+  // v2.5.88: a loader only means "stuck" if it is INDETERMINATE (spinner, or a
+  // progressbar without aria-valuenow) and stays visible ≥ 8 s. Before, any
+  // visible [role=progressbar] — e.g. the Easy Apply form's own "0% / 80%"
+  // step bar in LinkedIn's native <dialog> (2026-09-26) — or a 1-s spinner
+  // between steps discarded a healthy application.
+  let _loaderSeenSince = 0;
+  function checkForStuckLoadingPopup() {
+    try {
+      const loadingIndicators = [...document.querySelectorAll('.artdeco-loader, .loading, .spinner, [role="progressbar"]')]
+        .filter(el => isShown(el) && !(el.getAttribute('role') === 'progressbar' && el.hasAttribute('aria-valuenow')));
+      if (loadingIndicators.length) {
+        if (!_loaderSeenSince) _loaderSeenSince = Date.now();
+        if (Date.now() - _loaderSeenSince >= 8000) return true;
+      } else {
+        _loaderSeenSince = 0;
+      }
+      // Broadened modal detection: legacy .jobs-easy-apply-modal PLUS any
+      // visible role=dialog that contains an EA form (survives class rename).
+      const candidates = [
+        ...document.querySelectorAll('.jobs-easy-apply-modal, [data-test-modal-id*="easy-apply" i], [data-test-jobs-easy-apply-modal]'),
+        ...[...document.querySelectorAll('[role="dialog"]')].filter(d => d.querySelector('form input[type="file"], form button[aria-label*="Submit" i], form button[data-live-test-easy-apply-submit-button]')),
+      ];
+      for (const modal of candidates) {
+        // Skip via bounding rect (handles position:fixed correctly, which
+        // offsetParent gets wrong per HTML5 spec).
+        const mRect = modal.getBoundingClientRect ? modal.getBoundingClientRect() : { width: 0, height: 0 };
+        if (mRect.width === 0 && mRect.height === 0) continue;
+        const buttons = modal.querySelectorAll('button');
+        const clickableButtons = Array.from(buttons).filter(b => {
+          if (b.disabled) return false;
+          const bRect = b.getBoundingClientRect ? b.getBoundingClientRect() : { width: 0, height: 0 };
+          return bRect.width > 0 || bRect.height > 0;
+        });
+        if (clickableButtons.length === 0) return true;
+      }
+      return false;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // v2.5.88: visibility that also covers a native <dialog> opened with showModal().
+  // Top-layer dialogs are position:fixed → offsetParent is ALWAYS null even when
+  // shown (LinkedIn's Easy Apply form since 2026-09-26), which made the engine
+  // treat the open form as "modal did not appear".
+  function isShown(el) {
+    if (!el) return false;
+    if (el.offsetParent !== null) return true;
+    try {
+      if (el.tagName === 'DIALOG' && !el.open) return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      const r = el.getBoundingClientRect();
+      return (cs.position === 'fixed' || el.tagName === 'DIALOG') && r.width > 0 && r.height > 0;
+    } catch (_) { return false; }
+  }
+
+  // ─── Export as namespace ──────────────────────────────────────────────
+  // v2.5.92: a CV summary that is really a job description (pasted by
+  // mistake: "Looking for someone with…", "…required") must never be sent to
+  // an employer as the candidate's own text.
+  function cleanProfileSummary(s) {
+    const t = String(s || '').trim();
+    if (!t) return '';
+    if (/\b(looking for (someone|a |an )|we(?:'re| are) (looking|hiring|seeking)|you will\b|must have\b|requirements?\b|responsibilities\b|required\b|the ideal candidate|job description)/i.test(t)) return '';
+    return t;
+  }
+
+  window.EAM.utils = {
+    cleanProfileSummary,
+    // Logging & waiting
+    log,
+    wait,
+    isShown,
+
+    // Protected DOM interactions
+    click,
+    clickWithRetry,
+    fill,
+
+    // Activity tracking
+    updateActivity,
+    isStuck,
+
+    // File utilities
+    base64ToFile,
+    fillFileInput,
+
+    // Storage helpers
+    updateAppliedCount,
+    updateSkippedCount,
+    saveAppliedJobsToStorage,
+
+    // Skip logic
+    shouldSkipByBlacklist,
+    extractYearsRequired,
+    extractRequiredYears,
+
+    // Daily limit, rate limit & loading
+    checkDailyLimit,
+    checkRateLimit,
+    _restoreHiddenRateLimit,
+    _removeInlineChip,
+    _dismissAndInlineChip,
+    _placeInPage,
+    _isApplicationDialog,
+    _findDetailPane,
+    _showEasyApplyFilterHint,
+    _showBotNotice,
+    _clearBotNotice,
+    _structuralRateLimit,
+    _startRateLimitPoller,
+    _stopRateLimitPoller,
+    isPageLoadingSlow,
+    checkForStuckLoadingPopup,
+
+    // Rate-limit pending flag (background poller sets true; engine reads +
+    // clears it after handling the pause). Prevents the bot from continuing
+    // to click Easy Apply between the main loop's discrete rate-limit checks.
+    get pendingRateLimitPause() { return _pendingRateLimitPause; },
+    set pendingRateLimitPause(v) { _pendingRateLimitPause = v; },
+
+    // State getters/setters
+    get isRunning() {
+      return isRunning;
+    },
+    set isRunning(v) {
+      isRunning = v;
+      // Flip the background rate-limit poller on/off with the bot state.
+      try {
+        if (v) _startRateLimitPoller();
+        else _stopRateLimitPoller();
+      } catch (_) {}
+    },
+    get userExplicitlyClickedStart() { return userExplicitlyClickedStart; },
+    set userExplicitlyClickedStart(v) { userExplicitlyClickedStart = v; },
+    get appliedCount() { return appliedCount; },
+    set appliedCount(v) { appliedCount = v; },
+    get skippedCount() { return skippedCount; },
+    set skippedCount(v) { skippedCount = v; },
+    get appliedJobs() { return appliedJobs; },
+    set appliedJobs(v) { appliedJobs = v; },
+    get config() { return config; },
+    set config(v) { config = v; },
+    get resumeFile() { return resumeFile; },
+    set resumeFile(v) { resumeFile = v; },
+    get resumeFileName() { return resumeFileName; },
+    set resumeFileName(v) { resumeFileName = v; },
+    get resumeFileType() { return resumeFileType; },
+    set resumeFileType(v) { resumeFileType = v; },
+    get lastJobIndex() { return lastJobIndex; },
+    set lastJobIndex(v) { lastJobIndex = v; },
+
+    STUCK_TIMEOUT
+  };
+})();
