@@ -343,8 +343,9 @@ body[data-auth="out"] #start-btn { background: var(--bg-primary); color: var(--p
 .sa-help { font-size: 11.5px; color: var(--text-secondary); line-height: 1.35; text-align: center; }
 .sa-linkedin { display: none; }
 body[data-context="linkedin"] .sa-linkedin { display: flex; }
-body[data-context="linkedin"] p.sa-linkedin { display: block; }
-body[data-context="linkedin"] .sa-other { display: none; }
+body[data-context="linkedin"] p.sa-linkedin { display: none; } /* 2.5.95: no helper text */
+/* 2.5.95: Autofill + Track stay visible on LinkedIn too (Théo); secondary look there. */
+body[data-context="linkedin"] #autofill-btn { background: var(--bg-primary); color: var(--primary); border: 1px solid var(--border-strong); box-shadow: none; }
 /* Off LinkedIn, Autofill is the action that works here: Start steps back. */
 body[data-context="other"] #start-btn { background: var(--bg-primary); color: var(--primary); border-color: var(--border-strong); box-shadow: none; }
 
