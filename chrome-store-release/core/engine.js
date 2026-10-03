@@ -36,6 +36,20 @@
 
   let activeAdapter = null;
 
+  // v2.5.96: skip reasons of the current run → telemetry (scan_result once per
+  // processed page). Only when something happened since the last snapshot.
+  let _lastSnapKey = '';
+  function _diagSkipSnapshot(eventType) {
+    try {
+      const s = u().getSkipSession && u().getSkipSession();
+      if (!s || (!s.skipped && !s.applied)) return;
+      const key = s.applied + '/' + s.skipped;
+      if (key === _lastSnapKey) return;
+      _lastSnapKey = key;
+      _diag(eventType, { src: 'engine', sess_applied: s.applied, sess_skipped: s.skipped, skip_reasons: s.reasons });
+    } catch (_) {}
+  }
+
   // ─── Main loop ────────────────────────────────────────────────────────
   // Rate-limit tracking. Bail only after 4 consecutive rate-limit hits so
   // the bot gets a real chance to survive a LinkedIn cool-down window that
@@ -430,8 +444,7 @@
               state._staleDialogFails++;
               state.log('Cleanup failed (' + state._staleDialogFails + '/2). ' +
                        (state._staleDialogFails < 2 ? 'Will retry on next card.' : 'Giving up — proceeding past stale dialog.'));
-              state.skippedCount++;
-              state.updateSkippedCount();
+              state.noteSkip('stale_dialog');
               continue;
             }
             // Cleanup succeeded — reset counter
@@ -447,15 +460,15 @@
 
           // Blacklist check
           if (state.shouldSkipByBlacklist(jobInfo.title, jobInfo.company, jobInfo.description, state.config.blacklistKeywords)) {
-            state.skippedCount++;
-            state.updateSkippedCount();
+            state.noteSkip('blacklist');
             continue;
           }
 
           // Experience check (adapter-specific)
-          if (adapter.shouldSkipByExperience && adapter.shouldSkipByExperience(jobCard, parseInt(state.config.maxYearsRequired))) {
-            state.skippedCount++;
-            state.updateSkippedCount();
+          // v2.5.96: the user's own years of experience are the floor (see utils.effectiveMaxYears).
+          const _maxYears = state.effectiveMaxYears ? state.effectiveMaxYears(state.config.maxYearsRequired, state.config.yearsOfExperience) : parseInt(state.config.maxYearsRequired, 10);
+          if (adapter.shouldSkipByExperience && adapter.shouldSkipByExperience(jobCard, _maxYears)) {
+            state.noteSkip('years_card');
             continue;
           }
 
@@ -475,9 +488,9 @@
           // will still correctly filter non-Easy-Apply jobs.
           const cardHydrated = jobCard && (jobCard.textContent || '').trim().length >= 20;
           if (cardHydrated && adapter.isEasyApply && !adapter.isEasyApply(jobCard)) {
-            state.log('Not Easy Apply (card badge) — skip');
-            state.skippedCount++;
-            state.updateSkippedCount();
+            const _applied = adapter.isAlreadyAppliedCard && adapter.isAlreadyAppliedCard(jobCard);
+            state.log(_applied ? 'Already applied (card badge) — skip' : 'Not Easy Apply (card badge) — skip');
+            state.noteSkip(_applied ? 'already_applied' : 'not_easy_apply');
             continue;
           }
 
@@ -490,8 +503,7 @@
           const clickOk = await adapter.clickJobCard(jobCard);
           if (clickOk === false) {
             state.log('Card click did not navigate (stale ref) — skip');
-            state.skippedCount++;
-            state.updateSkippedCount();
+            state.noteSkip('stale_card');
             _staleStreak++;
             // #874 fix: after 3 consecutive stale refs, force LinkedIn to
             // hydrate fresh cards (scroll bottom + re-query). Reset i to
@@ -532,19 +544,11 @@
           if (/^linkedin$/i.test(adapter.siteKey)) {
             await state.wait(400); // give pane content a beat to render
             try {
-              const sr = document.getElementById('interop-outlet') &&
-                         document.getElementById('interop-outlet').shadowRoot;
-              const shadowTxt = sr ? (sr.textContent || '') : '';
-              const bodyTxt = (document.body.innerText || '');
-              const combined = bodyTxt + ' ' + shadowTxt;
-              if (/Application status[\s\S]{0,40}Application submitted/i.test(combined) ||
-                  /You applied[\s\S]{0,30}ago/i.test(combined) ||
-                  /Vous avez postulé/i.test(combined) ||
-                  /Postulé[\s\S]{0,30}il y a/i.test(combined) ||
-                  /Application sent[\s\S]{0,30}ago/i.test(combined)) {
+              // v2.5.96: focused job only (job-list card texts cut out) — see
+              // linkedin-adapter.isFocusedJobApplied.
+              if (adapter.isFocusedJobApplied && adapter.isFocusedJobApplied()) {
                 state.log('Silently-applied (right-pane indicator) — skip');
-                state.skippedCount++;
-                state.updateSkippedCount();
+                state.noteSkip('applied_pane');
                 continue;
               }
             } catch (e) {}
@@ -554,13 +558,12 @@
           // shouldSkipByExperience() above only sees card titles, where LinkedIn
           // never states the requirement → the setting was effectively ignored.
           try {
-            const maxY = parseInt(state.config.maxYearsRequired, 10);
+            const maxY = _maxYears;
             if (maxY > 0 && adapter.getJobDescriptionText && state.extractRequiredYears) {
               const req = state.extractRequiredYears(adapter.getJobDescriptionText());
               if (req > maxY) {
-                state.log(`Skip: job asks for ${req}+ years of experience (your max: ${maxY})`);
-                state.skippedCount++;
-                state.updateSkippedCount();
+                state.log(`Skip: job asks for ${req}+ years of experience (your max: ${maxY}, setting ${state.config.maxYearsRequired}, your experience ${state.config.yearsOfExperience || '?'})`);
+                state.noteSkip('years_req');
                 continue;
               }
             }
@@ -578,8 +581,7 @@
           }
           if (!applyBtn) {
             state.log('No Apply button after waiting, skip');
-            state.skippedCount++;
-            state.updateSkippedCount();
+            state.noteSkip('no_apply_btn');
             continue;
           }
 
@@ -749,8 +751,7 @@
             } else {
               state.log('SmartApply did not complete in time — skipping');
               console.warn('[EAM][mainLoop] SmartApply TIMEOUT — skipping');
-              state.skippedCount++;
-              state.updateSkippedCount();
+              state.noteSkip('smartapply_to');
             }
             // Wait for page to settle before processing next job
             await state.wait(2000);
@@ -825,24 +826,24 @@
             // applied to this job). Detect this by scanning the page for
             // an "Applied"/"Application sent" status indicator and skip.
             try {
-              const bodyTxt = (document.body.innerText || '');
-              const sr = document.getElementById('interop-outlet') &&
-                         document.getElementById('interop-outlet').shadowRoot;
-              const shadowTxt = sr ? (sr.textContent || '') : '';
-              const combined = (bodyTxt + ' ' + shadowTxt);
-              if (/Application status[\s\S]{0,30}Application submitted/i.test(combined) ||
-                  /You applied[\s\S]{0,20}ago/i.test(combined) ||
-                  /Vous avez postul[ée]/i.test(combined) ||
-                  /Postulé[\s\S]{0,30}il y a/i.test(combined)) {
+              // v2.5.96: focused job only — an applied card in the job list used
+              // to match here too, which also hid LinkedIn's silent throttle
+              // (each no-modal click was counted "already applied", the
+              // no-modal streak below never grew).
+              let appliedHere;
+              if (adapter.isFocusedJobApplied) appliedHere = adapter.isFocusedJobApplied();
+              else {
+                const sr = document.getElementById('interop-outlet') && document.getElementById('interop-outlet').shadowRoot;
+                appliedHere = state.isAppliedIndicatorText((document.body.innerText || '') + ' ' + (sr ? (sr.textContent || '') : ''));
+              }
+              if (appliedHere) {
                 state.log('Job is silently already-applied (detected via page indicator) — skip');
-                state.skippedCount++;
-                state.updateSkippedCount();
+                state.noteSkip('applied_nomodal');
                 continue;
               }
             } catch (e) {}
             state.log('Modal did not appear (unknown reason), skipping');
-            state.skippedCount++;
-            state.updateSkippedCount();
+            state.noteSkip('modal_none');
             // v2.5.87 — SILENT throttle. Live 2026-09-25 13:05→: after LinkedIn's
             // "Easy Apply is temporarily paused" dialog and our 5-min pause, every
             // Easy Apply click opened NOTHING (no dialog, button enabled) — the bot
@@ -884,8 +885,7 @@
             if (Date.now() - appStart > appTimeout) {
               state.log('TIMEOUT 3min - Discarding');
               await adapter.discardApplication();
-              state.skippedCount++;
-              state.updateSkippedCount();
+              state.noteSkip('app_timeout');
               break;
             }
 
@@ -919,8 +919,7 @@
                 });
                 return;
               }
-              state.skippedCount++;
-              state.updateSkippedCount();
+              state.noteSkip('stuck_loading');
               break;
             }
 
@@ -930,8 +929,7 @@
               state.log('Validation error detected - discarding');
               await adapter.discardApplication();
               _notePremiumSkip();
-              state.skippedCount++;
-              state.updateSkippedCount();
+              state.noteSkip('form_invalid');
               step = 999;
               break;
             }
@@ -944,8 +942,7 @@
                 if (Date.now() - loadStart > loadingTimeout) {
                   state.log('Loading TIMEOUT 20s - Discarding');
                   await adapter.discardApplication();
-                  state.skippedCount++;
-                  state.updateSkippedCount();
+                  state.noteSkip('load_timeout');
                   break;
                 }
                 await state.wait(1000);
@@ -973,8 +970,7 @@
                         ' fails) — discarding and moving on');
               await adapter.discardApplication();
               _notePremiumSkip();
-              state.skippedCount++;
-              state.updateSkippedCount();
+              state.noteSkip('questions');
               break;
             }
 
@@ -1000,8 +996,7 @@
               state.log('No button found after retry — closing this application window and skipping');
               await adapter.discardApplication();
               if (adapter.getFormModal() && adapter.clearAllModals) await adapter.clearAllModals(3);
-              state.skippedCount++;
-              state.updateSkippedCount();
+              state.noteSkip('no_next_btn');
               break;
             }
 
@@ -1021,8 +1016,7 @@
               if (step > 2) {
                 state.log('Button disabled after multiple attempts - discarding');
                 await adapter.discardApplication();
-                state.skippedCount++;
-                state.updateSkippedCount();
+                state.noteSkip('btn_disabled');
                 break;
               }
               await state.wait(1000);
@@ -1041,8 +1035,7 @@
             if (stillModal && !isSubmit && adapter.hasValidationErrors(stillModal)) {
               state.log('Validation error after Next click - discarding');
               await adapter.discardApplication();
-              state.skippedCount++;
-              state.updateSkippedCount();
+              state.noteSkip('form_invalid');
               step = 999;
               break;
             }
@@ -1059,12 +1052,12 @@
               if (outcome === 'failed') {
                 state.log('⚠ LinkedIn did not accept the application (error or form still open) — not counted, discarding');
                 await adapter.discardApplication();
-                state.skippedCount++;
-                state.updateSkippedCount();
+                state.noteSkip('submit_failed');
                 break;
               }
               state.log(outcome === 'confirmed' ? 'Application confirmed by LinkedIn' : 'Submit sent (no confirmation signal seen)');
               state.appliedCount++;
+              try { state.noteSessionApplied && state.noteSessionApplied(); } catch (_) {}
               state.appliedJobs.push({
                 title: jobInfo.title,
                 company: jobInfo.company,
@@ -1103,6 +1096,9 @@
             }
           }
         }
+
+        // v2.5.96: per-page skip-reason snapshot (one event per ~25 cards).
+        _diagSkipSnapshot('scan_result');
 
         // Bot stopped during processing?
         if (!state.isRunning) break;
@@ -1323,9 +1319,69 @@
   // ─── Stop bot helper ──────────────────────────────────────────────────
   // notice (optional, v2.5.87): { title, body, tone } shown on the page next
   // to Easy Apply so the user sees WHY the bot stopped (replaces reloads).
+  // v2.5.96: what the in-page stop notice says about this run — the skip
+  // breakdown, and (daily limit, free plan only) one Premium line with true
+  // claims. Premium does NOT raise LinkedIn's daily limit and the copy says so.
+  const RUN_COPY = {
+    en: {
+      skipped: (n, b) => 'Skipped ' + n + ': ' + b + '.',
+      applied: (n) => n + ' applied this run.',
+      stopTitle: 'Stopped',
+      dailyTitle: 'LinkedIn daily Easy Apply limit reached',
+      dailyBody: 'Try again tomorrow — click Start again then.',
+      premium: 'Premium: AI answers screening questions during auto-apply, 30 AI credits/month for tailored resumes & cover letters, AI autofill on 100+ ATS portals (you submit). LinkedIn\'s daily limit is the same on every plan.',
+      premiumLink: 'Get Premium — 20% off your first payment',
+    },
+    fr: {
+      skipped: (n, b) => n + ' ignorées : ' + b + '.',
+      applied: (n) => n + ' candidature' + (n > 1 ? 's' : '') + ' envoyée' + (n > 1 ? 's' : '') + ' pendant cette session.',
+      stopTitle: 'Arrêté',
+      dailyTitle: 'Limite quotidienne LinkedIn atteinte',
+      dailyBody: 'Réessayez demain en cliquant à nouveau sur Démarrer.',
+      premium: 'Premium : l\'IA répond aux questions de présélection pendant l\'auto-candidature, 30 crédits IA/mois pour adapter CV et lettres, remplissage IA sur 100+ portails ATS (vous validez l\'envoi). La limite quotidienne de LinkedIn est la même pour tous les forfaits.',
+      premiumLink: 'Passer Premium — -20 % sur le 1er paiement',
+    },
+  };
+  const PREMIUM_URL = 'https://www.autoapplymax.com/dashboard?promo=WELCOMEBACK20&src=ext_daily_limit#upgrade';
+  async function _runSummary(reason) {
+    const state = u();
+    const lang = state.uiLang ? state.uiLang() : 'en';
+    const T = RUN_COPY[lang] || RUN_COPY.en;
+    const sess = state.getSkipSession ? state.getSkipSession() : { applied: 0, skipped: 0, reasons: {} };
+    const lines = [];
+    if (sess.skipped > 0 && state.groupSkipReasons) {
+      const b = state.formatSkipBreakdown(state.groupSkipReasons(sess.reasons), lang);
+      if (b) lines.push({ kind: 'skips', text: T.skipped(sess.skipped, b) });
+    }
+    let link = null;
+    const daily = /daily limit/i.test(String(reason));
+    if (daily) {
+      // Only an explicit free plan (cached by the popup from the user's
+      // profile) — signed-out / unknown plan / paid users never see it.
+      let plan = '';
+      try { plan = String((await chrome.storage.local.get(['plan'])).plan || '').toLowerCase(); } catch (_) {}
+      if (plan === 'free') { lines.push({ kind: 'premium', text: T.premium }); link = { text: T.premiumLink, url: PREMIUM_URL }; }
+    }
+    return { T, sess, daily, opts: { lines, link } };
+  }
+
   async function stopBot(reason, notice) {
     const state = u();
-    if (notice) { try { state._showBotNotice && state._showBotNotice(notice.title, notice.body, notice.tone); } catch (_) {} }
+    let _sum = null;
+    try { _sum = await _runSummary(reason); } catch (_) {}
+    try {
+      if (notice) {
+        state._showBotNotice && state._showBotNotice(notice.title, notice.body, notice.tone, _sum && _sum.opts);
+      } else if (_sum && state._showBotNotice) {
+        if (_sum.daily) {
+          // One strip: replaces the short "limit reached" chip when it can be placed.
+          const n = state._showBotNotice(_sum.T.dailyTitle, _sum.T.dailyBody, 'info', _sum.opts);
+          if (n) { try { document.querySelectorAll('[data-eam-rl-chip="daily"]').forEach(x => x.remove()); } catch (_) {} }
+        } else if (/user clicked stop/i.test(String(reason)) && (_sum.sess.skipped > 0 || _sum.sess.applied > 0)) {
+          state._showBotNotice(_sum.T.stopTitle, _sum.T.applied(_sum.sess.applied), 'info', _sum.opts);
+        }
+      }
+    } catch (_) {}
     // Visible trace so we can identify WHO triggered each stop. Critical
     // for diagnosing the "Bot stopped" mid-iteration bug: rate-limit and
     // daily-limit false positives both call stopBot, and without this log
@@ -1333,7 +1389,11 @@
     console.log('%c[EAM] stopBot called — reason: ' + reason, 'color:#c00;font-weight:bold');
     console.trace('[EAM] stopBot stack');
     state.log('Bot stopping — ' + reason);
-    _diag('session_end', { reason: String(reason || '').slice(0, 120), applied: state.appliedCount || 0, skipped: state.skippedCount || 0 });
+    // applied/skipped = LIFETIME counters (kept for continuity of older rows);
+    // sess_* + skip_reasons = this run only (v2.5.96).
+    const _sess = state.getSkipSession ? state.getSkipSession() : null;
+    _diag('session_end', Object.assign({ reason: String(reason || '').slice(0, 120), applied: state.appliedCount || 0, skipped: state.skippedCount || 0 },
+      _sess ? { sess_applied: _sess.applied, sess_skipped: _sess.skipped, skip_reasons: _sess.reasons } : {}));
     // The adapter's own daily_limit_reached only fires on one detection path; the real
     // limit on 2026-09-25 00:52 went through the engine path and left no event.
     if (/daily limit/i.test(String(reason))) _diag('daily_limit_reached', { source: 'engine', applied: state.appliedCount || 0 });
@@ -1487,6 +1547,7 @@
             state._filterDropRecoveries = 0;
             state._stuckRecoveries = 0;
             state._emptyScans = 0;
+            try { state.resetSkipSession && state.resetSkipSession(); } catch (_) {}
             try { state._clearBotNotice && state._clearBotNotice(); } catch (_) {}
             await chrome.storage.local.set({ isRunning: true });
             // v2.5.92: a fresh run clears the previous pause / daily-limit state

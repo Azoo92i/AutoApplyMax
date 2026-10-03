@@ -194,6 +194,80 @@
     chrome.storage.local.set({ appliedJobs });
   }
 
+  // ─── v2.5.96: per-run skip reasons ────────────────────────────────────
+  // appliedCount / skippedCount are LIFETIME counters (since install or the
+  // last Reset) — session_end telemetry showed "skipped: 13289" and nobody
+  // could tell why. Every skip now carries a short reason key; the run's
+  // tally is kept in memory + chrome.storage.local.eam_skip_session (popup
+  // breakdown) and sent in session_end / scan_result telemetry.
+  // Keys stay short: ext-diag-ingest drops meta > 800 bytes.
+  const SKIP_GROUPS = {
+    applied: ['already_applied', 'applied_pane', 'applied_nomodal'],
+    not_ea: ['not_easy_apply', 'no_apply_btn'],
+    filters: ['blacklist', 'years_req', 'years_card'],
+    questions: ['questions', 'form_invalid', 'btn_disabled'],
+  };
+  let skipSession = { at: 0, applied: 0, skipped: 0, reasons: {} };
+  let _skipPersistTimer = null;
+  function _persistSkipSession() {
+    if (_skipPersistTimer) return;
+    _skipPersistTimer = setTimeout(() => {
+      _skipPersistTimer = null;
+      try { chrome.storage.local.set({ eam_skip_session: skipSession }); } catch (_) {}
+    }, 400);
+  }
+  function resetSkipSession() {
+    skipSession = { at: Date.now(), applied: 0, skipped: 0, reasons: {} };
+    try { chrome.storage.local.set({ eam_skip_session: skipSession }); } catch (_) {}
+  }
+  function noteSkip(reason) {
+    const key = String(reason || 'other').slice(0, 20);
+    skippedCount++;
+    updateSkippedCount();
+    skipSession.skipped++;
+    skipSession.reasons[key] = (skipSession.reasons[key] || 0) + 1;
+    _persistSkipSession();
+  }
+  function noteSessionApplied() {
+    skipSession.applied++;
+    _persistSkipSession();
+  }
+  function getSkipSession() {
+    return { at: skipSession.at, applied: skipSession.applied, skipped: skipSession.skipped, reasons: { ...skipSession.reasons } };
+  }
+  // reasons {key:n} → { applied, not_ea, filters, questions, other, total }
+  function groupSkipReasons(reasons) {
+    const out = { applied: 0, not_ea: 0, filters: 0, questions: 0, other: 0, total: 0 };
+    for (const [k, n] of Object.entries(reasons || {})) {
+      const v = Number(n) || 0;
+      if (v <= 0) continue;
+      const g = Object.keys(SKIP_GROUPS).find(gk => SKIP_GROUPS[gk].includes(k)) || 'other';
+      out[g] += v;
+      out.total += v;
+    }
+    return out;
+  }
+  // 'fr' when the page / browser UI is French, else 'en'.
+  function uiLang() {
+    try {
+      const l = (document.documentElement.getAttribute('lang') || '') || (chrome.i18n && chrome.i18n.getUILanguage && chrome.i18n.getUILanguage()) || navigator.language || '';
+      return /^fr\b/i.test(l) ? 'fr' : 'en';
+    } catch (_) { return 'en'; }
+  }
+  // Short one-line breakdown, e.g. "12 already applied · 20 not Easy Apply · 5 your filters".
+  function formatSkipBreakdown(groups, lang) {
+    const fr = lang === 'fr';
+    const parts = [];
+    // [singular, plural] per language
+    const add = (n, en, frTxt) => { if (n > 0) parts.push(n + ' ' + (fr ? frTxt : en)[n > 1 ? 1 : 0]); };
+    add(groups.applied, ['already applied', 'already applied'], ['déjà postulée', 'déjà postulées']);
+    add(groups.not_ea, ['not Easy Apply', 'not Easy Apply'], ['sans candidature simplifiée', 'sans candidature simplifiée']);
+    add(groups.filters, ['filtered by your settings', 'filtered by your settings'], ['exclue par vos filtres', 'exclues par vos filtres']);
+    add(groups.questions, ['question not answered', 'questions not answered'], ['question sans réponse', 'questions sans réponse']);
+    add(groups.other, ['LinkedIn error', 'LinkedIn errors'], ['erreur LinkedIn', 'erreurs LinkedIn']);
+    return parts.join(' · ');
+  }
+
   // ─── Skip logic ───────────────────────────────────────────────────────
   function shouldSkipByBlacklist(title, company, description, blacklistKeywords) {
     if (!blacklistKeywords || blacklistKeywords.trim() === '') return false;
@@ -253,17 +327,47 @@
       /(\d{1,2})\s*(?:\+)?\s*(?:años?)\s+de\s+experiencia/gi,
       /(\d{1,2})\s*(?:\+)?\s*jahre?\s+(?:berufs)?erfahrung/gi,
     ];
-    const companyCtx = /\b(we|we've|we have|our|company|firm|group|since|founded|history|legacy|over the (last|past)|for (more than|over)|depuis|notre|nous|fond[ée]e?|soci[ée]t[ée]|entreprise|cabinet|groupe|existence|nuestra|empresa|unser|seit)\b[^.]{0,40}$/i;
+    const companyCtx = /\b(we|we've|we have|our|company|firm|group|since|founded|history|legacy|over the (last|past)|for (more than|over)|depuis|notre|nous|fort|forte|fond[ée]e?|soci[ée]t[ée]|entreprise|cabinet|groupe|existence|nuestra|empresa|unser|seit)\b[^.]{0,40}$/i;
+    // v2.5.96: company history announced BEFORE the company name — "With over
+    // 25 years of experience, Acme is…", "Avec plus de 20 ans d'expérience,
+    // notre cabinet…" — was read as a 20/25-year requirement and the job
+    // skipped. Look at what follows the match too.
+    const companyAfter = /^[^.;:]{0,45}?\b(we|we're|we've|our|notre|nos|nous|the company|the group|le groupe|la soci[ée]t[ée]|l['’]entreprise|le cabinet|is an?|is the|est (?:un|une|le|la|l['’])|a su|accompagne|has helped|helps|nuestra|unser)\b/i;
     for (const re of pats) {
       for (const m of t.matchAll(re)) {
         const n = parseInt(m[1], 10);
         if (!(n > 0 && n <= 25)) continue;
         const before = t.slice(Math.max(0, m.index - 60), m.index);
         if (companyCtx.test(before)) continue;
+        const after = t.slice(m.index + m[0].length, m.index + m[0].length + 60);
+        if (companyAfter.test(after)) continue;
         found.push(n);
       }
     }
     return found.length ? Math.max(...found) : 0;
+  }
+
+  // v2.5.96: "Max years of experience required" (popup default 3) skipped every
+  // job asking for more than 3 years — even for users with 8+ years who never
+  // touched the setting. The user's own experience is the floor: a job asking
+  // for no more than what you have is never filtered out. 0 = filter off.
+  function effectiveMaxYears(maxSetting, userYears) {
+    const m = parseInt(maxSetting, 10);
+    if (!(m > 0)) return 0;
+    const y = parseInt(userYears, 10);
+    return (y > m && y <= 50) ? y : m;
+  }
+
+  // Text of the FOCUSED job saying the user already applied ("You applied 3
+  // days ago", "Application submitted", "Vous avez postulé"…).
+  function isAppliedIndicatorText(text) {
+    const s = String(text || '');
+    return /Application status[\s\S]{0,40}Application submitted/i.test(s) ||
+      /You applied[\s\S]{0,30}ago/i.test(s) ||
+      /Vous avez postul[ée]/i.test(s) ||
+      /Postulé[\s\S]{0,30}il y a/i.test(s) ||
+      /Application sent[\s\S]{0,30}ago/i.test(s) ||
+      /Candidature envoy[ée]e[\s\S]{0,30}il y a/i.test(s);
   }
 
   // ─── Daily limit detection ────────────────────────────────────────────
@@ -774,7 +878,9 @@
     } catch (_) {}
     return false;
   }
-  function _showBotNotice(title, body, tone) {
+  // opts (v2.5.96): { lines: [{ text, kind: 'skips'|'premium' }], link: { text, url } }
+  // — extra rows under the body (skip breakdown, Premium line). All text is escaped.
+  function _showBotNotice(title, body, tone, opts) {
     try {
       _clearBotNotice();
       const c = tone === 'info'
@@ -786,7 +892,15 @@
       n.setAttribute('data-eam-bot-notice', '1');
       n.setAttribute('role', 'status');
       n.setAttribute('aria-live', 'polite');
-      n.innerHTML = '<span style="display:inline-flex;flex-shrink:0">' + AAM_ICON.info + '</span><span><strong style="font-weight:700">AutoApplyMax — ' + esc(title) + '</strong><br>' + esc(body) + '</span>' + closeBtn;
+      let extra = '';
+      for (const l of ((opts && opts.lines) || [])) {
+        if (!l || !l.text) continue;
+        extra += '<span data-eam-notice-' + (l.kind === 'premium' ? 'premium' : 'skips') + ' style="display:block;margin-top:6px;' + (l.kind === 'premium' ? 'padding-top:6px;border-top:1px solid ' + c.border + ';' : '') + '">' + esc(l.text) + '</span>';
+      }
+      if (opts && opts.link && /^https:\/\/www\.autoapplymax\.com\//.test(opts.link.url || '')) {
+        extra += '<a data-eam-notice-link href="' + esc(opts.link.url) + '" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;color:#0a66c2;font-weight:700;text-decoration:none">' + esc(opts.link.text) + ' →</a>';
+      }
+      n.innerHTML = '<span style="display:inline-flex;flex-shrink:0">' + AAM_ICON.info + '</span><span><strong style="font-weight:700">AutoApplyMax — ' + esc(title) + '</strong><br>' + esc(body) + extra + '</span>' + closeBtn;
       const base = 'align-items:flex-start;gap:8px;padding:8px 12px;background:' + c.bg + ';border:1px solid ' + c.border + ';color:' + c.fg + ';border-radius:12px;font:500 12px/1.4 ' + AAM_FONT + ';box-shadow:0 1px 2px rgba(15,23,42,0.06);max-width:420px;white-space:normal';
       n.style.cssText = 'display:flex;width:fit-content;box-sizing:border-box;margin:8px 0 0 0;' + base;
       // v2.5.92: in the page only (under Easy Apply / top of the job pane) —
@@ -1163,6 +1277,17 @@
     updateAppliedCount,
     updateSkippedCount,
     saveAppliedJobsToStorage,
+
+    // v2.5.96: per-run skip reasons
+    noteSkip,
+    noteSessionApplied,
+    resetSkipSession,
+    getSkipSession,
+    groupSkipReasons,
+    formatSkipBreakdown,
+    uiLang,
+    effectiveMaxYears,
+    isAppliedIndicatorText,
 
     // Skip logic
     shouldSkipByBlacklist,

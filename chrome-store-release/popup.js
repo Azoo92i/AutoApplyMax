@@ -898,11 +898,54 @@ function updateStatusDisplay(text, running) {
 
 // Update status from storage
 async function updateStatus() {
-  const local = await chrome.storage.local.get(['appliedCount', 'skippedCount', 'appliedJobs']);
+  const local = await chrome.storage.local.get(['appliedCount', 'skippedCount', 'appliedJobs', 'eam_skip_session']);
   // Use appliedJobs array length as source of truth, fallback to counter
   const jobsCount = (local.appliedJobs && local.appliedJobs.length) || local.appliedCount || 0;
   document.getElementById('applied-count').textContent = jobsCount;
   document.getElementById('skipped-count').textContent = local.skippedCount || 0;
+  renderSkipBreakdown(local.eam_skip_session);
+}
+
+// ─── v2.5.96: why jobs were skipped (current / last run) ───────────────────
+// Reason keys are written by core/utils.js noteSkip(); groups mirror
+// utils.groupSkipReasons. EN + FR (browser UI language).
+const SKIP_GROUPS = {
+  applied: ['already_applied', 'applied_pane', 'applied_nomodal'],
+  not_ea: ['not_easy_apply', 'no_apply_btn'],
+  filters: ['blacklist', 'years_req', 'years_card'],
+  questions: ['questions', 'form_invalid', 'btn_disabled'],
+};
+function popupLang() {
+  try { return /^fr\b/i.test((chrome.i18n && chrome.i18n.getUILanguage && chrome.i18n.getUILanguage()) || navigator.language || '') ? 'fr' : 'en'; } catch (_) { return 'en'; }
+}
+const SKIP_COPY = {
+  // [singular, plural]
+  en: { lead: (n) => 'Skipped this run (' + n + '): ', applied: ['already applied', 'already applied'], not_ea: ['not Easy Apply', 'not Easy Apply'], filters: ['filtered by your settings', 'filtered by your settings'], questions: ['question not answered', 'questions not answered'], other: ['LinkedIn error', 'LinkedIn errors'],
+    tip: 'Already-applied and non-Easy-Apply jobs are skipped on purpose. The skipped counter above counts every run since you installed or reset.' },
+  fr: { lead: (n) => 'Ignorées pendant cette session (' + n + ') : ', applied: ['déjà postulée', 'déjà postulées'], not_ea: ['sans candidature simplifiée', 'sans candidature simplifiée'], filters: ['exclue par vos filtres', 'exclues par vos filtres'], questions: ['question sans réponse', 'questions sans réponse'], other: ['erreur LinkedIn', 'erreurs LinkedIn'],
+    tip: 'Les offres déjà postulées ou sans candidature simplifiée sont ignorées volontairement. Le compteur au-dessus cumule toutes les sessions depuis l\'installation ou la remise à zéro.' },
+};
+function renderSkipBreakdown(sess) {
+  const box = document.getElementById('run-skips');
+  const txt = document.getElementById('run-skips-text');
+  if (!box || !txt) return;
+  if (!sess || !(sess.skipped > 0)) { box.hidden = true; return; }
+  const g = { applied: 0, not_ea: 0, filters: 0, questions: 0, other: 0 };
+  for (const [k, n] of Object.entries(sess.reasons || {})) {
+    const grp = Object.keys(SKIP_GROUPS).find(x => SKIP_GROUPS[x].includes(k)) || 'other';
+    g[grp] += Number(n) || 0;
+  }
+  const C = SKIP_COPY[popupLang()];
+  txt.textContent = '';
+  txt.appendChild(document.createTextNode(C.lead(sess.skipped)));
+  const order = ['applied', 'not_ea', 'filters', 'questions', 'other'].filter(k => g[k] > 0);
+  order.forEach((k, i) => {
+    const b = document.createElement('b'); b.textContent = String(g[k]);
+    txt.appendChild(b);
+    txt.appendChild(document.createTextNode(' ' + C[k][g[k] > 1 ? 1 : 0] + (i < order.length - 1 ? ' · ' : '')));
+  });
+  box.title = C.tip;
+  box.hidden = false;
 }
 
 // Listen for updates from content script
@@ -971,6 +1014,9 @@ function renderRateLimitBanner(payload) {
     : /unsupported|isn't supported/i.test(payload.message) ? 'This LinkedIn page isn\'t supported'
     : 'Auto-apply stopped';
   if (isDaily) payload = { ...payload, message: 'Try again tomorrow. Review your applications on your dashboard.' };
+  // v2.5.96: the extension has no daily cap of its own — this is LinkedIn's
+  // (~35 Easy Apply submissions per 24 h per account in 2026-09 telemetry),
+  // the same on every AutoApplyMax plan.
   const existing = document.getElementById('eam-rate-limit-banner');
   if (existing) existing.remove();
   const banner = buildAlert({
@@ -984,6 +1030,36 @@ function renderRateLimitBanner(payload) {
   });
   const slot = document.getElementById('alert-slot');
   if (slot) slot.prepend(banner); else document.body.insertBefore(banner, document.body.firstChild);
+  if (isDaily) maybeAddDailyPremium();
+}
+
+// v2.5.96: one Premium line under the daily-limit alert — signed-in FREE plan
+// only, true claims only (Premium does not raise LinkedIn's daily limit).
+// Called again once the profile has loaded (auth/plan resolve async).
+const DAILY_PREMIUM_URL = 'https://www.autoapplymax.com/dashboard?promo=WELCOMEBACK20&src=ext_daily_limit#upgrade';
+function maybeAddDailyPremium() {
+  try {
+    const banner = document.getElementById('eam-rate-limit-banner');
+    if (!banner || document.getElementById('daily-premium')) return;
+    if (!/daily/i.test(banner.querySelector('strong')?.textContent || '')) return;
+    if (document.body.dataset.auth !== 'in' || document.body.dataset.plan !== 'free') return;
+    const fr = popupLang() === 'fr';
+    const box = document.createElement('div');
+    box.id = 'daily-premium';
+    box.className = 'alert-premium';
+    box.textContent = fr
+      ? 'Premium : l\'IA répond aux questions de présélection pendant l\'auto-candidature, 30 crédits IA/mois pour adapter CV et lettres, remplissage IA sur 100+ portails ATS (vous validez l\'envoi). La limite quotidienne de LinkedIn est la même pour tous les forfaits.'
+      : 'Premium: AI answers screening questions during auto-apply, 30 AI credits/month for tailored resumes & cover letters, AI autofill on 100+ ATS portals (you submit). LinkedIn\'s daily limit is the same on every plan.';
+    const wrap = document.createElement('div');
+    wrap.className = 'alert-action';
+    const b = document.createElement('button');
+    b.type = 'button'; b.id = 'daily-premium-btn'; b.className = 'btn btn-primary btn-sm';
+    b.textContent = fr ? 'Passer Premium — -20 % sur le 1er paiement' : 'Get Premium — 20% off your first payment';
+    b.addEventListener('click', () => chrome.tabs.create({ url: DAILY_PREMIUM_URL }));
+    wrap.appendChild(b);
+    box.appendChild(wrap);
+    banner.querySelector('.alert-body')?.appendChild(box);
+  } catch (_) {}
 }
 
 // Re-render any pending rate-limit banner on popup open
@@ -1030,6 +1106,7 @@ document.getElementById('reset-counters-btn').addEventListener('click', async ()
   if (!confirm('Reset all counters and clear applied jobs list?')) return;
   try {
     await chrome.storage.local.set({ appliedCount: 0, skippedCount: 0, appliedJobs: [] });
+    try { await chrome.storage.local.remove('eam_skip_session'); renderSkipBreakdown(null); } catch (_) {}
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab.url) {
@@ -1366,6 +1443,9 @@ function showLoggedOutState() {
 
   document.body.dataset.auth = 'out';
   document.body.dataset.plan = 'free';
+  // v2.5.96: the in-page daily-limit Premium line reads the cached plan —
+  // signed-out means unknown, never "free".
+  try { chrome.storage.local.remove('plan'); } catch (_) {}
   if (headerRight) {
     headerRight.innerHTML = '<button id="header-sign-in-btn" class="header-sign-in">Sign in</button>';
     document.getElementById('header-sign-in-btn')?.addEventListener('click', (e) => {
@@ -1410,6 +1490,7 @@ function showLoggedInState(profile, session) {
   }
   applyLocalPremiumPrice(profile.country);
   try { chrome.storage.local.set({ plan }); } catch (_) {}
+  maybeAddDailyPremium();
 
   // Show AI links for logged-in users
   if (dashLinkRow) dashLinkRow.style.display = '';

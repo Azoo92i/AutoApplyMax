@@ -944,6 +944,39 @@
       return false;
     }
 
+    // v2.5.96: the card's own "Applied" badge (any layout). Split out of
+    // isEasyApply so the engine counts these as "already applied" — harmless
+    // skips, not jobs the bot failed on.
+    isAlreadyAppliedCard(jobCard) {
+      const cardText = (jobCard && jobCard.textContent) || '';
+      return /\bApplied\b\s*[·•|]/i.test(cardText) ||
+        /Application submitted/i.test(cardText) ||
+        /Candidature envoyée/i.test(cardText) ||
+        /Postulation envoyée/i.test(cardText) ||
+        /(^|\s)Postulé\s*[·•|]/i.test(cardText) ||
+        /Ya postulado/i.test(cardText) ||
+        /Bewerbung gesendet/i.test(cardText);
+    }
+
+    // v2.5.96: "already applied" for the FOCUSED job only. The engine used to
+    // test the whole body text, which includes the job list on the left — one
+    // card reading "Postulé · il y a 2 jours" / "Application sent 3d ago" could
+    // mark every following job as already applied. Card texts are cut out of
+    // the page text before matching.
+    isFocusedJobApplied() {
+      try {
+        let txt = document.body.innerText || '';
+        const cards = document.querySelectorAll('li[data-occludable-job-id], div[componentkey^="job-card-component-"], .job-card-container, .jobs-search-results__list-item, .scaffold-layout__list-item');
+        for (const c of cards) {
+          const t = (c.innerText || '').trim();
+          if (t.length >= 8) txt = txt.split(t).join(' ');
+        }
+        let shadowTxt = '';
+        try { const sr = document.getElementById('interop-outlet')?.shadowRoot; shadowTxt = sr ? (sr.textContent || '') : ''; } catch (_) {}
+        return u().isAppliedIndicatorText(txt + ' ' + shadowTxt);
+      } catch (_) { return false; }
+    }
+
     // ── Pre-check: is this job Easy Apply? (from the card itself) ──────
     isEasyApply(jobCard) {
       const S = window.EAM.JobBoardStrings;
@@ -956,12 +989,7 @@
       // Worse: on some layouts the EA <a> click navigates the whole page
       // away from the search results, breaking iteration. Reject early.
       const cardText = (jobCard.textContent || '');
-      if (/\bApplied\b\s*[·•|]/i.test(cardText) ||
-          /Application submitted/i.test(cardText) ||
-          /Candidature envoyée/i.test(cardText) ||
-          /Postulation envoyée/i.test(cardText) ||
-          /Ya postulado/i.test(cardText) ||
-          /Bewerbung gesendet/i.test(cardText)) {
+      if (this.isAlreadyAppliedCard(jobCard)) {
         console.log('[EAM] isEasyApply=false — card has "Applied" badge, skip');
         return false;
       }
