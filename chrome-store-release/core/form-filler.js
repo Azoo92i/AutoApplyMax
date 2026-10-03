@@ -899,7 +899,7 @@
     let bestRadio = null;
     let bestScore = -1;
     for (const radio of radioInputs) {
-      const label = fieldset.querySelector(`label[for="${radio.id}"]`);
+      const label = _radioLabel(fieldset, radio);
       const text = label ? label.textContent : (radio.value || '');
       const range = parseYearsRange(text);
       if (!range) continue;
@@ -910,7 +910,7 @@
       if (score > bestScore) { bestScore = score; bestRadio = radio; }
     }
     if (bestRadio && !bestRadio.checked) {
-      const lbl = fieldset.querySelector(`label[for="${bestRadio.id}"]`);
+      const lbl = _radioLabel(fieldset, bestRadio);
       lbl ? lbl.click() : bestRadio.click();
       u().log(`Radio YoE ${cvYears}y → ${(lbl?.textContent || bestRadio.value || '').trim().slice(0, 30)}`);
       return true;
@@ -926,7 +926,7 @@
       return true; // signal "handled" so caller doesn't fall back to Yes/first
     }
     for (const radio of radioInputs) {
-      const label = fieldset.querySelector(`label[for="${radio.id}"]`);
+      const label = _radioLabel(fieldset, radio);
       const text = label ? label.textContent.trim() : (radio.value || '');
       if (matchGenderOption(text, canonicalGender)) {
         if (!radio.checked) {
@@ -1020,6 +1020,22 @@
     return best;
   }
 
+  // v2.5.97: a radio's label — label[for=id], else the wrapping <label>, else a label in the
+  // radio's own wrapper. Native <dialog> forms (live 2026-10-03, DIMATIS) did not match the
+  // for= lookup → "Oui/Non" groups read as unlabeled and got the blind first option.
+  function _radioLabel(scope, radio) {
+    if (!radio) return null;
+    try { if (radio.id) { const l = scope.querySelector('label[for="' + CSS.escape(radio.id) + '"]') || document.querySelector('label[for="' + CSS.escape(radio.id) + '"]'); if (l) return l; } } catch (_) {}
+    const wrap = radio.closest && radio.closest('label'); if (wrap) return wrap;
+    const p = radio.parentElement; const sib = p && p.querySelector('label');
+    if (sib) {
+      // A sibling label that does not control the radio: clicking it would do nothing →
+      // same text, but the click goes to the radio itself.
+      if (sib.control === radio) return sib;
+      return { textContent: sib.textContent, click: () => radio.click() };
+    }
+    return null;
+  }
   function fillLanguageLevelRadio(fieldset, radioInputs, questionText, userLanguages) {
     const q = questionText.toLowerCase();
     const lang = _detectLanguageInQuestion(q);
@@ -1043,7 +1059,7 @@
     let bestRadio = null;
     let bestDelta = Infinity;
     for (const radio of radioInputs) {
-      const label = fieldset.querySelector(`label[for="${radio.id}"]`);
+      const label = _radioLabel(fieldset, radio);
       const text = (label ? label.textContent : (radio.value || '')).trim();
       const rank = _optionLevelRank(text);
       if (rank === 0) continue;
@@ -1055,7 +1071,7 @@
       if (score < bestDelta) { bestDelta = score; bestRadio = radio; }
     }
     if (bestRadio && !bestRadio.checked) {
-      const lbl = fieldset.querySelector(`label[for="${bestRadio.id}"]`);
+      const lbl = _radioLabel(fieldset, bestRadio);
       lbl ? lbl.click() : bestRadio.click();
       const chosen = (lbl?.textContent || bestRadio.value || '').trim().slice(0, 30);
       u().log(`Lang ${lang ? lang.canonical : '?'} (user="${userLevelRaw}" rank=${targetRank}) → ${chosen}`);
@@ -1117,9 +1133,28 @@
       // uses <p> or <span> siblings. Fall through several locations,
       // ending with the fieldset's full textContent so we never miss the
       // semantic context (e.g. consent-text questions).
-      const questionLabel = fieldset.querySelector('legend, span[class*="title"], p[class*="title"], h3, h4');
-      const questionText = (questionLabel ? questionLabel.textContent : fieldset.textContent || '').toLowerCase();
+      let questionLabel = fieldset.querySelector('legend, span[class*="title"], p[class*="title"], h3, h4');
+      let questionText = (questionLabel ? questionLabel.textContent : fieldset.textContent || '').toLowerCase();
       const radioInputs = fieldset.querySelectorAll('input[type="radio"]');
+      // v2.5.97: native <dialog> forms (/jobs/search-results/) put the question OUTSIDE the
+      // radio group — the group's text was only its options ("ouinon"), so cache / AI / rules
+      // never saw "Pouvez-vous commencer immédiatement ?" and the blind first option "Oui"
+      // was submitted (DIMATIS, live 2026-10-03; the cached answer was "Non").
+      try {
+        const optTxt = Array.from(radioInputs).map(r => { const l = _radioLabel(fieldset, r); return ((l ? l.textContent : r.value) || '').trim(); }).filter(Boolean);
+        const strip = (s) => { let t = String(s || ''); for (const o of optTxt) t = t.split(o).join(' '); return t.replace(/\s+/g, ' ').trim(); };
+        if (!questionLabel && strip(fieldset.textContent).length < 4) {
+          let q = '';
+          const lb = fieldset.getAttribute && fieldset.getAttribute('aria-labelledby');
+          if (lb) q = lb.split(/\s+/).map(id => (modal.querySelector(`#${CSS.escape(id)}`) || document.getElementById(id))?.textContent || '').join(' ');
+          if (!strip(q)) q = (fieldset.getAttribute && fieldset.getAttribute('aria-label')) || '';
+          for (let a = fieldset.parentElement, d = 0; !strip(q) && a && a !== modal && d < 4; a = a.parentElement, d++) {
+            const t = strip(a.textContent);
+            if (t.length >= 4 && t.length < 400) q = t;
+          }
+          if (strip(q)) questionText = (strip(q) + ' ' + optTxt.join(' ')).toLowerCase();
+        }
+      } catch (_) {}
       let answered = false;
 
       // Handle gender questions first — EEO self-identification sections on
@@ -1172,12 +1207,17 @@
         desiredAnswer = config.willingToRelocate;
       } else if (questionText.match(/security.*clearance|clearance/i)) {
         desiredAnswer = 'no';
+      } else if (questionText.match(/commencer\s+imm[ée]diatement|disponible\s+imm[ée]diatement|start\s+immediately|available\s+immediately|immediate(ly)?\s+(start|available|availability)|join\s+immediately|empezar\s+inmediatamente|sofort\s+(beginnen|verf[üu]gbar)/i)) {
+        // v2.5.97: "Pouvez-vous commencer immédiatement ?" follows the notice period (live
+        // 2026-10-03 DIMATIS: blind "Oui" with a 1-month notice). Notice 0 / immediate → yes.
+        const np = String(config.noticePeriod || '').toLowerCase().trim();
+        desiredAnswer = (!np || /^0\b|^(none|aucun|imm[ée]diat|immediate)/.test(np)) ? 'yes' : 'no';
       } else if (questionText.match(/driver.*license|driving.*license|valid.*license/i) && config.driversLicense) {
         desiredAnswer = config.driversLicense;
       }
 
       for (const radio of radioInputs) {
-        const radioLabel = fieldset.querySelector(`label[for="${radio.id}"]`);
+        const radioLabel = _radioLabel(fieldset, radio);
         const radioText = radioLabel ? radioLabel.textContent.trim().toLowerCase() : '';
         const isYes = radioText.match(/^(yes|oui|sí|si|ja|y)$/);
         const isNo = radioText.match(/^(no|non|nein|n)$/);
@@ -1194,7 +1234,7 @@
       if (!answered && isSelfDecl) {
         // Non-"No" wording ("I am not…", "Never"): pick the negative option, else leave it.
         for (const radio of radioInputs) {
-          const lbl = fieldset.querySelector(`label[for="${radio.id}"]`);
+          const lbl = _radioLabel(fieldset, radio);
           const t = (lbl ? lbl.textContent : radio.value || '').trim();
           if (NEGATIVE_OPTION_RE.test(t)) { lbl ? lbl.click() : radio.click(); u().log(`Radio self-declaration → "${t.substring(0, 30)}"`); answered = true; break; }
         }
@@ -1203,7 +1243,7 @@
 
       if (!answered && !isOptIn) {
         for (const radio of radioInputs) {
-          const radioLabel = fieldset.querySelector(`label[for="${radio.id}"]`);
+          const radioLabel = _radioLabel(fieldset, radio);
           const radioText = radioLabel ? radioLabel.textContent.trim().toLowerCase() : '';
           if (radioText.match(/^(yes|oui|sí|si|ja|y)$/)) {
             if (!radio.checked) {
@@ -1226,7 +1266,7 @@
         // the best matching one from the actual choices.
         const optionLabels = [];
         for (const r of radioInputs) {
-          const lbl = fieldset.querySelector(`label[for="${r.id}"]`);
+          const lbl = _radioLabel(fieldset, r);
           const txt = lbl ? lbl.textContent.trim() : (r.value || '').trim();
           if (txt) optionLabels.push(txt);
         }
@@ -1241,13 +1281,13 @@
               // Exact-label match, then contains, then loose word overlap
               let match = null;
               for (const r of radioInputs) {
-                const lbl = fieldset.querySelector(`label[for="${r.id}"]`);
+                const lbl = _radioLabel(fieldset, r);
                 const txt = (lbl ? lbl.textContent : (r.value || '')).trim().toLowerCase();
                 if (txt === pickNorm) { match = { r, lbl }; break; }
               }
               if (!match) {
                 for (const r of radioInputs) {
-                  const lbl = fieldset.querySelector(`label[for="${r.id}"]`);
+                  const lbl = _radioLabel(fieldset, r);
                   const txt = (lbl ? lbl.textContent : (r.value || '')).trim().toLowerCase();
                   if (txt && (txt.includes(pickNorm) || pickNorm.includes(txt))) { match = { r, lbl }; break; }
                 }
@@ -1266,7 +1306,7 @@
         // Only when AI didn't pick — avoids leaving required-radios empty
         // which blocks the Continue button.
         if (!clicked && !radioInputs[0].checked && !isOptIn) {
-          const firstLabel = fieldset.querySelector(`label[for="${radioInputs[0].id}"]`);
+          const firstLabel = _radioLabel(fieldset, radioInputs[0]);
           firstLabel ? firstLabel.click() : radioInputs[0].click();
           u().log(`Radio first option (fallback): ${questionText.substring(0, 30)}`);
         }
