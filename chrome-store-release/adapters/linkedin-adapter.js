@@ -948,8 +948,21 @@
     // isEasyApply so the engine counts these as "already applied" — harmless
     // skips, not jobs the bot failed on.
     isAlreadyAppliedCard(jobCard) {
-      const cardText = (jobCard && jobCard.textContent) || '';
+      // v2.5.97: the Aug-2026 cards (React, /jobs/search-results/) have NO whitespace
+      // between sibling <p>s, so textContent reads "…, FranceApplied · Posted…" /
+      // "1 day agoApplied · …" and the old leading \b never matched → applied cards
+      // were counted "not Easy Apply". Leaf texts are joined with a newline.
+      let cardText = (jobCard && jobCard.textContent) || '';
+      try {
+        const leaves = [];
+        const walker = document.createTreeWalker(jobCard, NodeFilter.SHOW_TEXT);
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) { const t = n.nodeValue.trim(); if (t) leaves.push(t); }
+        if (leaves.length) cardText = leaves.join('\n');
+      } catch (_) {}
+      // A footer leaf reading just "Applied" / "Postulé" (classic /jobs/search/ cards,
+      // live 2026-10-03 "Data Product Manager · Devoteam … Applied") counts too.
       return /\bApplied\b\s*[·•|]/i.test(cardText) ||
+        /(^|\n)(Applied|Postulé|Candidature envoyée|Déjà postulé)(\n|$)/i.test(cardText) ||
         /Application submitted/i.test(cardText) ||
         /Candidature envoyée/i.test(cardText) ||
         /Postulation envoyée/i.test(cardText) ||

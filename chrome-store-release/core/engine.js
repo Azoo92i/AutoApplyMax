@@ -457,6 +457,9 @@
 
           // Extract job info
           const jobInfo = adapter.getJobInfo(jobCard);
+          // v2.5.97: the AI layer answers "what position are you looking for?" with the job
+          // being applied to (live 2026-10-03: the AI invented "Directeur Financier").
+          try { state.currentJobInfo = { title: jobInfo && jobInfo.title || '', company: jobInfo && jobInfo.company || '' }; } catch (_) {}
 
           // Blacklist check
           if (state.shouldSkipByBlacklist(jobInfo.title, jobInfo.company, jobInfo.description, state.config.blacklistKeywords)) {

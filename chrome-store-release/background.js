@@ -573,7 +573,11 @@ function enqueueDiag(event) {
   if (!event || event.site !== 'linkedin') return;
   if (event.event_type === 'submit_ok') { _submitOkCount++; return; }
   _diagBuffer.push(event);
-  if (_diagBuffer.length >= EAM_DIAG_BUFFER_MAX) flushDiagBuffer();
+  // v2.5.97: end-of-run events flush NOW. The buffer lives in service-worker memory; after
+  // a Stop the worker idles and is killed (or the browser is closed) before the 60 s alarm,
+  // so session_end — the row carrying the run's skip_reasons — was lost (live 2026-10-03:
+  // phase C session_end never landed).
+  if (_diagBuffer.length >= EAM_DIAG_BUFFER_MAX || event.event_type === 'session_end' || event.event_type === 'daily_limit_reached') flushDiagBuffer();
 }
 
 chrome.alarms.create('eam-diag-flush', { periodInMinutes: 1 });

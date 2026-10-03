@@ -239,7 +239,7 @@
   // v2.5.93: start-date questions ("What is your earliest starting date?", mm/dd/yyyy
   // artdeco-date field) got "January 2022" from the AI. Answer = today + notice period
   // (min 2 weeks), formatted for the field.
-  const START_DATE_RE = /earliest.{0,20}start|start(ing)?\s*date|when.{0,20}can.{0,10}you.{0,10}(start|join|begin)|available\s+to\s+start|availability\s+date|date.{0,15}d[ée]but|d[ée]but.{0,15}(poste|contrat|mission)|disponible.{0,20}partir|partir\s+de\s+quand|date.{0,15}disponibilit|fecha.{0,15}(inicio|incorporaci)|eintrittsdatum|startdatum|data.{0,15}inizio/i;
+  const START_DATE_RE = /earliest.{0,20}start|start(ing)?\s*date|when.{0,20}can.{0,10}you.{0,10}(start|join|begin)|available\s+to\s+start|availability\s+date|date.{0,15}d[ée]but|d[ée]but.{0,15}(poste|contrat|mission)|disponible.{0,20}partir|partir\s+de\s+quand|partir\s+de\s+quelle\s+date|quelle\s+date.{0,40}disponible|date.{0,30}seriez.{0,15}disponible|date.{0,15}disponibilit|fecha.{0,15}(inicio|incorporaci)|eintrittsdatum|startdatum|data.{0,15}inizio/i;
   function isDateField(input) {
     if (!input) return false;
     if (input.type === 'date') return true;
@@ -985,14 +985,41 @@
   function _optionLevelRank(text) {
     const s = String(text || '').toLowerCase();
     if (/(c2|native|natif|nativa?|nativo|maternell|proficient user)/.test(s))                 return 6;
-    if (/(c1|bilingu|maitrise|maîtrise)/.test(s))                                             return 5;
+    if (/(c1|bilingu|maitrise|maîtrise|expert)/.test(s))                                      return 5;
     if (/(b2|fluent|courant|fluid|upper[-\s]?intermediate|professional working|full professional)/.test(s)) return 4;
-    if (/(professional|professionnel|professionnelle|advanced|avanc[eé]|avanzado|conversational)/.test(s)) return 4;
+    if (/(professional|professionnel|professionnelle|advanced|avanc[eé]|avanzado|conversational|op[ée]rationnel)/.test(s)) return 4;
     if (/(b1|intermediate|interm[eé]diaire|intermedio)/.test(s))                              return 3;
-    if (/(a2|elementary|[eé]l[eé]mentaire|basic|basique|b[aá]sico|limited working)/.test(s)) return 2;
-    if (/(a1|beginner|d[eé]butant|principiante|notions|none|no knowledge|aucun)/.test(s))    return 1;
+    if (/(a2|elementary|[eé]l[eé]mentaire|basic|basique|b[aá]sico|limited working|scolaire)/.test(s)) return 2;
+    if (/(a1|beginner|d[eé]butant|principiante|notions|none|no knowledge|aucun|introduct|initiation|novice)/.test(s))    return 1;
     return 0;
   }
+  // v2.5.97: language-level <select> / listbox — same ranking as the radios. Live
+  // 2026-10-03 (julhiet sterwen, SmartRecruiters, submitted): "Quel est votre niveau
+  // d'anglais ?" options Introductif/… matched none of the native/fluent/professional
+  // words and fell through to the blind options[1] = "Introductif" for a Fluent user.
+  // Returns the option to pick, or null (leave unanswered — never blind).
+  function pickLanguageLevelOption(options, getText, questionText, userLanguages) {
+    const lang = _detectLanguageInQuestion(String(questionText || '').toLowerCase());
+    let userLevelRaw = '';
+    if (lang && Array.isArray(userLanguages)) {
+      for (const L of userLanguages) {
+        const nm = (typeof L === 'string' ? L : (L && L.name) || '').toLowerCase();
+        if (nm && lang.aliases.some(a => nm.includes(a))) { userLevelRaw = typeof L === 'string' ? L : (L && L.level) || ''; break; }
+      }
+    }
+    let targetRank = _userLevelRank(userLevelRaw);
+    if (targetRank === 0) targetRank = 4;
+    let best = null, bestScore = Infinity;
+    for (const o of options) {
+      const rank = _optionLevelRank(getText(o));
+      if (rank === 0) continue;
+      const score = Math.abs(rank - targetRank) + (rank >= targetRank ? -0.1 : 0.1);
+      if (score < bestScore) { bestScore = score; best = o; }
+    }
+    u().log(`Lang select ${lang ? lang.canonical : '?'} (user="${userLevelRaw}" rank=${targetRank}) → ${best ? '"' + String(getText(best)).trim().slice(0, 30) + '"' : 'left unanswered (no ranked option)'}`);
+    return best;
+  }
+
   function fillLanguageLevelRadio(fieldset, radioInputs, questionText, userLanguages) {
     const q = questionText.toLowerCase();
     const lang = _detectLanguageInQuestion(q);
@@ -1289,10 +1316,10 @@
         selectedOption = best;
         u().log(`Years select → "${best ? best.text.trim() : '-'}" (${y.years}y, ${y.basis})`);
         if (!selectedOption) continue;
-      } else if (labelText.match(/proficiency|level.*english|level.*french|level.*spanish|level.*german|niveau.*anglais|niveau.*français|nivel.*inglés/)) {
-        selectedOption = options.find(opt => opt.text.toLowerCase().match(/native|bilingual|bilingue|langue maternelle/));
-        if (!selectedOption) selectedOption = options.find(opt => opt.text.toLowerCase().match(/fluent|courant|fluide/));
-        if (!selectedOption) selectedOption = options.find(opt => opt.text.toLowerCase().match(/professional|professionnel|advanced/));
+      } else if (labelText.match(/proficiency|level.*english|level.*french|level.*spanish|level.*german|niveau.*anglais|niveau.*français|nivel.*inglés|(english|anglais|french|fran[çc]ais|spanish|espagnol|german|allemand|italian|italien).*(level|niveau|proficien)|niveau.*(langue|espagnol|allemand|italien)/)) {
+        // v2.5.97: ranked against the user's level for that language; never the blind options[1].
+        selectedOption = pickLanguageLevelOption(options, o => o.text, getFieldQuestion(select, modal) || labelText, config.languages || []);
+        if (!selectedOption) continue;
       } else if (labelText.match(/english|anglais|language|langue|french|français|spanish|español|german|deutsch/)) {
         selectedOption = options.find(opt => opt.text.toLowerCase().match(/native|bilingual|fluent|courant|professionnel|bilingue/));
       }
@@ -1385,10 +1412,11 @@
         if (options.length > 0) {
           let selectedOption = null;
 
-          if (question.match(/proficiency|level.*english|level.*french|level.*spanish|niveau.*anglais|nivel.*inglés/)) {
-            selectedOption = options.find(opt => opt.textContent.toLowerCase().match(/native|bilingual|bilingue/));
-            if (!selectedOption) selectedOption = options.find(opt => opt.textContent.toLowerCase().match(/fluent|courant/));
-            if (!selectedOption) selectedOption = options.find(opt => opt.textContent.toLowerCase().match(/professional|professionnel|advanced/));
+          if (question.match(/proficiency|level.*english|level.*french|level.*spanish|niveau.*anglais|nivel.*inglés|(english|anglais|french|fran[çc]ais|spanish|espagnol|german|allemand|italian|italien).*(level|niveau|proficien)|niveau.*(langue|espagnol|allemand|italien)/)) {
+            // v2.5.97: ranked against the user's level; never the blind first option.
+            const _cfg = (window.EAM && window.EAM.utils && window.EAM.utils.config) || {};
+            selectedOption = pickLanguageLevelOption(options, o => o.textContent, question, _cfg.languages || []);
+            if (!selectedOption) { document.body.click(); continue; }
           }
           // v2.5.87: country list → profile country, never the first option ("Afghanistan").
           if (!selectedOption && ((isCountryQuestion(question) && options.length > 5) || looksLikeCountryList(options.map(o => o.textContent)))) {
@@ -1449,6 +1477,7 @@
     salaryAnswer,
     START_DATE_RE,
     isDateField,
-    startDateAnswer
+    startDateAnswer,
+    pickLanguageLevelOption
   };
 })();

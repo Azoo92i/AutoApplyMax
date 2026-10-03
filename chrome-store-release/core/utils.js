@@ -279,7 +279,10 @@
       // "international" job, "chef" skipped "Chef de projet"… via the description).
       const esc = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
       let hit;
-      try { hit = new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '($|[^\\p{L}\\p{N}])', 'iu').test(jobText); }
+      // v2.5.97: plural forms count too — "stage" missed "+ de 10 stages de fin d'études"
+      // (live 2026-10-03, VINCI internship ad applied). Only s / es / x, never longer
+      // suffixes ("intern" still never matches "international").
+      try { hit = new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '(?:s|es|x)?($|[^\\p{L}\\p{N}])', 'iu').test(jobText); }
       catch (_) { hit = jobText.includes(keyword); }
       if (hit) {
         log(`Skip (Blacklist): "${keyword}" found in job`);
@@ -603,6 +606,14 @@
       });
       if (hit) return hit;
     }
+    // v2.5.97: /jobs/search-results/ (hashed classes). After an apply the focused job has no
+    // Easy Apply control, so the stop notice had nowhere to go (live 2026-10-03, phase B: no
+    // in-page notice). The job pane = the lazy column holding the JobDetails_* components.
+    try {
+      const jd = [...document.querySelectorAll('[componentkey^="JobDetails_"], [id^="JobDetails_"]')].find(e => e.getBoundingClientRect().width > 280);
+      const col = jd && jd.closest('[data-testid="lazy-column"]');
+      if (col && col.getBoundingClientRect().width > 280 && !col.closest('[data-eam-rl-chip],[data-eam-bot-notice]')) return col;
+    } catch (_) {}
     return null;
   }
   // Returns 'below-actions' | 'detail-pane' | null.

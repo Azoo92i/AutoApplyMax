@@ -103,6 +103,19 @@
 
   // ─── Groq API call ──────────────────────────────────────────────────
 
+  // v2.5.97: "which position are you looking for / applying to" (EN/FR/ES/DE/IT).
+  function isDesiredPositionQuestion(q) {
+    const s = String(q || '').toLowerCase();
+    return /(quel(le)?s?\s+(est\s+le\s+)?(poste|emploi|m[ée]tier|fonction)s?\s+(recherch|vis|souhait|pr[ée]f[ée]r|cibl|postul|candidat)|poste\s+(recherch[ée]|vis[ée]|souhait[ée])|(type|intitul[ée])\s+de\s+poste\s+(recherch|souhait|vis)|what\s+(position|role|job)s?\s+(are\s+you|do\s+you|would\s+you)\s+(looking|applying|seeking|interested|want)|(which|what)\s+(position|role|job)\s+(are\s+you\s+)?(applying|looking)|(desired|target|preferred)\s+(position|role|job\s*title)|position\s+applied\s+for|role\s+you\s+are\s+applying|qu[eé]\s+puesto\s+(busca|desea)|puesto\s+(deseado|al\s+que\s+aplica)|gew[üu]nschte\s+position|posizione\s+(desiderata|ricercata))/i.test(s);
+  }
+  // "Chef de projet (Verified job)" / duplicated card titles → one clean title.
+  function cleanJobTitle(t) {
+    let s = String(t || '').replace(/\s*\((verified job|vérifiée?)\)\s*/ig, ' ').replace(/\s+/g, ' ').trim();
+    const half = s.length / 2;
+    if (s.length % 2 === 0 && s.slice(0, half) === s.slice(half)) s = s.slice(0, half);
+    return s.slice(0, 120);
+  }
+
   async function askAI(question, config, fieldType, options) {
     // Skip all AI calls if premium_required was already received this session
     if (premiumBlocked) return null;
@@ -134,6 +147,17 @@
       const sd = FF.startDateAnswer(question, config, null);
       log()(`AI [start-date guard]: "${String(question).substring(0, 50)}" → "${sd}"`);
       return sd;
+    }
+
+    // v2.5.97: "Quel poste recherchez-vous ?" / "What position are you applying for?" → the job
+    // being applied to. Live 2026-10-03 (julhiet sterwen, submitted): the AI answered
+    // "Directeur Financier" for a project-management candidate applying to a change-manager job.
+    const _job = (window.EAM && window.EAM.utils && window.EAM.utils.currentJobInfo) || null;
+    if (_job && _job.title && isDesiredPositionQuestion(question) && !(Array.isArray(options) && options.length)
+        && fieldType !== 'number' && fieldType !== 'checkbox' && fieldType !== 'radio') {
+      const t = cleanJobTitle(_job.title);
+      log()(`AI [position guard]: "${String(question).substring(0, 50)}" → "${t}"`);
+      return t;
     }
 
     await loadCache();
@@ -232,6 +256,7 @@ Legally authorized to work: ${config.legallyAuthorized || 'yes'}
 Willing to relocate: ${config.willingToRelocate || ''}
 Driver's license: ${config.driversLicense || ''}
 Notice period: ${config.noticePeriod || ''}
+${_job && _job.title ? `Job being applied for: ${cleanJobTitle(_job.title)}${_job.company ? ' at ' + _job.company : ''} (the position the candidate is seeking = this job)` : ''}
 ${summary ? `\nProfessional summary: ${summary.substring(0, 400)}` : ''}
 ${topSkills ? `Top skills: ${topSkills}` : ''}
 ${languages ? `Languages: ${languages}` : ''}
@@ -330,6 +355,8 @@ Answer:`;
     isPremiumBlocked: () => premiumBlocked,
     findCached,
     isMarketingOptIn,
+    isDesiredPositionQuestion,
+    cleanJobTitle,
     _cacheKey: cacheKey, // exposed for unit tests
     loadCache,
     clearCache: async () => { cache = {}; await saveCache(); }

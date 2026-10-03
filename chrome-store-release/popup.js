@@ -915,9 +915,10 @@ const SKIP_GROUPS = {
   filters: ['blacklist', 'years_req', 'years_card'],
   questions: ['questions', 'form_invalid', 'btn_disabled'],
 };
-function popupLang() {
-  try { return /^fr\b/i.test((chrome.i18n && chrome.i18n.getUILanguage && chrome.i18n.getUILanguage()) || navigator.language || '') ? 'fr' : 'en'; } catch (_) { return 'en'; }
-}
+// v2.5.97: the rest of the popup is English-only — a French browser got ONE French
+// line ("Ignorées pendant cette session…") inside an English popup (live 2026-10-03).
+// Full i18n or English-only, never a mix: English until the whole popup is translated.
+function popupLang() { return 'en'; }
 const SKIP_COPY = {
   // [singular, plural]
   en: { lead: (n) => 'Skipped this run (' + n + '): ', applied: ['already applied', 'already applied'], not_ea: ['not Easy Apply', 'not Easy Apply'], filters: ['filtered by your settings', 'filtered by your settings'], questions: ['question not answered', 'questions not answered'], other: ['LinkedIn error', 'LinkedIn errors'],
