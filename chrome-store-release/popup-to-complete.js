@@ -1,6 +1,7 @@
 // popup-to-complete.js — popup UI of "To complete" (2026-10-19). Data + rules live in to-complete.js (service worker).
 // Tab "To complete": distinct unanswered questions (one input per question, profile-field questions grouped), the
-// saved jobs, "Apply to these jobs now". Run card: pre-run banner when the settings behind most skips are empty.
+// saved jobs, "Apply to these jobs now". Header: "Profile incomplete" chip + popover (2.5.123, replaces the run-card
+// pre-run banner) when fields that commonly block applications are empty.
 // Labels come from job forms (untrusted page text) → DOM APIs + textContent only, never innerHTML.
 (function () {
   'use strict';
@@ -20,26 +21,36 @@
   const PLACEHOLDER = { expectedSalary: 'Amount per year', currentSalary: 'Amount per year', city: 'City, province / state', nationality: 'Your nationality', postalCode: 'Postal code', phone: 'Phone with country code' };
   const HINT = { expectedSalary: 'Per year, in your currency. "8 LPA" and "85k" work too.', currentSalary: 'Your current / last drawn pay per year, in your currency ("8 LPA" works too). Not your expected salary.' };
   const NOTICE = ['Immediately', '15 days', '1 month', '2 months', '3 months', '6 months'];
-  const MISS_WORD = { expectedSalary: 'expected salary', city: 'city', currentSalary: 'current CTC' };
+  const MISS_WORD = { expectedSalary: 'expected salary', city: 'city', currentSalary: 'current CTC', phone: 'phone',
+    yearsOfExperience: 'years of experience', resume: 'resume file', nationality: 'nationality', postalCode: 'postal code',
+    noticePeriod: 'notice period', dateOfBirth: 'date of birth', gender: 'gender' };
+  const PERSONAL_FIELD = { phone: 'phone', yearsOfExperience: 'yearsOfExperience', resume: 'uploadResumeBtn' };
 
   let data = { items: [], answers: {}, settings: {}, reapply: null };
   let countryHint = '';
   let showMissing = false;
+  let extra = { yearsOfExperience: '', hasResume: false };
+  let laterUntil = 0;
 
-  async function loadCountryHint() {
+  // Country hint + the two profile fields that are not To complete settings (years, resume file) + "Later".
+  async function loadProfileState() {
     try {
-      const s = await chrome.storage.sync.get(['country', 'phoneCountryCode']);
-      const l = await chrome.storage.local.get(['accountProfile']);
-      const c = String(s.country || (l.accountProfile && l.accountProfile.country) || '').trim().toUpperCase();
-      countryHint = c.length === 2 ? c : (String(s.phoneCountryCode || '').replace(/[^\d]/g, '') === '91' ? 'IN' : '');
+      const s = await chrome.storage.sync.get(['country', 'phoneCountryCode', 'yearsOfExperience']);
+      const l = await chrome.storage.local.get(['accountProfile', 'resumeFileName', TC.LATER_KEY]);
+      countryHint = TC.countryHintFrom(s, l);
+      extra = { yearsOfExperience: s.yearsOfExperience, hasResume: !!l.resumeFileName };
+      laterUntil = Number(l[TC.LATER_KEY]) || 0;
     } catch (_) { countryHint = ''; }
   }
 
   async function refresh() {
     const r = await send({ type: 'toCompleteList' });
     if (r && r.ok) data = r;
+    await loadProfileState();
     render();
   }
+
+  function gaps() { return TC.profileGaps(data.settings || {}, countryHint, extra, TC.openItems(data.items || [])); }
 
   function ctx() { return { settings: data.settings || {}, custom: data.answers || {} }; }
 
@@ -57,14 +68,47 @@
     const empty = $('tc-empty'); if (empty) empty.hidden = open.length > 0;
   }
 
+  // Header chip "Profile incomplete" -> popover: what is missing, "Complete now" (right tab / field), "Later" (24 h).
   function renderPrerun() {
-    const box = $('tc-prerun'); if (!box) return;
-    const miss = TC.missingKeySettings(data.settings || {}, countryHint);
-    if (!miss.length) { box.hidden = true; return; }
-    const words = miss.map(k => MISS_WORD[k] || k);
+    const wrap = $('pf-chip-wrap'); if (!wrap) return;
+    const g = gaps();
+    const show = g.length > 0 && !(laterUntil > Date.now());
+    wrap.hidden = !show;
+    document.body.classList.toggle('has-pf-chip', show);
+    if (!show) { closePop(); return; }
+    const words = g.map(x => (x.key === 'currentSalary' && countryHint !== 'IN') ? 'current salary' : MISS_WORD[x.key] || x.key);
     const list = words.length > 1 ? words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1] : words[0];
-    $('tc-prerun-text').textContent = `${miss.length} answer${miss.length > 1 ? 's' : ''} missing (${list}) — jobs that ask for ${miss.length > 1 ? 'them' : 'it'} are saved to “To complete”, not lost.`;
-    box.hidden = false;
+    $('pf-pop-list').textContent = list + '.';
+    $('pf-chip').setAttribute('aria-label', 'Profile incomplete: ' + list + ' missing');
+    $('pf-chip').title = 'Missing: ' + list;
+  }
+  function closePop() { const p = $('pf-pop'); if (p) p.hidden = true; const c = $('pf-chip'); if (c) c.setAttribute('aria-expanded', 'false'); }
+  function togglePop() {
+    const p = $('pf-pop'); if (!p) return;
+    p.hidden = !p.hidden;
+    $('pf-chip').setAttribute('aria-expanded', p.hidden ? 'false' : 'true');
+    if (!p.hidden) { const b = $('pf-pop-go'); if (b) b.focus(); }
+  }
+  function completeNow() {
+    closePop();
+    const g = gaps(); if (!g.length) return;
+    const first = g[0];
+    if (first.tab === 'personal' && !g.some(x => x.tab === 'tocomplete')) {
+      const t = document.querySelector('.tab[data-tab="personal"]'); if (t) t.click();
+      setTimeout(() => { const f = $(PERSONAL_FIELD[first.key]); if (f) { f.scrollIntoView({ block: 'center' }); f.focus(); } }, 50);
+      return;
+    }
+    showMissing = true; openTab(); render();
+    setTimeout(() => {
+      const target = g.find(x => x.tab === 'tocomplete');
+      const f = (target && document.querySelector('#tc-questions [data-intent="' + target.key + '"]')) || document.querySelector('#tc-questions [data-intent]');
+      if (f) { f.scrollIntoView({ block: 'center' }); f.focus(); }
+    }, 50);
+  }
+  async function later() {
+    laterUntil = Date.now() + TC.LATER_MS;
+    try { await chrome.storage.local.set({ [TC.LATER_KEY]: laterUntil }); } catch (_) {}
+    renderPrerun();
   }
 
   function renderReapplyStatus() {
@@ -110,7 +154,8 @@
     wrap.textContent = '';
     const groups = TC.pendingQuestions(open, ctx());
     if (showMissing) {
-      for (const k of TC.missingKeySettings(data.settings || {}, countryHint)) {
+      const missing = gaps().filter(x => x.tab === 'tocomplete').map(x => x.key);
+      for (const k of missing.slice().reverse()) {
         if (!groups.some(g => g.intent === k)) groups.unshift({ id: k, intent: k, key: k, labels: [], jobs: 0 });
       }
     }
@@ -232,18 +277,22 @@
     $('tc-save')?.addEventListener('click', save);
     $('tc-reapply')?.addEventListener('click', reapply);
     $('tc-reapply-cancel')?.addEventListener('click', async () => { await send({ type: 'toCompleteReapplyCancel' }); refresh(); });
-    $('tc-prerun-add')?.addEventListener('click', (e) => { e.preventDefault(); showMissing = true; openTab(); render(); setTimeout(() => { const f = document.querySelector('#tc-questions [data-intent]'); if (f) f.focus(); }, 50); });
+    $('pf-chip')?.addEventListener('click', (e) => { e.stopPropagation(); togglePop(); });
+    $('pf-pop-go')?.addEventListener('click', completeNow);
+    $('pf-pop-later')?.addEventListener('click', later);
+    document.addEventListener('click', (e) => { const p = $('pf-pop'); if (p && !p.hidden && !e.target.closest('#pf-chip-wrap')) closePop(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePop(); });
     $('tc-open-dashboard')?.addEventListener('click', (e) => { e.preventDefault(); try { chrome.tabs.create({ url: 'https://www.autoapplymax.com/dashboard#applications' }); } catch (_) {} });
     try {
       chrome.storage.onChanged.addListener((ch, area) => {
-        if ((area === 'local' && (ch[TC.LIST_KEY] || ch[TC.REAPPLY_KEY] || ch[TC.ANS_KEY])) || (area === 'sync' && TC.SETTING_KEYS.some(k => ch[k]))) {
+        if ((area === 'local' && (ch[TC.LIST_KEY] || ch[TC.REAPPLY_KEY] || ch[TC.ANS_KEY] || ch.resumeFileName)) || (area === 'sync' && (TC.SETTING_KEYS.some(k => ch[k]) || ch.yearsOfExperience || ch.country))) {
           // Do not wipe what the user is typing in the tab.
-          if (document.activeElement && document.activeElement.closest && document.activeElement.closest('#tc-questions')) { renderPrerun(); renderReapplyStatus(); renderReady(); return; }
+          if (document.activeElement && document.activeElement.closest && document.activeElement.closest('#tc-questions')) { loadProfileState().then(() => { renderPrerun(); renderReapplyStatus(); renderReady(); }); return; }
           refresh();
         }
       });
     } catch (_) {}
-    loadCountryHint().then(refresh);
+    refresh();
     // Pull answers / jobs saved on the dashboard (account), then repaint.
     send({ type: 'toCompleteSync' }).then((r) => { if (r && r.changed) refresh(); });
   }

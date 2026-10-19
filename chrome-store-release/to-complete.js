@@ -145,6 +145,45 @@
     return out;
   }
 
+  // 2.5.123 — "Complete your profile" alert (top of the popup; replaces the run-card pre-run banner).
+  // Empty fields that commonly block applications, in priority order, each with the popup tab that edits it:
+  // key settings (expected salary, city, India current CTC) + phone + years of experience + resume file + any other
+  // profile field a saved To complete job already asked (nationality, postal code…). extra = { yearsOfExperience,
+  // hasResume } read by the popup (not in SETTING_KEYS). Yes/No settings have popup defaults → never listed.
+  const GAP_ORDER = ['expectedSalary', 'currentSalary', 'city', 'phone', 'yearsOfExperience', 'resume', 'nationality',
+    'postalCode', 'noticePeriod', 'dateOfBirth', 'gender'];
+  const GAP_TAB = { phone: 'personal', yearsOfExperience: 'personal', resume: 'personal' }; // others: tocomplete
+  function profileGaps(settings, countryHint, extra, items) {
+    const s = settings || {}; const x = extra || {};
+    const set = new Set(missingKeySettings(s, countryHint));
+    if (!String(s.phone || '').trim()) set.add('phone');
+    if (!String(x.yearsOfExperience == null ? '' : x.yearsOfExperience).trim()) set.add('yearsOfExperience');
+    if (!x.hasResume) set.add('resume');
+    for (const g of pendingQuestions(items || [], { settings: s, custom: {} })) {
+      if (g.intent !== 'custom' && !HAS_DEFAULT[g.intent] && GAP_ORDER.includes(g.intent)) set.add(g.intent);
+    }
+    return GAP_ORDER.filter(k => set.has(k)).map(k => ({ key: k, tab: GAP_TAB[k] || 'tocomplete' }));
+  }
+  // Country for the India CTC rule: settings → account profile → +91 phone code.
+  function countryHintFrom(sync, local) {
+    const s = sync || {}; const l = local || {};
+    const c = String(s.country || (l.accountProfile && l.accountProfile.country) || '').trim().toUpperCase();
+    return c.length === 2 ? c : (String(s.phoneCountryCode || '').replace(/[^\d]/g, '') === '91' ? 'IN' : '');
+  }
+  // Toolbar "!" badge (amber) while the profile is incomplete (unless "Later" < 24 h) or To complete jobs wait.
+  const LATER_KEY = 'eam_profile_later_until';
+  const LATER_MS = 24 * 3600e3;
+  function attentionState(sync, local, now) {
+    const s = sync || {}; const l = local || {};
+    const items = (l[LIST_KEY] && l[LIST_KEY].items) || [];
+    const gaps = profileGaps(s, countryHintFrom(s, l), { yearsOfExperience: s.yearsOfExperience, hasResume: !!(l.resumeFile || l.resumeFileName) }, items);
+    const later = Number(l[LATER_KEY]) > (now || Date.now());
+    const jobs = openItems(items).filter(x => x.status !== 'queued').length;
+    return { gaps, later, jobs, badge: (gaps.length > 0 && !later) || jobs > 0 };
+  }
+  const BADGE_SYNC_KEYS = SETTING_KEYS.concat(['yearsOfExperience', 'country', 'phoneCountryCode']);
+  const BADGE_LOCAL_KEYS = [LIST_KEY, LATER_KEY, 'resumeFile', 'resumeFileName', 'accountProfile'];
+
   // Account rows → local items (union by jobId, the most recent update wins; unsynced local edits win ties).
   function mergeRemote(localItems, rows) {
     const map = new Map((localItems || []).map(x => [x.jobId, x]));
@@ -209,7 +248,7 @@
   // ─── chrome glue ──────────────────────────────────────────────────────────────────────────────────────
   const hasChrome = typeof chrome !== 'undefined' && chrome && chrome.storage && chrome.runtime;
   const api = { LIST_KEY, ANS_KEY, REAPPLY_KEY, SETTING_KEYS, HAS_DEFAULT, canonicalJob, cleanQuestions, mergeEntry, isAnswered, openQuestions,
-    readyItems, openItems, pendingQuestions, missingKeySettings, mergeRemote, mergeAnswers, applyResult, reapplyUrl, normalizeAnswers };
+    readyItems, openItems, pendingQuestions, missingKeySettings, profileGaps, countryHintFrom, attentionState, LATER_KEY, LATER_MS, BADGE_SYNC_KEYS, BADGE_LOCAL_KEYS, mergeRemote, mergeAnswers, applyResult, reapplyUrl, normalizeAnswers };
   root.AAMToComplete = api;
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; return; }
   if (!hasChrome) return;

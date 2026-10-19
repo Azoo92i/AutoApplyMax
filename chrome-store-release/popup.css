@@ -868,10 +868,21 @@ small { font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; }
 .tab-tc { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .tab-badge { min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-full); background: var(--primary); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
 .tab-badge[hidden] { display: none; }
-.tc-prerun { display: flex; align-items: flex-start; gap: 6px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid #bfdbfe; border-radius: var(--radius-sm); background: var(--primary-soft); color: #1e3a8a; font-size: 11.5px; line-height: 1.4; }
-.tc-prerun svg { flex-shrink: 0; margin-top: 1px; color: var(--primary); }
-.tc-prerun a { font-weight: 600; white-space: nowrap; }
-.tc-prerun[hidden] { display: none; }
+/* 2.5.123 "Profile incomplete" header chip + popover (replaces the run-card .tc-prerun banner) */
+.pf-chip-wrap { display: flex; } /* popover anchors to the sticky .header */
+.pf-chip-wrap[hidden] { display: none; }
+body.has-pf-chip .wordmark { display: none; } /* room for the chip: the icon alone stays the logo */
+.pf-chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 9px; border: 1px solid var(--warning-border); border-radius: var(--radius-full); background: var(--warning-bg); color: var(--warning-fg); font-size: 11.5px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.pf-chip svg { flex-shrink: 0; color: #d97706; }
+.pf-chip:hover, .pf-chip[aria-expanded="true"] { border-color: #f59e0b; background: #fef3c7; }
+.pf-pop { position: absolute; top: calc(100% + 6px); right: 16px; z-index: 60; width: 272px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-primary); box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14); font-size: 12px; line-height: 1.4; color: var(--text-primary); }
+.pf-pop[hidden] { display: none; }
+.pf-pop-title { margin: 0 0 3px; font-weight: 600; }
+.pf-pop-sub { margin: 0 0 9px; color: var(--text-secondary); font-size: 11.5px; }
+.pf-pop-actions { display: flex; align-items: center; gap: 10px; }
+.pf-pop-actions .btn { width: auto; padding: 0 12px; }
+.pf-pop-later { border: 0; background: none; padding: 4px 2px; color: var(--text-secondary); font-size: 12px; font-weight: 600; cursor: pointer; }
+.pf-pop-later:hover { color: var(--primary); }
 .tc-reapply-status { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--primary-soft); color: #1e3a8a; font-size: 12px; }
 .tc-reapply-status svg { flex-shrink: 0; color: var(--primary); }
 .tc-reapply-status span { flex: 1; min-width: 0; }

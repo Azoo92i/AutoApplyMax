@@ -15,6 +15,22 @@
         <span class="wordmark">AutoApplyMax</span>
       </a>
       <div class="header-actions">
+        <!-- 2.5.123 "Profile incomplete" chip + popover (popup-to-complete.js). Replaces the run-card
+             "N answers missing" banner: one component for the fields that commonly block applications. -->
+        <div class="pf-chip-wrap" id="pf-chip-wrap" hidden>
+          <button type="button" class="pf-chip" id="pf-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="pf-pop">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+            <span>Profile incomplete</span>
+          </button>
+          <div class="pf-pop" id="pf-pop" role="dialog" aria-labelledby="pf-pop-title" hidden>
+            <p class="pf-pop-title" id="pf-pop-title">Missing: <span id="pf-pop-list"></span></p>
+            <p class="pf-pop-sub" id="pf-pop-sub">Jobs whose form asks for these are saved to “To complete” — never guessed.</p>
+            <div class="pf-pop-actions">
+              <button type="button" class="btn btn-primary btn-sm" id="pf-pop-go">Complete now</button>
+              <button type="button" class="pf-pop-later" id="pf-pop-later" title="Hide for 24 hours">Later</button>
+            </div>
+          </div>
+        </div>
         <div class="header-right" id="header-right">
           <button id="header-sign-in-btn" class="header-sign-in">Sign in</button>
         </div>
@@ -59,11 +75,6 @@
         <span id="run-skips-text"></span>
       </p>
 
-      <!-- 2026-10-19 "To complete": settings that block the most skips are empty (popup-to-complete.js) -->
-      <div class="tc-prerun" id="tc-prerun" hidden>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-        <span><span id="tc-prerun-text"></span> <a href="#" id="tc-prerun-add">Add now</a></span>
-      </div>
       <button id="start-btn" class="btn btn-primary btn-block">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 4l14 8-14 8V4z" fill="currentColor"/></svg>
         Start auto-apply

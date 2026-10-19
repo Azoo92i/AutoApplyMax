@@ -927,12 +927,23 @@ async function refreshRunBadge() {
     let text = '', color = '#0a66c2';
     if (p && p.until > Date.now()) { text = 'WAIT'; color = '#d97706'; }
     else if (!isRunning && d && Date.now() - d < 16 * 3600 * 1000) { text = 'MAX'; color = '#059669'; }
+    else {
+      // 2.5.123: amber "!" while the profile lacks fields that block applications (unless "Later" < 24 h)
+      // or "To complete" jobs wait for an answer. Run states above always win.
+      const TC = self.AAMToComplete;
+      if (TC && TC.attentionState) {
+        const [sy, lo] = await Promise.all([chrome.storage.sync.get(TC.BADGE_SYNC_KEYS), chrome.storage.local.get(TC.BADGE_LOCAL_KEYS)]);
+        if (TC.attentionState(sy, lo).badge) { text = '!'; color = '#d97706'; }
+      }
+    }
     await chrome.action.setBadgeText({ text });
     if (text) await chrome.action.setBadgeBackgroundColor({ color });
   } catch (_) {}
 }
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && (changes.eam_pause_state || changes.eam_daily_limit_at || changes.isRunning)) refreshRunBadge();
+  const TC = self.AAMToComplete; // 2.5.123: profile / To complete changes repaint the "!" badge
+  if (TC && TC.BADGE_SYNC_KEYS && ((area === 'sync' && TC.BADGE_SYNC_KEYS.some(k => changes[k])) || (area === 'local' && TC.BADGE_LOCAL_KEYS.some(k => changes[k])))) refreshRunBadge();
 });
 chrome.runtime.onStartup?.addListener?.(refreshRunBadge);
 chrome.runtime.onInstalled.addListener(refreshRunBadge);
