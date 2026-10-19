@@ -332,6 +332,7 @@ body[data-auth="out"] #start-btn { background: var(--bg-primary); color: var(--p
 .run-skips svg { flex-shrink: 0; margin-top: 1px; color: var(--primary); }
 .run-skips b { color: var(--text-primary); font-weight: 600; }
 .run-skips[hidden] { display: none; }
+.run-skips-tc { color: var(--primary); font-weight: 600; text-decoration: underline; cursor: pointer; }
 .alert-premium { margin-top: 6px; padding-top: 6px; border-top: 1px solid #bfdbfe; }
 
 /* Only one of Start / Stop is visible at a time (popup.js toggles disabled). */

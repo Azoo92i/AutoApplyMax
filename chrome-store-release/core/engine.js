@@ -183,7 +183,7 @@
     const n = ks.reduce((a, k) => a + st._missNoticeKeys[k], 0);
     st._missNotice = {
       title: 'Add ' + list + ' to apply to more jobs',
-      body: (n === 1 ? 'A job asked for ' : n + ' jobs asked for ') + list + ' and it is empty in your settings, so they were skipped (never guessed). Open the AutoApplyMax extension → Preferences and fill it in; auto-apply keeps going meanwhile.',
+      body: (n === 1 ? 'A job asked for ' : n + ' jobs asked for ') + list + ' and it is empty in your settings, so they were saved in "To complete" (never guessed, not lost). Open the AutoApplyMax extension → To complete, answer once, then "Apply to these jobs now". Auto-apply keeps going meanwhile.',
     };
     st._showBotNotice(st._missNotice.title, st._missNotice.body, 'warn');
   }
@@ -1682,7 +1682,7 @@
       if (b) lines.push({ kind: 'skips', text: T.skipped(sess.skipped, b) });
     }
     // v2.5.119: settings that caused skips stay visible in the end-of-run notice.
-    try { if (state._missNotice) lines.push({ kind: 'skips', text: state._missNotice.title + ' — Preferences in the extension.' }); } catch (_) {}
+    try { if (state._missNotice) lines.push({ kind: 'skips', text: state._missNotice.title + ' — saved in To complete (extension).' }); } catch (_) {}
     let link = null;
     const daily = /daily limit/i.test(String(reason));
     if (daily) {

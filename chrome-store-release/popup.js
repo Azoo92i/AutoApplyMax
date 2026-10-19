@@ -1047,7 +1047,13 @@ function renderSkipBreakdown(sess) {
   if (parts.length) {
     const hint = document.createElement('span');
     hint.className = 'run-skips-missing';
-    hint.textContent = ' — ' + parts.join(', ') + ': add it in Preferences to apply to these jobs.';
+    // 2.5.122: these jobs are saved in "To complete" (not lost) — point there instead of Preferences.
+    hint.textContent = ' — ' + parts.join(', ') + ': saved in ';
+    const go = document.createElement('a');
+    go.href = '#'; go.className = 'run-skips-tc'; go.textContent = 'To complete';
+    go.addEventListener('click', (e) => { e.preventDefault(); const t = document.querySelector('.tab[data-tab="tocomplete"]'); if (t) t.click(); });
+    hint.appendChild(go);
+    hint.appendChild(document.createTextNode('. Answer once there to apply to these jobs.'));
     txt.appendChild(hint);
   }
 }

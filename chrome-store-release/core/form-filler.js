@@ -1715,7 +1715,8 @@
     ['needs / requirements', (q) => /\b(?:do|will|would)\s+you\s+(?:now\s+or\s+in\s+the\s+future\s+)?(?:require|need)\b|\bavez[- ]vous\s+besoin\b|n[ée]cessitez[- ]vous/i.test(q)],
     ['age', (q) => /under\s+(the\s+age\s+of\s+)?1[68]|moins\s+de\s+1[68]\s+ans|\bminor\b|\bmineur/i.test(q)],
     ['dismissal / legal history', (q) => /dismiss|\bterminated\b|\bfired\b|licenci|bankrupt|faillite|pending\s+charges|charges\s+pending|lawsuit|litig|\bdrugs?\b|sanctions?\b/i.test(q)],
-    ['spoken language', (q) => /\b(speak|parlez|fluent|fluently|native\s+speaker|bilingu\w*)\b|\b(anglais|english|allemand|german|espagnol|spanish|italien|italian|portugais|portuguese|n[ée]erlandais|dutch|arabe|arabic|chinois|chinese|mandarin|japonais|japanese|hindi|russe|russian)\b.{0,40}\b(level|niveau|courant|written|[ée]crit|oral)\b|\b(level|niveau)\b.{0,30}\b(anglais|english|allemand|german|espagnol|spanish|italien|italian)\b/i.test(q)],
+    // 2.5.122 (Théo 2026-10-19): 'spoken language' removed — "Do you speak Arabic?" follows the Oui rule (Yes); level
+    // questions for a language the CV does not list get the lowest level instead (_languageTarget).
     ['pay', (q) => /salary|salaire|\bctc\b|compensation|r[ée]mun[ée]ration|\blpa\b/i.test(q)],
   ];
   function yesNoNoAllowedReason(question) {
@@ -2111,25 +2112,59 @@
   // d'anglais ?" options Introductif/… matched none of the native/fluent/professional
   // words and fell through to the blind options[1] = "Introductif" for a Fluent user.
   // Returns the option to pick, or null (leave unanswered — never blind).
-  function pickLanguageLevelOption(options, getText, questionText, userLanguages) {
+  // 2.5.122 (Théo 2026-10-19): a level question for a language the CV does NOT list ("What is your proficiency
+  // level in Arabic?", CV = French / English) got "Professional" — an invented claim. Now: the LOWEST non-zero level
+  // the form offers (A1 / Beginner / Elementary / Basic…, never "None", never above Intermediate); if the form has
+  // none, the question stays unanswered (required → the job goes to "To complete"). The yes/no form ("Do you speak
+  // Arabic?") follows the Oui rule instead (Yes) — 'spoken language' is no longer a No-allowed reason.
+  // When the CV lists no language at all, English and the main language of the user's country keep the old
+  // default (Professional) — an empty languages section does not mean the user speaks neither.
+  const _ZERO_LEVEL_RE = /^\s*(none|no(ne)?\s+knowledge|no\s+proficiency|not\s+applicable|n\/a|aucun(e)?|aucune\s+connaissance|pas\s+de\s+connaissance|ninguno|ninguna|nenhum(a)?|keine|nessuna|0)\s*$|\b(no knowledge|aucune connaissance|sin conocimiento|nenhum conhecimento|keine kenntnisse)\b/i;
+  const _COUNTRY_LANG = { fr: 'french', france: 'french', be: 'french', belgium: 'french', belgique: 'french', lu: 'french', luxembourg: 'french', mc: 'french', monaco: 'french', ch: 'french', switzerland: 'french', suisse: 'french',
+    es: 'spanish', spain: 'spanish', espana: 'spanish', mx: 'spanish', mexico: 'spanish', ar: 'spanish', argentina: 'spanish', co: 'spanish', colombia: 'spanish', cl: 'spanish', chile: 'spanish', pe: 'spanish', peru: 'spanish',
+    de: 'german', germany: 'german', deutschland: 'german', at: 'german', austria: 'german', it: 'italian', italy: 'italian', italia: 'italian', pt: 'portuguese', portugal: 'portuguese', br: 'portuguese', brazil: 'portuguese', brasil: 'portuguese',
+    nl: 'dutch', netherlands: 'dutch', in: 'hindi', india: 'hindi', cn: 'chinese', china: 'chinese', jp: 'japanese', japan: 'japanese', ru: 'russian', russia: 'russian', sa: 'arabic', 'saudi arabia': 'arabic', ae: 'arabic', 'united arab emirates': 'arabic', eg: 'arabic', egypt: 'arabic', ma: 'french', morocco: 'french', tn: 'french', tunisia: 'french', dz: 'french', algeria: 'french' };
+  // → { lang, raw, listed, mode: 'listed' | 'lowest' | 'default', targetRank }
+  function _languageTarget(questionText, userLanguages, country) {
     const lang = _detectLanguageInQuestion(String(questionText || '').toLowerCase());
-    let userLevelRaw = '';
-    if (lang && Array.isArray(userLanguages)) {
-      for (const L of userLanguages) {
-        const nm = (typeof L === 'string' ? L : (L && L.name) || '').toLowerCase();
-        if (nm && lang.aliases.some(a => nm.includes(a))) { userLevelRaw = typeof L === 'string' ? L : (L && L.level) || ''; break; }
-      }
+    const list = Array.isArray(userLanguages) ? userLanguages.filter(L => (typeof L === 'string' ? L : (L && L.name) || '').trim()) : [];
+    let raw = '', listed = false;
+    if (lang) for (const L of list) {
+      const nm = (typeof L === 'string' ? L : (L && L.name) || '').toLowerCase();
+      if (nm && lang.aliases.some(a => nm.includes(a))) { listed = true; raw = typeof L === 'string' ? L : (L && L.level) || ''; break; }
     }
-    let targetRank = _userLevelRank(userLevelRaw);
-    if (targetRank === 0) targetRank = 4;
-    let best = null, bestScore = Infinity;
+    if (listed) { const r = _userLevelRank(raw); return { lang, raw, listed, mode: 'listed', targetRank: r || 4 }; }
+    if (!lang) return { lang, raw, listed, mode: 'default', targetRank: 4 }; // language not named in the question: unchanged
+    if (!list.length) {
+      const c = String(country || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+      if (lang.canonical === 'english' || (_COUNTRY_LANG[c] && _COUNTRY_LANG[c] === lang.canonical)) return { lang, raw, listed, mode: 'default', targetRank: 4 };
+    }
+    return { lang, raw, listed, mode: 'lowest', targetRank: 1 };
+  }
+  // Lowest non-zero level among the options (rank 1..3, "None" excluded) — null when the form offers none.
+  function _lowestLevelOption(options, getText) {
+    let best = null, bestRank = Infinity;
     for (const o of options) {
+      const t = String(getText(o) || '').trim();
+      if (!t || _ZERO_LEVEL_RE.test(t)) continue;
+      const rank = _optionLevelRank(t);
+      if (rank < 1 || rank > 3) continue;
+      if (rank < bestRank) { bestRank = rank; best = o; }
+    }
+    return best;
+  }
+  function pickLanguageLevelOption(options, getText, questionText, userLanguages, country) {
+    const tg = _languageTarget(questionText, userLanguages, country);
+    const lang = tg.lang; const userLevelRaw = tg.raw; const targetRank = tg.targetRank;
+    let best = null, bestScore = Infinity;
+    if (tg.mode === 'lowest') best = _lowestLevelOption(options, getText);
+    else for (const o of options) {
       const rank = _optionLevelRank(getText(o));
       if (rank === 0) continue;
       const score = Math.abs(rank - targetRank) + (rank >= targetRank ? -0.1 : 0.1);
       if (score < bestScore) { bestScore = score; best = o; }
     }
-    u().log(`Lang select ${lang ? lang.canonical : '?'} (user="${userLevelRaw}" rank=${targetRank}) → ${best ? '"' + String(getText(best)).trim().slice(0, 30) + '"' : 'left unanswered (no ranked option)'}`);
+    u().log(`Lang select ${lang ? lang.canonical : '?'} (${tg.mode === 'lowest' ? 'not in the CV → lowest level' : 'user="' + userLevelRaw + '" rank=' + targetRank}) → ${best ? '"' + String(getText(best)).trim().slice(0, 30) + '"' : 'left unanswered (no ranked option)'}`);
     return best;
   }
 
@@ -2166,26 +2201,20 @@
     }
     return null;
   }
-  function fillLanguageLevelRadio(fieldset, radioInputs, questionText, userLanguages) {
-    const q = questionText.toLowerCase();
-    const lang = _detectLanguageInQuestion(q);
-    // Find user's level for this language (if any). Language entry can be a
-    // string ("Français — natif") or {name, level}.
-    let userLevelRaw = '';
-    if (lang && Array.isArray(userLanguages)) {
-      for (const L of userLanguages) {
-        const nm = (typeof L === 'string' ? L : (L && L.name) || '').toLowerCase();
-        if (!nm) continue;
-        if (lang.aliases.some(a => nm.includes(a))) {
-          userLevelRaw = typeof L === 'string' ? L : (L && L.level) || '';
-          break;
-        }
-      }
+  function fillLanguageLevelRadio(fieldset, radioInputs, questionText, userLanguages, country) {
+    // Language entry can be a string ("Français — natif") or {name, level}. 2.5.122: a language the CV does not list
+    // → the lowest non-zero level (see _languageTarget); none offered → left unanswered on purpose (returns true).
+    const tg = _languageTarget(questionText, userLanguages, country);
+    const lang = tg.lang; const userLevelRaw = tg.raw; const targetRank = tg.targetRank;
+    if (tg.mode === 'lowest') {
+      // An answer LinkedIn already shows (the user's own saved answer) is kept.
+      if (Array.from(radioInputs).some(r => r.checked)) { u().log(`Lang ${lang.canonical} not in the CV — pre-filled answer kept`); return true; }
+      const low =_lowestLevelOption(Array.from(radioInputs), (r) => { const l = _radioLabel(fieldset, r); return (l ? l.textContent : (r.value || '')).trim(); });
+      if (!low) { u().log(`Lang ${lang.canonical} not in the CV and no beginner-level option → left unanswered (never claims a level)`); return true; }
+      if (!low.checked) { const l = _radioLabel(fieldset, low); l ? l.click() : low.click(); }
+      u().log(`Lang ${lang.canonical} not in the CV → lowest level "${String((_radioLabel(fieldset, low) || {}).textContent || low.value || '').trim().slice(0, 30)}"`);
+      return true;
     }
-    let targetRank = _userLevelRank(userLevelRaw);
-    // Default rank when profile has no matching language: professional (4).
-    // Never pick 1 (A1) — recruiters use language-level filters to reject.
-    if (targetRank === 0) targetRank = 4;
     let bestRadio = null;
     let bestDelta = Infinity;
     for (const radio of radioInputs) {
@@ -2354,7 +2383,7 @@
       const _langScaleOpts = (() => { try { return Array.from(radioInputs).filter(r => { const l = _radioLabel(fieldset, r); return /^\s*(a1|a2|b1|b2|c1|c2|native|natif|maternelle|bilingu|fluent|courant|interm[ée]diaire|intermediate|beginner|d[ée]butant|basic|notions)/i.test((l ? l.textContent : r.value) || ''); }).length >= 2; } catch (_) { return false; } })();
       if ((/\b(level|niveau|proficiency|proficien[cç]y|nivel|livello|niveau de langue)\b/i.test(questionText) && (_detectLanguageInQuestion(questionText) || _langScaleOpts))
           || /\b(english|anglais|inglés|inglese|french|fran[çc]ais|francés|francese|spanish|espagnol|español|spagnolo|german|allemand|alemán|tedesco|italian|italien|italiano|chinese|chinois|mandarin|arabic|arabe|árabe|russian|russe|ruso|portuguese|portugu[eê]s|dutch|n[ée]erlandais|nederlands|japanese|japonais|hindi)\b.*\b(level|niveau|proficien|nivel|livello)\b/i.test(questionText)) {
-        if (fillLanguageLevelRadio(fieldset, radioInputs, questionText, config.languages || [])) continue;
+        if (fillLanguageLevelRadio(fieldset, radioInputs, questionText, config.languages || (config.cvProfile && config.cvProfile.languages) || [], config.country)) continue;
       }
 
       // v2.5.104: "How did you hear about us?" radios → LinkedIn (also over a saved answer).
@@ -3161,14 +3190,20 @@
             if (_detectLanguageInQuestion(String(v || ''))) langQ = String(v);
           }
         } catch (_) {}
-        selectedOption = langQ ? pickLanguageLevelOption(options, o => o.text, langQ + ' ' + (selQ || labelText), config.languages || (config.cvProfile && config.cvProfile.languages) || []) : null;
+        selectedOption = langQ ? pickLanguageLevelOption(options, o => o.text, langQ + ' ' + (selQ || labelText), config.languages || (config.cvProfile && config.cvProfile.languages) || [], config.country) : null;
         if (!selectedOption) { u().log(`Language level select left unanswered (language unknown): ${(selQ || labelText).slice(0, 40)}`); continue; }
       } else if (labelText.match(/proficiency|level.*english|level.*french|level.*spanish|level.*german|niveau.*anglais|niveau.*français|nivel.*inglés|(english|anglais|french|fran[çc]ais|spanish|espagnol|german|allemand|italian|italien).*(level|niveau|proficien)|niveau.*(langue|espagnol|allemand|italien)/)) {
         // v2.5.97: ranked against the user's level for that language; never the blind options[1].
-        selectedOption = pickLanguageLevelOption(options, o => o.text, getFieldQuestion(select, modal) || labelText, config.languages || []);
+        selectedOption = pickLanguageLevelOption(options, o => o.text, getFieldQuestion(select, modal) || labelText, config.languages || (config.cvProfile && config.cvProfile.languages) || [], config.country);
         if (!selectedOption) continue;
       } else if (labelText.match(/english|anglais|language|langue|french|français|spanish|español|german|deutsch/)) {
-        selectedOption = options.find(opt => opt.text.toLowerCase().match(/native|bilingual|fluent|courant|professionnel|bilingue/));
+        // 2.5.122: a named language with a level scale goes through the same rule (a language the CV does not list
+        // never gets "Native" / "Fluent"); otherwise the old pick.
+        const _lq = getFieldQuestion(select, modal) || labelText;
+        if (_detectLanguageInQuestion(_lq) && options.filter(o => _optionLevelRank(o.text) > 0).length >= 2) {
+          selectedOption = pickLanguageLevelOption(options, o => o.text, _lq, config.languages || (config.cvProfile && config.cvProfile.languages) || [], config.country);
+          if (!selectedOption) continue;
+        } else selectedOption = options.find(opt => opt.text.toLowerCase().match(/native|bilingual|fluent|courant|professionnel|bilingue/));
       }
 
       // Yes/No question selects — applied AFTER gender + language checks so
@@ -3277,7 +3312,7 @@
           if (question.match(/proficiency|level.*english|level.*french|level.*spanish|niveau.*anglais|nivel.*inglés|(english|anglais|french|fran[çc]ais|spanish|espagnol|german|allemand|italian|italien).*(level|niveau|proficien)|niveau.*(langue|espagnol|allemand|italien)/)) {
             // v2.5.97: ranked against the user's level; never the blind first option.
             const _cfg = (window.EAM && window.EAM.utils && window.EAM.utils.config) || {};
-            selectedOption = pickLanguageLevelOption(options, o => o.textContent, question, _cfg.languages || []);
+            selectedOption = pickLanguageLevelOption(options, o => o.textContent, question, _cfg.languages || (_cfg.cvProfile && _cfg.cvProfile.languages) || [], _cfg.country);
             if (!selectedOption) { document.body.click(); continue; }
           }
           // v2.5.87: country list → profile country, never the first option ("Afghanistan").
@@ -3928,6 +3963,9 @@
     isDateField,
     startDateAnswer,
     pickLanguageLevelOption,
+    _languageTarget,
+    _lowestLevelOption,
+    fillLanguageLevelRadio,
     // v2.5.119
     studyFieldAnswer,
     educationYears,

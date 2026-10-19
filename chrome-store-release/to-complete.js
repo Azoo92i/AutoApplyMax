@@ -29,7 +29,7 @@
   const ANS_KEY = 'eam_custom_answers';
   const REAPPLY_KEY = 'eam_reapply';
   const REMOTE_OFF_KEY = 'eam_tc_remote_off_until';
-  const MAX_ITEMS = 100;
+  const MAX_ITEMS = 200; // = the account limit (application_todos_guard)
   const JOB_URL_RE = /^https:\/\/(?:www\.)?linkedin\.com\/jobs\/view\/(\d{5,20})\/?(?:[?#].*)?$/i;
   // Settings the To-complete answers write (chrome.storage.sync keys = question-intents setting intents).
   const SETTING_KEYS = ['expectedSalary', 'currentSalary', 'city', 'postalCode', 'noticePeriod', 'dateOfBirth', 'gender',
@@ -258,7 +258,7 @@
   }
 
   async function pull() {
-    const t = await _fetch('/rest/v1/application_todos?select=job_id,job_url,title,company,location,questions,status,skip_reason,skipped_count,created_at,updated_at&order=updated_at.desc&limit=100');
+    const t = await _fetch('/rest/v1/application_todos?select=job_id,job_url,title,company,location,questions,status,skip_reason,skipped_count,created_at,updated_at&order=updated_at.desc&limit=200');
     const a = await _fetch('/rest/v1/application_answers?select=question_key,question,answer,updated_at&limit=300');
     let changed = false;
     if (t.ok) { const rows = await t.json(); await locked(async () => { const cur = await getList(); const m = mergeRemote(cur, rows); changed = JSON.stringify(m) !== JSON.stringify(cur); if (changed) await setList(m); }); }
@@ -400,7 +400,8 @@
     if (a.name !== 'eam-reapply-watchdog') return;
     getRe().then(re => {
       if (!re || !re.active) return;
-      if (Date.now() - (re.currentAt || 0) > 6 * 60e3) onResult({ jobId: re.queue[re.idx], result: 'timeout' }, re.tabId);
+      // 2.5.122: 10 min > a LinkedIn throttle pause (< 7 min measured), so a paused re-apply is not timed out.
+      if (Date.now() - (re.currentAt || 0) > 10 * 60e3) onResult({ jobId: re.queue[re.idx], result: 'timeout' }, re.tabId);
     }).catch(() => {});
   });
 
