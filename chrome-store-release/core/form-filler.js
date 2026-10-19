@@ -855,6 +855,8 @@
     if (_VARIABLE_PAY_Q.test(q)) return '';
     const raw = String((config && (isCur ? config.currentSalary : config.expectedSalary)) || '').trim();
     if (!raw) return '';
+    // 2.5.122: a fresher's current CTC is 0 (typed by the user in To complete / Preferences) → "0" in any unit.
+    if (isCur && /^0+$/.test(raw)) return '0';
     const p = parsePayAmount(raw);
     const country = String(profileCountry(config) || '').toLowerCase().trim();
     const userCur = (p && p.cur) || _CUR_BY_COUNTRY[country] || _CUR_BY_DIAL['+' + String((config && config.phoneCountryCode) || '').replace(/[^\d]/g, '')] || '';

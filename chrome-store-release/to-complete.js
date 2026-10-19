@@ -29,7 +29,9 @@
   const ANS_KEY = 'eam_custom_answers';
   const REAPPLY_KEY = 'eam_reapply';
   const REMOTE_OFF_KEY = 'eam_tc_remote_off_until';
+  const DAILY_LIMIT_BLOCK_MS = 12 * 3600e3; // LinkedIn's daily limit resets in < 12 h (measured 2026-09-25)
   const MAX_ITEMS = 200; // = the account limit (application_todos_guard)
+  const QUESTIONS_MAX_BYTES = 5000; // < the account check pg_column_size(questions) <= 6000
   const JOB_URL_RE = /^https:\/\/(?:www\.)?linkedin\.com\/jobs\/view\/(\d{5,20})\/?(?:[?#].*)?$/i;
   // Settings the To-complete answers write (chrome.storage.sync keys = question-intents setting intents).
   const SETTING_KEYS = ['expectedSalary', 'currentSalary', 'city', 'postalCode', 'noticePeriod', 'dateOfBirth', 'gender',
@@ -63,6 +65,15 @@
       if (Array.isArray(q.options) && q.options.length) c.options = q.options.slice(0, 12).map(o => str(o, 80)).filter(Boolean);
       out.push(c);
       if (out.length >= 8) break;
+    }
+    // 2.5.122: the account row rejects questions over 6000 bytes (application_todos check) and one rejected row fails
+    // the whole batched push → keep ≤ QUESTIONS_MAX_BYTES: drop the longest option lists first (that question then
+    // gets a text input), then the last questions. (8 long labels with 12 long options each reached ~11 KB.)
+    const size = () => { const j = JSON.stringify(out); return j.length + (j.match(/[^\x00-\x7f]/g) || []).length * 2; };
+    while (size() > QUESTIONS_MAX_BYTES) {
+      let k = -1, n = 0;
+      out.forEach((q, i) => { const l = q.options ? JSON.stringify(q.options).length : 0; if (l > n) { n = l; k = i; } });
+      if (k >= 0) delete out[k].options; else if (out.length > 1) out.pop(); else break;
     }
     return out;
   }
@@ -335,6 +346,10 @@
     if (!ids.length) return { ok: false, reason: 'nothing_ready' };
     const cur = await getRe();
     if (cur && cur.active) return { ok: false, reason: 'already_running', idx: cur.idx, total: cur.queue.length };
+    // 2.5.122: LinkedIn's daily Easy Apply limit hit < 12 h ago (engine stopBot → eam_daily_limit_at; a normal Start
+    // clears it) → re-applying now would only hit it again. The jobs stay ready in the list.
+    const dl = (await L(['eam_daily_limit_at'])).eam_daily_limit_at || 0;
+    if (dl && Date.now() - dl < DAILY_LIMIT_BLOCK_MS) return { ok: false, reason: 'daily_limit', at: dl };
     // The tab exists (blank) before LinkedIn loads, and the queue state is stored before its first "complete" event.
     const tab = await chrome.tabs.create({ url: 'about:blank', active: true });
     await setRe({ active: true, queue: ids, idx: 0, results: {}, tabId: tab.id, startedIdx: -1, currentAt: Date.now(), startedAt: Date.now() });
@@ -410,7 +425,8 @@
     const done = (p) => { Promise.resolve(p).then(sendResponse, (e) => sendResponse({ ok: false, reason: (e && e.message) || 'error' })); return true; };
     switch (msg.type) {
       case 'toCompleteAdd': return done(add(msg.entry));
-      case 'toCompleteList': return done((async () => ({ ok: true, items: await getList(), answers: await getAnswers(), settings: await getSettings(), reapply: await getRe() }))());
+      case 'toCompleteList': return done((async () => ({ ok: true, items: await getList(), answers: await getAnswers(), settings: await getSettings(), reapply: await getRe(),
+        dailyLimitAt: (await L(['eam_daily_limit_at'])).eam_daily_limit_at || 0, dailyLimitBlockMs: DAILY_LIMIT_BLOCK_MS }))());
       case 'toCompleteSaveAnswers': return done(saveAnswers(msg));
       case 'toCompleteDismiss': return done(setStatus([String(msg.jobId)], 'dismissed').then(() => ({ ok: true })));
       case 'toCompleteSync': return done(syncNow());

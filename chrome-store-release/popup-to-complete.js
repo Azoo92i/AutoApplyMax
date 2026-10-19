@@ -138,7 +138,12 @@
     const box = $('tc-ready'); if (!box) return;
     const running = data.reapply && data.reapply.active;
     box.hidden = !ready.length || running;
-    $('tc-reapply-label').textContent = ready.length === 1 ? 'Apply to this job now' : `Apply to these ${ready.length} jobs now`;
+    // 2.5.122: right after LinkedIn's daily limit the button waits (the service worker refuses too).
+    const dl = Number(data.dailyLimitAt) || 0;
+    const blocked = !!dl && Date.now() - dl < (Number(data.dailyLimitBlockMs) || 12 * 3600e3);
+    const btn = $('tc-reapply'); if (btn) btn.disabled = blocked;
+    $('tc-reapply-label').textContent = blocked ? 'LinkedIn daily limit reached — apply again tomorrow'
+      : ready.length === 1 ? 'Apply to this job now' : `Apply to these ${ready.length} jobs now`;
   }
 
   function renderJobs(open) {
@@ -215,7 +220,7 @@
     btn.disabled = false;
     const st = $('tc-status');
     if (r && r.ok) { await refresh(); }
-    else if (st) { st.textContent = r && r.reason === 'already_running' ? 'A re-apply is already running.' : 'Nothing ready to apply — answer the questions first.'; st.className = 'tc-status tc-status-err'; }
+    else if (st) { st.textContent = r && r.reason === 'already_running' ? 'A re-apply is already running.' : r && r.reason === 'daily_limit' ? 'LinkedIn’s daily Easy Apply limit was reached. Your answers are saved — apply again tomorrow.' : 'Nothing ready to apply — answer the questions first.'; st.className = 'tc-status tc-status-err'; }
   }
 
   function openTab() {

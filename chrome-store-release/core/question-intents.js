@@ -151,7 +151,8 @@
     const s = String(raw == null ? '' : raw).trim();
     if (!s) return '';
     switch (SETTING_KIND[intent] || 'text') {
-      case 'money': return parseAmount(s);
+      // 2.5.122: current pay may be 0 (an India fresher's "Current CTC"); an expectation never is.
+      case 'money': return (intent === 'currentSalary' && /^0+(?:[.,]0+)?s*(?:lpa|lakhs?|k)?$/i.test(s)) ? '0' : parseAmount(s);
       case 'yesno': { const v = deaccent(s).toLowerCase(); return /^(yes|oui|si|sim|y|हाँ|हां)$/.test(v) ? 'yes' : /^(no|non|nao|n|नहीं)$/.test(v) ? 'no' : ''; }
       case 'gender': { const v = s.toLowerCase(); return ['male', 'female', 'non_binary', 'other'].includes(v) ? v : ''; }
       case 'date': return /^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s) ? s : '';

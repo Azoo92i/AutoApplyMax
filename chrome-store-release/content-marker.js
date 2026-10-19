@@ -224,7 +224,10 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
       const jobs = Array.isArray(event.data.jobs) ? event.data.jobs.slice(0, 50).filter(j => j && typeof j === 'object')
         .map(j => ({ jobId: String(j.jobId || '').slice(0, 20), url: String(j.url || '').slice(0, 300), title: String(j.title || '').slice(0, 200),
           company: String(j.company || '').slice(0, 200), location: String(j.location || '').slice(0, 200) })) : [];
-      if (jobs.length) try { chrome.runtime.sendMessage({ type: 'toCompleteReapply', jobs }, () => void chrome.runtime.lastError); } catch (_) {}
+      // 2.5.122: the answer goes back to the page (eam-todo-reapply-result) — a refusal (already running, LinkedIn daily
+      // limit, nothing to apply) lets the dashboard put its rows back to "open" instead of leaving them "queued".
+      const reply = (r) => { try { window.postMessage({ type: 'eam-todo-reapply-result', ok: !!(r && r.ok), reason: String((r && r.reason) || (r ? '' : 'no_response')).slice(0, 40), total: Number(r && r.total) || 0 }, window.location.origin); } catch (_) {} };
+      if (jobs.length) try { chrome.runtime.sendMessage({ type: 'toCompleteReapply', jobs }, (r) => { void chrome.runtime.lastError; reply(r); }); } catch (_) { reply(null); }
     } else if (event.data?.type === 'eam-todo-changed') {
       try { chrome.runtime.sendMessage({ type: 'toCompleteSync' }, () => void chrome.runtime.lastError); } catch (_) {}
     } else if (event.data?.type === 'eam-profile-update') {
