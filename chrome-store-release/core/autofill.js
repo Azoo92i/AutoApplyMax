@@ -24,7 +24,7 @@
     currentTitle: /\b(current.?title|titre.?actuel|job.?title|poste.?actuel|current.?role|current.?position)\b/i,
     city:      /\b(city|ville|ciudad|stadt|stad|woonplaats|città|location|localisation|ubicación|standort|adresse|address)\b/i,
     yearsOfExperience: /\b(experience|years|expérience|années|años|jahre|anni)\b/i,
-    expectedSalary:    /\b(salary|compensation|remuneration|salaire|rémunération|sueldo|gehalt|stipendio)\b/i,
+    expectedSalary:    /\b(salary|compensation|remuneration|salaire|rémunération|sueldo|gehalt|stipendio|ctc|lpa|pay package)\b/i,
     portfolioUrl: /\b(portfolio|website|site.?web|personal.?site|github|personal.?url)\b/i,
     summary:   /\b(cover.?letter|summary|about.?you|presentation|lettre.?de.?motivation|résumé|additional.?info)\b/i
   };
@@ -72,19 +72,38 @@
   const QUESTION_RE = /\?|^\s*(are|do|does|did|will|would|have|has|is|can|could|should|were|was|why|what|how|when|where|which|please|describe|tell us|êtes|avez|pouvez|seriez|quel|quelle|pourquoi|comment)\b/i;
   // EEO / voluntary self-identification: never answered by autofill (the
   // candidate decides; guessing "No" to "Are you Hispanic/Latino?" is invented data).
-  const EEO_RE = /\b(gender|genre|sexe|sex|race|racial|ethnic\w*|ethnicit\w*|hispanic|latin[oax]|veteran|disabilit\w*|handicap\w*|sexual orientation|transgender|pronouns?|self[- ]identif\w*)\b/i;
+  // v2.5.100: accessibility / accommodation requests are the candidate's call too (gate 2026-10-04:
+  // the AI answered "No" to Greenhouse's "…accessible and inclusive interview… any adjustments?").
+  const EEO_RE = /\b(gender|genre|sexe|sex|race|racial|ethnic\w*|ethnicit\w*|hispanic|latin[oax]|veteran|disabilit\w*|handicap\w*|sexual orientation|transgender|pronouns?|self[- ]identif\w*|accommodat\w*|accessib\w*|reasonable adjustments?|adjustments? (we|to)\b|am[ée]nagements?)\b/i;
   const MARKETING_RE = /(marketing|newsletter|promot|job alert|alerts|offers|updates|sms|whatsapp|text message|talent (community|network|pool)|future (opportunit|roles|openings|positions)|other (opportunit|openings|roles)|contact me about|keep me informed|stay in touch)/i;
   const NOT_AUTO_CONSENT_RE = /(arbitration|waive|non[- ]?compete|background check|credit check|drug test)/i;
 
   // Visible question text for a control: explicit label, aria-label, or the
   // closest label-like element in the surrounding question block (Lever
   // `.application-label`, Ashby / Greenhouse question containers).
+  // v2.5.117: visible text only — icon fallbacks ("SVGs not supported by this browser.") and aria-hidden bits
+  // were read as the question (Workable "Notice period" combobox → AI asked "CA_10627 SVGs not supported…").
+  function cleanText(node) {
+    if (!node) return '';
+    try {
+      const c = node.cloneNode(true);
+      c.querySelectorAll('svg, desc, title, script, style, [aria-hidden="true"]').forEach(x => x.remove());
+      return (c.textContent || '').replace(/\s+/g, ' ').trim();
+    } catch (_) { return String(node.textContent || '').replace(/\s+/g, ' ').trim(); }
+  }
   function questionText(el) {
     const id = el.getAttribute('id');
     if (id) {
       const l = labelFor(el);
-      const t = l && l.textContent.replace(/\s+/g, ' ').trim();
+      const t = l && cleanText(l);
       if (t && t.length >= 3) return t.slice(0, 300);
+    }
+    // v2.5.117: aria-labelledby (Workable custom selects point at a span holding the question).
+    const lb = (el.getAttribute('aria-labelledby') || '').trim();
+    if (lb) {
+      const root = el.getRootNode && el.getRootNode();
+      const t = lb.split(/\s+/).map(x => (root && root.getElementById ? root.getElementById(x) : null) || document.getElementById(x)).filter(Boolean).map(cleanText).join(' ').trim();
+      if (t.length >= 3) return t.slice(0, 300);
     }
     const aria = (el.getAttribute('aria-label') || '').trim();
     if (aria.length >= 3) return aria.slice(0, 300);
@@ -98,7 +117,7 @@
       if (others.length) break;
       const cand = node.querySelector('.application-label, label, legend, [class*="question" i], [class*="label" i]');
       if (cand) {
-        const t = cand.textContent.replace(/\s+/g, ' ').trim();
+        const t = cleanText(cand);
         if (t.length >= 3 && t.length <= 300) return t;
       }
     }
@@ -138,7 +157,115 @@
     }
     return null;
   }
-  const SELF_DECL_LITE = /\b(previously|formerly|ever|currently|presently)\b.{0,30}\b(worked|employed|consulted)\b.{0,20}\b(at|for|by|with)\b|\b(former|current|ex[- ])\s*employee\b|\bconflict of interest\b|\brelatives?\b.{0,40}\b(work|employ)|\bpost-employment\b|\bnon-?compete\b|\bemployment agreements?\b/i;
+  // v2.5.117: "How did you hear about us?" — answered only with the job board the candidate really came from
+  // (the page's referrer); never guessed (gate 2026-10-16: required Lever select left on "Select…", premium AI
+  // returned "" on Workable).
+  const SOURCE_Q = /how\s+did\s+you\s+(first\s+)?(hear|find|learn|come\s+across)|where\s+did\s+you\s+(first\s+)?(hear|find|see|learn)|how\s+were\s+you\s+referred|comment\s+avez[- ]vous\s+(connu|entendu|trouv[ée]|d[ée]couvert|eu\s+connaissance)|o[uù]\s+avez[- ]vous\s+(vu|trouv[ée]|entendu)|source\s+of\s+(application|candidature)|source\s+de\s+(la\s+)?candidature/i;
+  function referrerSource() {
+    try {
+      const h = new URL(document.referrer).hostname.toLowerCase();
+      if (!h || h === location.hostname.toLowerCase()) return null;
+      const map = [[/linkedin\./, 'LinkedIn'], [/indeed\./, 'Indeed'], [/glassdoor\./, 'Glassdoor'], [/welcometothejungle\./, 'Welcome to the Jungle'], [/monster\./, 'Monster'], [/google\./, 'Google']];
+      const hit = map.find(([re]) => re.test(h));
+      return hit ? hit[1] : null;
+    } catch (_) { return null; }
+  }
+  const SELF_DECL_LITE =/\b(previously|formerly|ever|currently|presently)\b.{0,30}\b(worked|employed|consulted)\b.{0,20}\b(at|for|by|with)\b|\b(former|current|ex[- ])\s*employee\b|\bconflict of interest\b|\brelatives?\b.{0,40}\b(work|employ)|\bpost-employment\b|\bnon-?compete\b|\bemployment agreements?\b/i;
+
+  const PREFERRED_NAME_RE = /preferred\s+(first\s+)?name|name\s+you.?d\s+prefer|name\s+you\s+prefer|prefer(red)?\s+to\s+be\s+called|\bnickname\b|\bknown\s+as\b|chosen\s+name|pr[ée]nom\s+d.usage|voorkeursnaam|roepnaam|bevorzugter?\s+name|nombre\s+preferido/i;
+  const COVER_LETTER_RE = /cover[\s_-]*letter|covering\s+letter|motivation(al)?[\s_-]*letter|lettre\s+de\s+motivation|motivatiebrief|sollicitatiebrief|anschreiben|motivationsschreiben|carta\s+de\s+(presentaci[oó]n|motivaci[oó]n)|lettera\s+di\s+presentazione|hiring[\s_-]*manager[\s_-]*message|message\s+(to|for)\s+(the\s+)?(hiring|recruit)|laat\s+het\s+bedrijf\s+weten|let\s+the\s+company\s+know\s+(why\s+)?you.?re\s+interested/i;
+  function isCoverLetterField(el, qText) {
+    if (el.tagName !== 'TEXTAREA') return false;
+    const own = [el.getAttribute('name'), el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('data-qa'), el.getAttribute('data-testid')].join(' ');
+    return COVER_LETTER_RE.test(own) || (!!qText && qText.length < 160 && COVER_LETTER_RE.test(qText));
+  }
+  // The job on this page (title / company / description excerpt) — for a tailored cover note. Read-only DOM scrape.
+  function pageJobContext() {
+    const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+    const meta = (n) => clean((document.querySelector(`meta[property="${n}"], meta[name="${n}"]`) || {}).content);
+    const vis = (e) => e && e.getBoundingClientRect && e.getBoundingClientRect().width > 0;
+    const h = [...document.querySelectorAll('h1, .posting-headline h2, .app-title, [data-qa="job-title"], [class*="job-title" i], [class*="jobTitle" i]')].find(e => vis(e) && clean(e.textContent).length >= 3 && clean(e.textContent).length <= 140);
+    let title = clean(h && h.textContent) || meta('og:title') || clean(document.title).split(/\s+[|–—-]\s+/)[0];
+    title = title.replace(/^(job\s+application\s+for|apply\s+(for|to)|application\s+for)\s+/i, '').replace(/\s+at\s+[^@]{2,60}$/i, '').slice(0, 140);
+    let company = meta('og:site_name');
+    if (!company || /greenhouse|lever|ashby|workable|smartrecruiters|teamtailor|recruitee|personio|indeed|glassdoor/i.test(company)) {
+      // SmartRecruiters one-click: /oneclick-ui/company/<Company>/publication/… (live 2026-10-17 read "Oneclick Ui").
+      const _parts = location.pathname.split('/').filter(Boolean); const _ci = _parts.indexOf('company');
+      const seg = ((_ci >= 0 && _parts[_ci + 1]) || (/^(oneclick-ui|o|j|jobs|careers)$/i.test(_parts[0] || '') ? '' : _parts[0]) || '');
+      const byHost = /greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com/i.test(location.hostname) ? seg
+        : /teamtailor|recruitee|personio/i.test(location.hostname) ? location.hostname.split('.')[0] : '';
+      const t = clean(document.title).match(/\bat\s+([^|–—-]{2,60})/i);
+      company = (t && t[1]) || byHost.replace(/[-_]+/g, ' ') || company || '';
+      if (company && company === company.toLowerCase()) company = company.replace(/\b[a-z]/g, m => m.toUpperCase());
+    }
+    let desc = '';
+    const blocks = [...document.querySelectorAll('[class*="description" i], [id*="description" i], [data-qa*="description" i], article, main')]
+      .filter(e => vis(e) && !e.querySelector('input, textarea, select'));
+    for (const b of blocks) { const t = clean(b.innerText || b.textContent); if (t.length > desc.length) desc = t; }
+    if (!desc) desc = meta('og:description') || meta('description');
+    return { title: clean(title), company: clean(company), description: desc.slice(0, 1800) };
+  }
+  // v2.5.119: answers in the FORM's language (live 2026-10-17: Dutch SmartRecruiters form got an English answer).
+  const LANG_NAMES = { en: 'English', fr: 'French', nl: 'Dutch', de: 'German', es: 'Spanish', it: 'Italian', pt: 'Portuguese' };
+  const LANG_WORDS_STOP = {
+    en: /\b(the|and|your|you|with|what|are|please|have|this|for|why|how|our)\b/g,
+    fr: /\b(le|la|les|et|vous|votre|vos|des|une|pour|avec|quel|quelle|pourquoi|êtes|avez|nous|est)\b/g,
+    nl: /\b(de|het|een|en|je|jouw|uw|van|met|voor|wat|waarom|bent|heb|ons|onze|niet|bij|kies|bestand)\b/g,
+    de: /\b(der|die|das|und|sie|ihr|ihre|mit|für|was|warum|sind|haben|wir|unser|nicht|bitte)\b/g,
+    es: /\b(el|los|las|y|usted|tu|su|con|para|qué|por|eres|tiene|nuestro|nuestra)\b/g,
+    it: /\b(il|lo|gli|e|tu|tuo|tua|con|per|che|perché|sei|hai|nostro|nostra)\b/g,
+    pt: /\b(os|as|e|você|seu|sua|com|para|que|porque|é|tem|nosso|nossa|não)\b/g,
+  };
+  function detectFormLanguage() {
+    try {
+      const txt = deepAll('label, legend, h1, h2, h3, button, [class*="label" i], [class*="question" i], p').slice(0, 300)
+        .map(e => (e.textContent || '')).join(' ').toLowerCase().replace(/\s+/g, ' ').slice(0, 8000);
+      const score = {};
+      for (const [k, re] of Object.entries(LANG_WORDS_STOP)) score[k] = (txt.match(re) || []).length;
+      const ranked = Object.entries(score).sort((a, b) => b[1] - a[1]);
+      const htmlLang = String(document.documentElement.getAttribute('lang') || '').toLowerCase().slice(0, 2);
+      if (ranked[0][1] >= 8 && ranked[0][1] >= (ranked[1][1] || 0) * 1.4) return LANG_NAMES[ranked[0][0]];
+      if (LANG_NAMES[htmlLang]) return LANG_NAMES[htmlLang];
+      return ranked[0][1] >= 4 ? LANG_NAMES[ranked[0][0]] : '';
+    } catch (_) { return ''; }
+  }
+  // A field the form REQUIRES (attribute, aria, or "*" / "required" in its label).
+  function isRequiredField(el) {
+    if (el.required || el.getAttribute('aria-required') === 'true') return true;
+    const q = questionText(el) || '';
+    return /[*✱]\s*$|\(required\)|\brequired\b|obligatoire|verplicht|erforderlich|obligatorio/i.test(q);
+  }
+  // Free plan / AI unavailable: a REQUIRED cover-letter box gets 2 plain sentences from the job title + the profile
+  // (latest CV title, years setting) — nothing invented. Optional box → left empty.
+  function genericCoverNote(config, job, lang) {
+    const role = (job && job.title) || '';
+    const co = (job && job.company) || '';
+    const cur = String(config.currentTitle || '').trim();
+    const yrs = parseInt(config.yearsOfExperience, 10);
+    const L = {
+      English: [`I am applying for the ${role ? role + ' position' : 'position'}${co ? ' at ' + co : ''}.`, cur ? ` My background as ${cur}${yrs > 0 ? ' (' + yrs + ' years of experience)' : ''} fits this role, and I would welcome the chance to discuss it with you.` : ' I would welcome the chance to discuss how my background fits this role.'],
+      French: [`Je vous adresse ma candidature pour le poste${role ? ' de ' + role : ''}${co ? ' chez ' + co : ''}.`, cur ? ` Mon expérience de ${cur}${yrs > 0 ? ' (' + yrs + ' ans d’expérience)' : ''} correspond à ce rôle et je serais ravi(e) d’en échanger avec vous.` : ' Je serais ravi(e) d’échanger avec vous sur l’adéquation de mon parcours avec ce poste.'],
+      Dutch: [`Hierbij solliciteer ik naar de functie${role ? ' ' + role : ''}${co ? ' bij ' + co : ''}.`, cur ? ` Mijn achtergrond als ${cur}${yrs > 0 ? ' (' + yrs + ' jaar ervaring)' : ''} past bij deze rol en ik licht dit graag toe in een gesprek.` : ' Ik licht graag in een gesprek toe hoe mijn achtergrond bij deze rol past.'],
+      German: [`Hiermit bewerbe ich mich für die Position${role ? ' ' + role : ''}${co ? ' bei ' + co : ''}.`, cur ? ` Mein Hintergrund als ${cur}${yrs > 0 ? ' (' + yrs + ' Jahre Erfahrung)' : ''} passt zu dieser Rolle, und ich freue mich auf ein Gespräch.` : ' Ich freue mich darauf, in einem Gespräch zu zeigen, wie mein Hintergrund zu dieser Rolle passt.'],
+      Spanish: [`Me postulo para el puesto${role ? ' de ' + role : ''}${co ? ' en ' + co : ''}.`, cur ? ` Mi experiencia como ${cur}${yrs > 0 ? ' (' + yrs + ' años de experiencia)' : ''} encaja con este puesto y me encantaría comentarlo con ustedes.` : ' Me encantaría comentar con ustedes cómo mi perfil encaja con este puesto.'],
+    };
+    const t = L[lang] || L.English;
+    return (t[0] + t[1]).replace(/\s+/g, ' ').trim();
+  }
+  // v2.5.119: cover letter / message to the hiring team. Premium → a short note tailored to the job on the page (AI,
+  // grounded in the CV). Free (or AI empty) → left empty unless the form requires it (then genericCoverNote).
+  async function fillCoverLetter(input, config) {
+    const job = pageJobContext();
+    const lang = config.formLanguage || 'English';
+    const ai = window.EAM && window.EAM.aiForm;
+    if (ai && ai.askAI && !aiBlocked()) {
+      let a = null;
+      try { a = await ai.askAI('Cover letter', Object.assign({}, config, { jobContext: job, coverNote: true }), 'textarea'); } catch (_) { a = null; }
+      if (a && !NON_ANSWER_RE.test(String(a)) && String(a).trim().length >= 40) return { value: String(a).trim(), how: 'ai' };
+    }
+    if (isRequiredField(input)) return { value: genericCoverNote(config, job, lang), how: 'generic' };
+    return null;
+  }
 
   function classifyField(el) {
     // 1. autocomplete attribute
@@ -155,10 +282,16 @@
     // create an accessible … interview experience") count as questions too.
     const qText = questionText(el);
     if (qText && EEO_RE.test(qText)) return 'eeo';
+    // v2.5.119 (live 2026-10-17, Greenhouse "What's the name you'd prefer us to use throughout the interview process?"
+    // got "Sophie Bernard" from the AI): a preferred / chosen name = the first name only.
+    if (PREFERRED_NAME_RE.test(qText || '') || PREFERRED_NAME_RE.test([el.getAttribute('name'), el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder')].join(' '))) return 'preferredName';
+    // v2.5.119: the cover-letter / message-to-the-hiring-team box is never the profile summary (live 2026-10-17 Workable
+    // "cover_letter" got the summary) — see fillCoverLetter.
+    if (isCoverLetterField(el, qText)) return 'coverLetter';
     const identity = /\b(e-?mail|phone|téléphone|first name|last name|prénom|nom de famille|linkedin)\b/i.test(qText || '');
     if (qText && ((qText.length > 25 && QUESTION_RE.test(qText)) || (qText.length > 60 && !identity))) {
       if (/(how many|combien)[^?]{0,40}(years|ans|années)|years of (relevant |professional |work )?experience/i.test(qText)) return 'yearsOfExperience';
-      if (/(salary|salaire|compensation|rémunération|pay expectation)/i.test(qText)) return 'expectedSalary';
+      if (/(salary|salaire|compensation|rémunération|pay expectation|\bctc\b|\blpa\b|pay package)/i.test(qText)) return 'expectedSalary';
       if (/linkedin/i.test(qText) && /(url|profile|link|profil)/i.test(qText)) return 'linkedinUrl';
       return 'question';
     }
@@ -255,30 +388,80 @@
   function comboTarget(q, config) {
     const s = String(q || '');
     if (!s || EEO_RE.test(s)) return null;
+    if (SOURCE_Q.test(s)) { const src = referrerSource(); return src ? { kind: 'source', value: src } : null; }
     const det = deterministicAnswer(s, config);
     if (det) return { kind: 'yesno', value: det };
+    // v2.5.118: "Notice period / availability" select (Workable, live 2026-10-17 left on "Select an option…").
+    if (/\b(notice\s*period|préavis|preavis|k[üu]ndigungsfrist|preaviso)\b/i.test(s) && config.noticePeriod) return { kind: 'notice', value: String(config.noticePeriod) };
     if (/\b(country|pays)\b/i.test(s) && config.country
         && (!/\?/.test(s) || /\b(country|pays)\b.{0,40}\b(reside|live|based|located|currently|résid|habit)|\b(reside|live|based|located|résid|habit).{0,40}\b(country|pays)\b/i.test(s))) return { kind: 'country', value: config.country };
-    if (/\b(current location|location|city|ville|localisation|where are you (based|located)|lieu)\b/i.test(s) && !/(relocat|sponsor|remote|onsite|on-site|willing)/i.test(s) && config.city) return { kind: 'city', value: config.city };
+    if (/\b(current location|location|city|ville|localisation|where are you (currently )?(based|located)|lieu|stad|stadt|ciudad|citt[aà]|cidade|woonplaats|wohnort)\b/i.test(s) && !/(relocat|sponsor|remote|onsite|on-site|willing)/i.test(s) && config.city) return { kind: 'city', value: config.city };
     return null;
   }
   const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  // Notice period text → weeks (null = not a single duration, e.g. "1-3 months" / "Other").
+  const _NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, six: 6, un: 1, une: 1, deux: 2, trois: 3, quatre: 4, six_: 6 };
+  function noticeWeeks(t) {
+    const s = String(t || '').toLowerCase().trim();
+    if (/^(immediate(ly)?|imm[ée]diat(ement)?|none|no notice|aucun|sofort|0)\b|\b(available|disponible)\s+(immediately|imm[ée]diatement)\b/.test(s)) return 0;
+    if (/\d\s*[-–à]\s*\d|\bor\b|\bto\b|\bou\b|\+|more than|plus de|less than|moins de/.test(s)) return null;
+    const m = s.match(/^(\d+|one|two|three|four|six|un|une|deux|trois|quatre)\s*(weeks?|semaines?|wochen?|months?|mois|monate?)\b/);
+    if (!m) return null;
+    const n = /^\d+$/.test(m[1]) ? Number(m[1]) : _NUM_WORDS[m[1]];
+    return /^(week|semaine|woche)/.test(m[2]) ? n : n * 4;
+  }
   function pickOption(items, q, config) {
     const tgt = comboTarget(q, config);
     if (!tgt) return null;
     const list = items.filter(x => x.text && !/^\s*(select|choose|sélectionner|choisir|--|please select)/i.test(x.text));
     if (tgt.kind === 'yesno') return list.find(x => (tgt.value === 'Yes' ? /^\s*(yes|oui)\b/i : /^\s*(no|non)\b/i).test(x.text)) || null;
     const v = norm(tgt.value);
+    if (tgt.kind === 'notice') {
+      // "1 month" ↔ "One month" / "1 mois" / "4 weeks"; "immediately" ↔ "Immediate" / "Immédiatement" / "None".
+      const weeks = noticeWeeks(v);
+      if (weeks === null) return list.find(x => norm(x.text) === v) || null;
+      return list.find(x => noticeWeeks(norm(x.text)) === weeks) || null;
+    }
+    if (tgt.kind === 'source') return list.find(x => norm(x.text) === v) || list.find(x => norm(x.text).includes(v)) || null;
     if (tgt.kind === 'city') {
       // "Paris, Île-de-France, FRA" before "Paris, TX, USA": prefer the suggestion in the user's country.
       const c = String(config.country || '');
-      const inCountry = (t) => c && (norm(t).includes(norm(c)) || new RegExp('\\b' + c.slice(0, 3).toUpperCase() + '\\b').test(t));
+      // v2.5.119 (live 2026-10-17, SmartRecruiters NL: "Parijs, Île-de-France, Frankrijk"): the suggestions come in the
+      // site's language — country names in other languages, and the city's own localised spelling (same country only).
+      const cNames = countryNamesFor(c);
+      const inCountry = (t) => c && (norm(t).includes(norm(c)) || new RegExp('\\b' + c.slice(0, 3).toUpperCase() + '\\b').test(t) || cNames.some(n => norm(t).includes(n)));
       const cands = list.filter(x => norm(x.text) === v || norm(x.text).startsWith(v + ',') || norm(x.text).startsWith(v + ' '));
       const best = cands.find(x => inCountry(x.text));
       if (best) return best;
+      const first = (t) => norm(t).split(',')[0].trim();
+      const near = (a, b) => a.length >= 4 && b.length >= 4 && a.slice(0, 4) === b.slice(0, 4) && Math.abs(a.length - b.length) <= 2;
+      const loc = list.find(x => inCountry(x.text) && near(first(x.text), v.split(',')[0].trim()));
+      if (loc) return loc;
       if (c && cands.length > 1) return null;   // ambiguous city, none in the user's country → leave it
     }
     return list.find(x => norm(x.text) === v) || list.find(x => norm(x.text).startsWith(v + ',') || norm(x.text).startsWith(v + ' ')) || list.find(x => norm(x.text).startsWith(v)) || null;
+  }
+  // Country names in the languages the ATS pages use (EN / FR / NL / DE / ES / IT / PT), normalised.
+  const COUNTRY_I18N = {
+    FR: ['france', 'frankrijk', 'frankreich', 'francia', 'frança'], US: ['united states', 'usa', 'états-unis', 'etats-unis', 'verenigde staten', 'vereinigte staaten', 'estados unidos', 'stati uniti'],
+    GB: ['united kingdom', 'royaume-uni', 'verenigd koninkrijk', 'vereinigtes königreich', 'reino unido', 'regno unito'], DE: ['germany', 'allemagne', 'duitsland', 'deutschland', 'alemania', 'germania', 'alemanha'],
+    ES: ['spain', 'espagne', 'spanje', 'spanien', 'españa', 'spagna', 'espanha'], IT: ['italy', 'italie', 'italië', 'italien', 'italia', 'itália'], NL: ['netherlands', 'pays-bas', 'nederland', 'niederlande', 'países bajos', 'paesi bassi', 'países baixos'],
+    BE: ['belgium', 'belgique', 'belgië', 'belgien', 'bélgica', 'belgio'], CH: ['switzerland', 'suisse', 'zwitserland', 'schweiz', 'suiza', 'svizzera', 'suíça'], IN: ['india', 'inde', 'indien', 'índia'],
+    CA: ['canada', 'kanada', 'canadá'], PT: ['portugal', 'portogallo'], IE: ['ireland', 'irlande', 'ierland', 'irland', 'irlanda'], KR: ['south korea', 'corée du sud', 'zuid-korea', 'südkorea', 'corea del sur', 'corea del sud', 'coreia do sul'],
+    LU: ['luxembourg', 'luxemburg', 'luxemburgo', 'lussemburgo'], AU: ['australia', 'australie', 'australië', 'australien', 'austrália'],
+  };
+  function countryNamesFor(c) {
+    const n = norm(c); if (!n) return [];
+    const code = n.length <= 3 ? (n === 'uk' ? 'GB' : n.toUpperCase()) : (Object.keys(COUNTRY_I18N).find(k => COUNTRY_I18N[k].includes(n)) || '');
+    return code && COUNTRY_I18N[code] ? COUNTRY_I18N[code] : [n];
+  }
+  // v2.5.119 (SmartRecruiters spl-dropdown-item): the role=option div sits in the item's shadow root and the label is
+  // slotted from the host's light DOM → the option's own textContent is empty. Read the host's text.
+  function optionText(o) {
+    const t = String(o.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t) return t;
+    const host = o.getRootNode && o.getRootNode().host;
+    return host ? String(host.textContent || '').replace(/\s+/g, ' ').trim() : '';
   }
   function visibleOptions(input) {
     const ids = (input.getAttribute('aria-controls') || input.getAttribute('aria-owns') || '').split(/\s+/).filter(Boolean);
@@ -298,11 +481,12 @@
     let v = '';
     for (const ch of String(text)) {
       v += ch;
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keypress', { key: ch, charCode: ch.charCodeAt(0), bubbles: true }));
+      // composed: SmartRecruiters / web-component forms listen across shadow boundaries (v2.5.119).
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true, composed: true }));
+      input.dispatchEvent(new KeyboardEvent('keypress', { key: ch, charCode: ch.charCodeAt(0), bubbles: true, composed: true }));
       if (d && d.set) d.set.call(input, v); else input.value = v;
-      input.dispatchEvent(new InputEvent('input', { bubbles: true, data: ch, inputType: 'insertText' }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: ch, inputType: 'insertText' }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true, composed: true }));
       await new Promise(r => setTimeout(r, 60));
     }
   }
@@ -318,11 +502,170 @@
   function isReactSelect(input) {
     return /\bselect__input\b/.test(input.className || '') || !!input.closest('[class*="select__control" i]');
   }
+  // v2.5.100: open questions left empty because AI answers are Premium (free plan) —
+  // counted so the popup / page can say so instead of a silent partial fill.
+  let openLeft = 0;
+  const aiBlocked = () => !!(window.EAM && window.EAM.aiForm && window.EAM.aiForm.isPremiumBlocked && window.EAM.aiForm.isPremiumBlocked());
+
+  // ─── v2.5.100: résumé upload ────────────────────────────────────────
+  // The CV saved in the popup (chrome.storage.local resumeFile, same source as
+  // the LinkedIn engine) goes into ONE file input that is clearly the résumé
+  // field. Never a cover-letter / photo / transcript input, and never an ATS
+  // "autofill from résumé" dropzone (Ashby, SmartRecruiters): those re-parse
+  // the file and overwrite the fields.
+  const FILE_AUTOFILL_RE = /autofill|auto-fill|automatisch|automatically|automatiquement|remplir automatiquement|eenvoudig solliciteren|apply with (indeed|linkedin|seek)|quick apply|parse your/i;
+  const FILE_NOT_RESUME_RE = /cover|lettre|motivation|anschreiben|carta de presentaci|motivatiebrief|photo|picture|avatar|portrait|foto|headshot|transcript|relev[ée] de notes|portfolio|work sample|certificat|diploma|passport|id card|identity/i;
+  const FILE_RESUME_RE = /r[ée]sum[ée]|curriculum|vitae|lebenslauf|curr[íi]culo|hoja de vida|(^|[^a-z])cv(?![a-z])/i;
+  // Text nodes joined with spaces: textContent glues a heading to the next text
+  // ("Cv" + "Kies een bestand" → "CvKies…", "CV.pdf" + "Remove" → "CV.pdfRemove").
+  function spacedText(n) {
+    const out = [];
+    try {
+      const w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT);
+      for (let t = w.nextNode(); t && out.length < 60; t = w.nextNode()) { const s = t.nodeValue.trim(); if (s) out.push(s); }
+    } catch (_) { return (n.textContent || '').replace(/\s+/g, ' ').trim(); }
+    return out.join(' ').replace(/\s+/g, ' ');
+  }
+  function fileFieldKind(input) {
+    const own = [input.id, input.name, input.getAttribute('aria-label'), input.getAttribute('data-qa'), input.getAttribute('data-testid')].filter(Boolean).join(' ');
+    const lbl = labelFor(input);
+    const texts = [own, lbl ? lbl.textContent : ''];
+    let n = input;
+    for (let i = 0; i < 7; i++) {
+      n = upOne(n);
+      if (!n || n === document.body || n === document.documentElement) break;
+      if (deepAll('input[type="file"]', n).length > 1) break;   // container shared with another upload → stop
+      texts.push(spacedText(n).slice(0, 200));
+    }
+    // nearest text first: the first decisive signal wins
+    // A file name already shown in a résumé field ("Sophie_CV.pdf  Remove") = the form
+    // already has a CV for this candidate → 'present', keep it (Théo 2026-10-04).
+    const shown = texts.slice(2, 8).some(t => t && FILE_SHOWN_RE.test(t));
+    for (const t of texts) {
+      if (!t) continue;
+      if (FILE_AUTOFILL_RE.test(t)) return 'autofill';
+      if (FILE_NOT_RESUME_RE.test(t)) return 'other';
+      if (FILE_RESUME_RE.test(t)) return shown ? 'present' : 'resume';
+    }
+    return 'unknown';
+  }
+  // A file name (with extension) displayed in the field's own container. "Accepted file
+  // types: pdf, doc, docx" hints have no dot before the extension, so they don't match.
+  const FILE_SHOWN_RE = /[\w)\]-]\.(pdf|docx?|rtf|odt|pages)\b/i;
+  // Once per page: a second Autofill click, a re-render or the next step of a multi-step
+  // form must never attach the résumé again (duplicate uploads, Théo 2026-10-04).
+  let resumeAttachedOnPage = null;
+  async function attachResume() {
+    if (resumeAttachedOnPage) { console.log('[EAM Autofill] résumé already attached on this page — not again'); return null; }
+    let st = null;
+    try { st = await chrome.storage.local.get(['resumeFile', 'resumeFileName', 'resumeFileType']); } catch (_) { return null; }
+    if (!st || !st.resumeFile || !st.resumeFileName) return null;
+    const fileInputs = deepAll('input[type="file"]');
+    // The form already holds a CV (a résumé input with a file, or a file name shown in a
+    // résumé field) → keep it, upload nothing.
+    for (const input of fileInputs) {
+      const kind = fileFieldKind(input);
+      if (kind === 'present' || (kind === 'resume' && input.files && input.files.length)) {
+        console.log('[EAM Autofill] the form already has a résumé — kept, nothing uploaded');
+        return null;
+      }
+    }
+    for (const input of fileInputs) {
+      if (input.disabled || (input.files && input.files.length)) continue;
+      const kind = fileFieldKind(input);
+      if (kind !== 'resume') { console.log(`[EAM Autofill] file input ${input.id || input.name || ''} → ${kind}, left alone`); continue; }
+      try {
+        const b64 = String(st.resumeFile).includes(',') ? String(st.resumeFile).split(',')[1] : String(st.resumeFile);
+        const bin = atob(b64); const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const file = new File([bytes], st.resumeFileName, { type: st.resumeFileType || 'application/pdf' });
+        const dt = new DataTransfer(); dt.items.add(file);
+        input.files = dt.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        // The file is handed over once the change event fired: SmartRecruiters reads it and
+        // clears the input (its own chip shows the file) — still ONE upload, never repeated.
+        resumeAttachedOnPage = file.name;
+        if (input.files && input.files.length) input.dataset.eamFilled = 'true';
+        console.log(`[EAM Autofill] résumé attached: ${file.name}`);
+        return file.name;
+      } catch (e) { console.log('[EAM Autofill] résumé attach failed', e && e.message); }
+    }
+    return null;
+  }
+
+  // ─── v2.5.100: "Language skills (check all that apply)" ─────────────
+  // Ticked ONLY from the languages in the profile (basic / A1-A2 levels excluded).
+  const LANG_WORDS = {
+    english: ['english', 'anglais', 'inglés', 'ingles', 'englisch', 'inglese', 'eng'], french: ['french', 'français', 'francais', 'francés', 'französisch', 'fra'],
+    spanish: ['spanish', 'espagnol', 'español', 'espanol', 'spanisch', 'spa'], german: ['german', 'allemand', 'deutsch', 'alemán', 'deu', 'ger'],
+    italian: ['italian', 'italien', 'italiano', 'ita'], portuguese: ['portuguese', 'portugais', 'português', 'portugues', 'por'],
+    dutch: ['dutch', 'néerlandais', 'neerlandais', 'nederlands', 'nld'], arabic: ['arabic', 'arabe', 'árabe', 'ara'],
+    hindi: ['hindi', 'hin'], mandarin: ['mandarin', 'chinese', 'chinois', 'man', 'zho'], cantonese: ['cantonese', 'cant'],
+    japanese: ['japanese', 'japonais', 'jpn'], russian: ['russian', 'russe', 'rus'], polish: ['polish', 'polonais'],
+    turkish: ['turkish', 'turc', 'tur'], korean: ['korean', 'coréen', 'kor'], urdu: ['urdu', 'urd'], bengali: ['bengali', 'bne', 'ben'],
+    tamil: ['tamil'], telugu: ['telugu', 'tel'], marathi: ['marathi', 'mar'], gujarati: ['gujarati', 'guj'],
+  };
+  function profileLanguageKeys(config) {
+    const langs = (config.cvProfile && Array.isArray(config.cvProfile.languages)) ? config.cvProfile.languages : [];
+    const keys = new Set();
+    for (const l of langs) {
+      const name = String(typeof l === 'string' ? l : (l && (l.name || l.language)) || '').toLowerCase();
+      const level = String(typeof l === 'string' ? l : (l && l.level) || '').toLowerCase();
+      if (/\b(basic|beginner|elementary|notions?|d[ée]butant|a1|a2)\b/.test(level)) continue;
+      for (const [k, words] of Object.entries(LANG_WORDS)) if (words.some(w => w.length > 3 && name.includes(w))) keys.add(k);
+    }
+    return keys;
+  }
+  function languageOfLabel(text) {
+    const t = String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    for (const [k, words] of Object.entries(LANG_WORDS)) {
+      if (words.some(w => new RegExp('(^|[^a-zà-ÿ])' + w + '([^a-zà-ÿ]|$)').test(t))) return k;
+    }
+    return null;
+  }
+  function fillLanguageCheckboxes(config) {
+    let n = 0;
+    const mine = profileLanguageKeys(config);
+    if (!mine.size) return 0;
+    const groups = new Map();
+    deepAll('input[type="checkbox"]').forEach(cb => { if (cb.name) { if (!groups.has(cb.name)) groups.set(cb.name, []); groups.get(cb.name).push(cb); } });
+    const optLabel = (cb) => (cb.labels && cb.labels[0] ? cb.labels[0].textContent : (cb.closest('label') ? cb.closest('label').textContent : cb.value)) || '';
+    for (const boxes of groups.values()) {
+      if (boxes.length < 2) continue;
+      // The group's question: text around the options with the option labels removed
+      // (questionText() returns the first option's label on Lever, and an option such as
+      // "American Sign Language" must not make any checkbox list look like a language question).
+      let anc = boxes[0].parentElement;
+      while (anc && !boxes.every(b => anc.contains(b))) anc = anc.parentElement;
+      let q = '';
+      for (let i = 0; anc && i < 3 && !q; i++, anc = anc.parentElement) {
+        let t = spacedText(anc);
+        for (const b of boxes) { const l = optLabel(b).replace(/\s+/g, ' ').trim(); if (l) t = t.split(l).join(' '); }
+        if (/\b(languages?|langues?|idiomas?|sprachen?|lingue)\b/i.test(t)) q = t;
+      }
+      if (!q) continue;
+      for (const cb of boxes) {
+        if (cb.checked || cb.disabled || cb.offsetParent === null) continue;
+        const lbl = optLabel(cb);
+        const k = languageOfLabel(lbl);
+        if (!k || !mine.has(k)) continue;
+        cb.click();
+        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+        if (cb.checked) { cb.dataset.eamFilled = 'true'; n++; }
+      }
+    }
+    return n;
+  }
+
   async function fillComboboxes(config) {
     let n = 0;
     const boxes = deepAll('input[role="combobox"], input[aria-autocomplete], input#location-input, input.location-input, input[data-qa="location-input"]');
     for (const input of boxes) {
-      if (input.dataset.eamFilled === 'true' || input.disabled || input.readOnly || input.offsetParent === null) continue;
+      // v2.5.118: a READ-ONLY combobox is a select-only listbox (Workable "Notice period" custom select) — opened
+      // and picked below, never typed into.
+      const selectOnly = input.readOnly && input.getAttribute('role') === 'combobox';
+      if (input.dataset.eamFilled === 'true' || input.disabled || (input.readOnly && !selectOnly) || input.offsetParent === null) continue;
       // react-select shows the chosen value in a sibling, not in input.value
       const holder = input.closest('[class*="select__control" i], [class*="-control" i]');
       if ((input.value && input.value.trim()) || (holder && holder.querySelector('[class*="single-value" i], [class*="singleValue" i]'))) continue;
@@ -343,8 +686,11 @@
           // CHOICE MODE: the AI must reply with one exact label (free plan → premium_required → null)
           let ans = null;
           try { ans = await ai.askAI(q, config, 'select', labels); } catch (e) { ans = null; }
-          const hit = ans && ans !== 'skip' ? labels.find(l => norm(l) === norm(ans)) : null;
+          // v2.5.99: "3. Located Elsewhere" — the AI often drops the list number (gate 2026-10-04, Greenhouse).
+          const unnum = (t) => norm(t).replace(/^\(?\d{1,2}[.)]\s*/, '');
+          const hit = ans && ans !== 'skip' ? (labels.find(l => norm(l) === norm(ans)) || labels.find(l => unnum(l) === unnum(ans))) : null;
           if (hit) pick = { text: hit };
+          else if (ans === null && aiBlocked()) openLeft++;
         }
         let ok = false;
         if (pick) { const r = await rsBridge(marker, 'select', pick.text); ok = !!(r && r.ok); }
@@ -359,6 +705,26 @@
         }
         if (labels.length || !tgt) continue;   // options known, none fits → leave to the user
       }
+      if (selectOnly) {
+        if (!tgt) continue;
+        input.focus();
+        input.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        input.click();
+        let pick = null;
+        for (let t = 0; t < 10 && !pick; t++) {
+          await new Promise(r => setTimeout(r, 200));
+          pick = pickOption(visibleOptions(input).map(o => ({ o, text: optionText(o) })), q, config);
+        }
+        if (pick) {
+          pressOption(pick.o);
+          await new Promise(r => setTimeout(r, 250));
+          if (input.value && input.value.trim()) { input.style.outline = '2px solid #10b981'; input.dataset.eamFilled = 'true'; n++; }
+        } else {
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          input.blur();
+        }
+        continue;
+      }
       input.focus();
       input.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
       input.click();
@@ -368,10 +734,12 @@
       let pick = null;
       for (let t = 0; t < 14 && !pick; t++) {
         await new Promise(r => setTimeout(r, 250));
-        pick = pickOption(visibleOptions(input).map(o => ({ o, text: o.textContent })), q, config);
+        pick = pickOption(visibleOptions(input).map(o => ({ o, text: optionText(o) })), q, config);
       }
       if (pick) {
         pressOption(pick.o);
+        // SmartRecruiters listens on the dropdown item host; the role=option div alone may not select it.
+        try { const h = pick.o.getRootNode && pick.o.getRootNode().host; if (h && !(input.value && input.value.trim() && norm(input.value) !== norm(String(tgt.value).split(',')[0]))) { await new Promise(r => setTimeout(r, 150)); if (!input.value || norm(input.value) === norm(String(tgt.value).split(',')[0])) pressOption(h); } } catch (_) {}
         await new Promise(r => setTimeout(r, 200));
         input.style.outline = '2px solid #10b981';
         input.dataset.eamFilled = 'true';
@@ -384,16 +752,77 @@
     return n;
   }
 
+  // v2.5.118: a yes/no question with no deterministic answer → the AI with the two option labels (Premium; the
+  // "Oui" rule in askAI turns a "No" into "Yes" unless No is legitimate). Free plan → counted as left open.
+  const NON_ANSWER_RE = /^\s*["'“”]*\s*(n\s*\/?\s*a|none|nil|null|not applicable|non applicable|sans objet|-+|—)?\s*["'“”]*\s*\.?\s*$/i;
+  // Age questions ("Avez-vous entre 18 et 28 ans ?") need the birth date — without it nothing is guessed.
+  const AGE_Q_RE = /\b\d{2}\s*(et|and|to|à|a|-|–)\s*\d{2}\s*(ans|years|jahre|años)\b|\byears? old\b|\b(your|votre)\s+(age|âge)\b|\bover\s+(the\s+age\s+of\s+)?\d{2}\b|\bplus\s+de\s+\d{2}\s+ans\b/i;
+  // The sentence actually asked: a preamble ("If you need an accommodation, we'll partner with you… Are you able to
+  // commit to working from one of our offices…?", Ashby 2026-10-17) must not make a question look like an EEO one.
+  function askedPart(q) {
+    const s = String(q || '');
+    const parts = s.split(/(?<=[.!?])\s+/).filter(p => /\?/.test(p));
+    return parts.length ? parts.join(' ') : s;
+  }
+  async function askYesNo(q, config, yesText, noText) {
+    const ai = window.EAM && window.EAM.aiForm;
+    if (!ai || !ai.askAI || !q || !meaningfulLabel(q) || EEO_RE.test(askedPart(q)) || /pronoun|pronom/i.test(q)) return null;
+    if (AGE_Q_RE.test(q) && !config.dateOfBirth) return null;
+    let a = null;
+    try { a = await ai.askAI(q, config, 'radio', [yesText, noText]); } catch (_) { a = null; }
+    if (a === null && aiBlocked()) { openLeft++; return null; }
+    if (!a || a === 'skip') return null;
+    const n = norm(a);
+    if (n === norm(yesText) || /^(yes|oui|ja|s[ií]|sim)\b/.test(n)) return 'Yes';
+    if (n === norm(noText) || /^(no|non|nein|n[ãa]o)\b/.test(n)) return 'No';
+    return null;
+  }
+
+  async function fillYesNoToggles(config) {
+    let n = 0;
+    const boxes = deepAll('.ashby-application-form-input-yesno, [class*="_yesno_"]');
+    for (const box of boxes) {
+      const btns = [...box.querySelectorAll('button')];
+      const opt = (b) => String(b.getAttribute('data-option') || b.textContent || '').trim().toLowerCase();
+      const yesB = btns.find(b => /^(yes|oui)$/.test(opt(b)));
+      const noB = btns.find(b => /^(no|non)$/.test(opt(b)));
+      if (!yesB || !noB || btns.length > 3) continue;
+      if (btns.some(b => b.getAttribute('aria-pressed') === 'true')) continue;
+      const entry = box.closest('.ashby-application-form-field-entry, [class*="fieldEntry"]') || box.parentElement;
+      const lab = entry && entry.querySelector('.ashby-application-form-question-title, label, legend');
+      const q = lab ? cleanText(lab) : '';
+      if (!q || EEO_RE.test(askedPart(q))) continue;
+      // v2.5.118: any other yes/no toggle goes to the AI (Premium) with the "Oui" rule (askAI → leanYes) —
+      // live 2026-10-17 Ashby "Are you able to commit to working from one of our offices…?*" stayed empty.
+      const ans = deterministicAnswer(q, config) || await askYesNo(q, config, yesB.textContent.trim() || 'Yes', noB.textContent.trim() || 'No');
+      if (!ans) continue;
+      const b = ans === 'Yes' ? yesB : noB;
+      b.click();
+      await new Promise(r => setTimeout(r, 150));
+      if (b.getAttribute('aria-pressed') === 'true') { b.dataset.eamFilled = 'true'; n++; }
+    }
+    return n;
+  }
+
   // ─── Main autofill logic ────────────────────────────────────────────
 
   async function autofill(config) {
     if (!config) return { filled: 0 };
 
     let filled = 0;
+    openLeft = 0;
+
+    // v2.5.100: the saved résumé into the résumé field (never cover letter / photo), FIRST:
+    // Lever / Ashby parse the uploaded CV and rewrite fields (live 2026-10-04: Lever's parse
+    // emptied "Current location" after we had filled it) — fields are filled once it settles.
+    let resumeName = null;
+    try { resumeName = await attachResume(); if (resumeName) { filled++; await new Promise(r => setTimeout(r, 3500)); } } catch (_) {}
 
     // Build value map from config
     const values = {};
-    if (config.firstName) values.firstName = config.firstName;
+    if (config.firstName) { values.firstName = config.firstName; values.preferredName = config.firstName; }
+    // v2.5.119: answers in the form's language; the job on the page for a tailored cover note.
+    if (!config.formLanguage) config.formLanguage = detectFormLanguage();
     if (config.lastName) values.lastName = config.lastName;
     if (config.firstName && config.lastName) values.fullName = config.firstName + ' ' + config.lastName;
     if (config.email) values.email = config.email;
@@ -412,8 +841,15 @@
     const inputs = deepAll('input[type="text"], input[type="email"], input[type="tel"], input[type="number"], input[type="url"], input:not([type]), textarea');
     const aiAvailable = !!(window.EAM && window.EAM.aiForm);
     for (const input of inputs) {
-      if (input.value && input.value.trim() !== '') continue;
+      // v2.5.118: a phone input holding only a dial code ("+241" from the job's country, Recruitee 2026-10-17)
+      // is empty — the full international number is written.
+      const dialOnly = /^\s*\+\d{1,4}\s*$/.test(input.value || '')
+        && (input.type === 'tel' || /phone|t[ée]l[ée]phone|mobile/i.test([input.name, input.id, input.getAttribute('autocomplete'), input.getAttribute('aria-label')].join(' ')));
+      if (input.value && input.value.trim() !== '' && !dialOnly) continue;
       if (input.offsetParent === null || input.disabled || input.readOnly) continue;
+      // v2.5.117: value holders of custom widgets (Workable select: <input name="CA_x" aria-hidden="true" tabindex="-1">)
+      // are not fields — the AI was asked "CA_10627 SVGs not supported by this browser." and its "No" written there.
+      if (input.getAttribute('aria-hidden') === 'true') continue;
       if (input.dataset.eamFilled === 'true') continue;
       // v2.5.90: autocomplete comboboxes (react-select, Ashby/Lever location)
       // drop typed text unless an option is picked — leave them to the user
@@ -425,6 +861,49 @@
 
       const fieldType = classifyField(input);
       if (fieldType === 'eeo') continue;
+      if (fieldType === 'coverLetter') {
+        if (input.dataset.eamAsked === '1') continue;
+        input.dataset.eamAsked = '1';
+        let r = null;
+        try { r = await fillCoverLetter(input, config); } catch (_) { r = null; }
+        if (r && r.value) {
+          setNativeValue(input, r.value);
+          input.style.outline = r.how === 'ai' ? '2px solid #8b5cf6' : '2px solid #10b981';
+          input.dataset.eamFilled = 'true';
+          filled++;
+        } else if (aiBlocked() && isRequiredField(input)) openLeft++;
+        continue;
+      }
+      // v2.5.117: source question (text) → the job board in the referrer, else left to the candidate / AI below.
+      {
+        const sq = questionText(input) || '';
+        if (SOURCE_Q.test(sq)) {
+          const src = referrerSource();
+          if (src) { setNativeValue(input, src); input.style.outline = '2px solid #10b981'; input.dataset.eamFilled = 'true'; filled++; continue; }
+        }
+        // "How do you pronounce your name?" — only the candidate knows (premium AI invented a phonetic spelling).
+        if (/pronounc|prononc/i.test(sq)) continue;
+      }
+      // v2.5.110 (premium user mail 2026-10-12 "experience and salary field going wrong"): the popup Autofill
+      // wrote the TOTAL years into "years of Python?" and the raw expected salary into "current CTC" / LPA
+      // questions. Same rules as auto-apply (FormFiller): years per skill (capped at the declared total),
+      // expected pay converted to the asked unit, current pay never filled.
+      const FF = window.EAM && window.EAM.FormFiller;
+      if (FF && (fieldType === 'yearsOfExperience' || fieldType === 'expectedSalary')) {
+        const q = questionText(input) || '';
+        let v = '';
+        try {
+          if (fieldType === 'yearsOfExperience') { const y = FF.yearsForQuestion(q, config); v = y && isFinite(y.years) ? String(y.years) : ''; }
+          else v = FF.salaryAnswer(q, config, input) || ''; // current pay only from the currentSalary setting
+        } catch (_) { v = ''; }
+        if (v !== '') {
+          setNativeValue(input, v);
+          input.style.outline = '2px solid #10b981';
+          input.dataset.eamFilled = 'true';
+          filled++;
+        }
+        continue;
+      }
       if (fieldType && fieldType !== 'question' && values[fieldType]) {
         setNativeValue(input, values[fieldType]);
         input.style.outline = '2px solid #10b981';
@@ -454,13 +933,13 @@
       const id2 = input.getAttribute('id');
       if (id2) {
         const lbl = labelFor(input);
-        if (lbl) hints.push(lbl.textContent);
+        if (lbl) hints.push(cleanText(lbl));
       }
       hints.push(input.getAttribute('placeholder') || '');
       const parent = input.closest('div, fieldset, li, td');
       if (parent) {
         const nearby = parent.querySelector('label, legend, span');
-        if (nearby && nearby.textContent.length < 80) hints.push(nearby.textContent);
+        if (nearby && cleanText(nearby).length < 80) hints.push(cleanText(nearby));
       }
       const label = [...new Set(hints.map(s => (s || '').replace(/\s+/g, ' ').trim()).filter(Boolean))].join(' ').trim();
       if (!label || !meaningfulLabel(label)) continue;
@@ -468,9 +947,17 @@
 
       const isTextarea = input.tagName === 'TEXTAREA';
       const fType = isTextarea ? 'textarea' : (input.type || 'text');
+      // v2.5.100: a field the AI already declined ("" / skip) on this page is not asked again
+      // on the next Autofill click (gate: Ashby "Additional Information" asked twice).
+      if (input.dataset.eamAsked === '1') continue;
       try {
         let answer = await window.EAM.aiForm.askAI(label, config, fType);
+        if (answer !== null) input.dataset.eamAsked = '1';
+        if (answer === null && aiBlocked()) { openLeft++; continue; }
         if (!answer) continue;
+        // v2.5.118: "N/A" / "None" / '""' are not answers — the field stays for the candidate (live 2026-10-17
+        // Workable: "Share 2–3 of your open-source contributions… Blank or N/A answers won't move forward" got "N/A").
+        if (NON_ANSWER_RE.test(String(answer))) continue;
         const labelLower = label.toLowerCase();
         const isNumeric = input.type === 'number'
           || input.getAttribute('inputmode') === 'numeric'
@@ -548,38 +1035,11 @@
     // nothing looks filled that isn't.
     try { filled += await fillComboboxes(config); } catch (e) { /* never block the rest of the fill */ }
 
-    // Check consent/CGU checkboxes
-    const checkboxes = deepAll('input[type="checkbox"]');
-    for (const cb of checkboxes) {
-      if (cb.checked) continue;
-      if (cb.offsetParent === null || cb.disabled) continue;
-      if (cb.dataset.eamFilled === 'true') continue;
+    // v2.5.100: consent / privacy / terms checkboxes are NOT ticked any more — accepting a
+    // legal text is the candidate's decision (marketing opt-ins and waivers already stayed
+    // unticked). Only "language skills" checkbox groups are filled, from the profile.
+    try { filled += fillLanguageCheckboxes(config); } catch (_) {}
 
-      const hints = [];
-      hints.push(cb.getAttribute('name') || '');
-      const cbId = cb.getAttribute('id');
-      if (cbId) {
-        const lbl = labelFor(cb);
-        if (lbl) hints.push(lbl.textContent);
-      }
-      const parentLabel = cb.closest('label');
-      if (parentLabel) hints.push(parentLabel.textContent);
-
-      const combined = hints.join(' ').toLowerCase();
-      // v2.5.90: marketing / newsletter / talent-community opt-ins stay
-      // unticked (policy 2026-09-25: default No), and legal waivers
-      // (arbitration, background checks) are left for the candidate.
-      if (MARKETING_RE.test(combined) || NOT_AUTO_CONSENT_RE.test(combined)) continue;
-      if (combined.match(/consent|agree|terms|conditions|policy|privacy|accept|j'accepte|j'autorise|consentement|cgu/)) {
-        // click() so React-controlled checkboxes (Ashby, Greenhouse) register it
-        cb.click();
-        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
-        if (!cb.checked) continue;
-        cb.style.outline = '2px solid #10b981';
-        cb.dataset.eamFilled = 'true';
-        filled++;
-      }
-    }
 
     // v2.5.92: yes/no RADIO groups for the deterministic screening questions
     // (sponsorship, work authorization, relocation, driving licence) —
@@ -603,15 +1063,43 @@
         for (let n = radios[0].parentElement, i = 0; n && i < 6 && !q; n = n.parentElement, i++) {
           const leg = n.querySelector && n.querySelector('legend, .application-label, [class*="question"], [class*="label"]');
           const txt = (leg && !leg.contains(radios[0]) ? leg.textContent : '') || '';
-          if (/\?|sponsor|authori[sz]|relocat|licen[cs]e|permis/i.test(txt)) q = txt;
+          // v2.5.118: a question without "?" ("Êtes-vous en règle avec … service national *", Recruitee) counts too.
+          if (/\?|sponsor|authori[sz]|relocat|licen[cs]e|permis/i.test(txt) || QUESTION_RE.test(txt.trim())) q = txt;
           else if (i >= 2 && /\?/.test(n.textContent || '') && (n.textContent || '').length < 600) q = n.textContent;
         }
-        const ans = deterministicAnswer(q, config);
+        const qc = String(q || '').replace(/\s+/g, ' ').trim();
+        const ans = deterministicAnswer(qc, config) || (qc.length <= 400 ? await askYesNo(qc, config, labelOf(yes.r) || 'Yes', labelOf(no.r) || 'No') : null);
         if (!ans) continue;
         const pick = ans === 'Yes' ? yes.r : no.r;
         pick.click();
         if (!pick.checked) { pick.checked = true; pick.dispatchEvent(new Event('change', { bubbles: true })); }
         if (pick.checked) { pick.dataset.eamFilled = 'true'; filled++; }
+      }
+    } catch (_) {}
+
+    // v2.5.117: Ashby yes/no TOGGLE BUTTONS (button[data-option=yes|no][aria-pressed] + hidden checkbox) — same
+    // deterministic answers as the radio groups (sponsorship, work authorization, relocation, licence,
+    // self-declarations); any other yes/no stays with the candidate (gate 2026-10-16: required "authorized /
+    // sponsorship" questions left empty on Ashby).
+    try { filled += await fillYesNoToggles(config); } catch (_) {}
+
+    // v2.5.118: "How many years of X?" as a SLIDER (Teamtailor input[type=range], live 2026-10-17 left on 0) —
+    // same years policy as text fields (X in the CV → its roles, else total years), clamped to the slider range.
+    try {
+      const FF = window.EAM && window.EAM.FormFiller;
+      for (const r of deepAll('input[type="range"]')) {
+        if (r.dataset.eamFilled === 'true' || r.disabled || r.offsetParent === null) continue;
+        const min = r.min !== '' ? Number(r.min) : 0, max = r.max !== '' ? Number(r.max) : 100, step = Number(r.step) || 1;
+        if (Number(r.value) !== min) continue;   // the candidate already moved it
+        const q = questionText(r) || '';
+        if (!/(how many|combien|wie viele|cu[aá]ntos)[^?]{0,60}(years?|ans|ann[ée]es|jahre|a[ñn]os)|years? of\b.{0,60}experience|ann[ée]es? d.exp/i.test(q)) continue;
+        let y = NaN;
+        try { const a = FF && FF.yearsForQuestion ? FF.yearsForQuestion(q, config) : null; if (a && isFinite(a.years)) y = Number(a.years); } catch (_) {}
+        if (!isFinite(y)) y = parseFloat(config.yearsOfExperience);
+        if (!isFinite(y)) continue;
+        const v = Math.min(max, Math.max(min, Math.round((y - min) / step) * step + min));
+        setNativeValue(r, String(v));
+        if (Number(r.value) === v) { r.dataset.eamFilled = 'true'; r.style.outline = '2px solid #10b981'; filled++; }
       }
     } catch (_) {}
 
@@ -633,16 +1121,47 @@
     // Extension audit 2026-08-14 caught this on SmartRecruiters-style forms.
     // Child frames still fill fields — their own badge would draw INSIDE
     // the iframe (invisible on most portals) so we skip it entirely.
+    const premiumHint = openLeft > 0 && aiBlocked();
+    // v2.5.100: a second click on an already-filled form said "No fields detected" — misleading.
+    const alreadyFilled = filled === 0 ? deepAll('[data-eam-filled="true"]').length : 0;
     if (window === window.top) {
-      showBadge(filled);
+      if (premiumHint) showPremiumHint(filled, openLeft); else showBadge(filled, alreadyFilled);
     }
 
-    return { filled };
+    return { filled, openLeft: premiumHint ? openLeft : 0, premiumHint, resume: resumeName, alreadyFilled };
+  }
+
+  // ─── v2.5.100: free plan — open questions left to the candidate ─────
+  const UPSELL_URL = 'https://www.autoapplymax.com/dashboard?promo=WELCOMEBACK20&src=ext_autofill_free#upgrade';
+  const HINT_FONT = 'Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+  const HINT_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>';
+  const HINT_CLOSE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+  function showPremiumHint(count, open) {
+    try {
+      document.getElementById('eam-autofill-badge')?.remove();
+      const n = document.createElement('div');
+      n.id = 'eam-autofill-badge';
+      n.setAttribute('role', 'status');
+      n.setAttribute('data-eam-autofill-hint', '1');
+      const q = open === 1 ? '1 open question' : open + ' open questions';
+      n.innerHTML = '<span style="display:inline-flex;flex-shrink:0;color:#0a66c2">' + HINT_ICON + '</span>'
+        + '<span><strong style="font-weight:700">AutoApplyMax — ' + (count > 0 ? count + ' field' + (count === 1 ? '' : 's') + ' filled' : 'form already filled') + '</strong><br>'
+        + q + ' left for you — Premium answers them with AI.<br>'
+        + '<a data-eam-hint-link href="' + UPSELL_URL + '" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;color:#0a66c2;font-weight:700;text-decoration:none">See Premium →</a></span>'
+        + '<button data-eam-hint-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:0 2px;line-height:1;opacity:0.6;display:inline-flex">' + HINT_CLOSE + '</button>';
+      n.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483646;display:flex;align-items:flex-start;gap:8px;padding:10px 14px;background:#eff6ff;border:1px solid #93c5fd;color:#1e3a8a;border-radius:12px;font:500 13px/1.45 ' + HINT_FONT + ';box-shadow:0 4px 12px rgba(15,23,42,0.12);max-width:360px;box-sizing:border-box;';
+      document.body.appendChild(n);
+      n.querySelector('[data-eam-hint-close]')?.addEventListener('click', () => n.remove());
+      n.querySelector('[data-eam-hint-link]')?.addEventListener('click', () => {
+        try { chrome.runtime.sendMessage({ type: 'track-autofill-upsell-click', where: 'page', hostname: location.hostname }); } catch (_) {}
+      });
+      setTimeout(() => { try { n.remove(); } catch (_) {} }, 30000);
+    } catch (_) {}
   }
 
   // ─── Floating badge ─────────────────────────────────────────────────
 
-  function showBadge(count) {
+  function showBadge(count, alreadyFilled) {
     // Remove previous badge if any
     const existing = document.getElementById('eam-autofill-badge');
     if (existing) existing.remove();
@@ -651,12 +1170,14 @@
     badge.id = 'eam-autofill-badge';
     badge.textContent = count > 0
       ? `AutoApplyMax: ${count} field${count > 1 ? 's' : ''} filled`
-      : 'AutoApplyMax: No fields detected in the top frame — if the form is in an iframe (SmartRecruiters, Workday), check inside it';
+      : alreadyFilled > 0
+        ? 'AutoApplyMax: this form is already filled — nothing new to fill'
+        : 'AutoApplyMax: No fields detected in the top frame — if the form is in an iframe (SmartRecruiters, Workday), check inside it';
     badge.style.cssText = `
       position: fixed;
       bottom: 20px;
       right: 20px;
-      background: ${count > 0 ? 'linear-gradient(135deg, #10b981, #059669)' : '#6b7280'};
+      background: ${(count > 0 || alreadyFilled > 0) ? '#047857' : '#475569'};
       color: white;
       padding: 12px 20px;
       border-radius: 12px;
@@ -701,8 +1222,12 @@
               chrome.runtime.sendMessage({
                 type: 'track-autofill',
                 filled: result?.filled || 0,
+                openLeft: result?.openLeft || 0,
+                premiumHint: !!result?.premiumHint,
+                resume: !!result?.resume,
                 hostname: location.hostname,
-                path: (location.pathname || '').slice(0, 100),
+                // v2.5.120: ids / tokens in the URL path never leave the browser (security audit 2026-10-18).
+                path: (location.pathname || '').split('/').map(seg => (/^[0-9a-f-]{16,}$/i.test(seg) || /\d{4,}/.test(seg) || (seg.length >= 20 && /\d/.test(seg) && /[a-z]/i.test(seg))) ? ':id' : seg).join('/').slice(0, 100),
               });
             }
           } catch (_) { /* fire-and-forget, never block autofill response */ }

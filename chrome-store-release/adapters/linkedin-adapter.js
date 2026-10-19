@@ -1204,6 +1204,47 @@
       return '';
     }
 
+    // v2.5.98: the focused job's short type pills ("Internship", "Stage", "Full-time"…) from the
+    // details header. Live 2026-10-03: a VINCI ad tagged "Internship" was applied to. Exact short
+    // leaf texts only (never the description), visible, outside the job list, filter bar, dialogs.
+    getFocusedJobTags() {
+      const out = [];
+      try {
+        const TAG = /^(internship|stage|alternance|apprenticeship|apprentissage|contrat d.apprentissage|contrat de professionnalisation|work[- ]study|pr[aá]cticas|praktikum|tirocinio|full[- ]time|part[- ]time|temps plein|temps partiel|contract|cdi|cdd|temporary|int[ée]rim|freelance|volunteer|b[ée]n[ée]volat)$/i;
+        const EXCLUDE = '[data-occludable-job-id], [data-job-id], .job-card-container, .jobs-search-results-list, .scaffold-layout__list, [componentkey*="job-card" i], .search-reusables__filters-bar, [role="search"], header, form, fieldset, label, dialog, [role="dialog"], [role="listbox"], [role="menu"], nav, [class*="filter" i], #interop-outlet, #job-details, .jobs-description, .jobs-box__html-content';
+        const seen = new Set();
+        for (const el of document.querySelectorAll('span, button, li, div, p, a, strong')) {
+          if (el.childElementCount > 3) continue;
+          const t = (el.textContent || '').replace(/[✓✔]/g, '').replace(/\s+/g, ' ').trim();
+          if (!t || t.length > 34 || !TAG.test(t)) continue;
+          if (el.closest(EXCLUDE)) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) continue;
+          const k = t.toLowerCase();
+          if (!seen.has(k)) { seen.add(k); out.push(t); }
+        }
+      } catch (_) {}
+      return out;
+    }
+
+    // v2.5.104: title of the FOCUSED job (details pane header). Live 2026-10-08: card title was
+    // empty when the blacklist ran, so "Stage - Assistant Chef de Projet Fidélisation" (SANDRO)
+    // reached the form with "stage" blacklisted. Visible h1/h2 outside the list, dialogs, nav.
+    getFocusedJobTitle() {
+      try {
+        const SEL = '.job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, .t-24.job-details-jobs-unified-top-card__job-title, h1';
+        const EXCLUDE = '[data-occludable-job-id], [data-job-id], .job-card-container, .jobs-search-results-list, .scaffold-layout__list, dialog, [role="dialog"], nav, header, #interop-outlet';
+        for (const el of document.querySelectorAll(SEL)) {
+          if (el.closest(EXCLUDE)) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) continue;
+          const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (t && t.length < 200) return t;
+        }
+      } catch (_) {}
+      return '';
+    }
+
     getFormModal() {
       // ── /jobs/search-results/ (Apr 2026 redesign) ────────────────────
       // STRICT path: the Easy Apply modal only ever renders as a
@@ -1741,6 +1782,14 @@
 
     // ── Validation errors ───────────────────────────────────────────────
     hasValidationErrors(modal) {
+      // v2.5.109 (ops alert 2026-10-12): "Enter a whole number larger than 100", "Enter a decimal
+      // number larger than 0.0", "Please make a selection" matched none of the keywords below → no
+      // repair, the step was re-clicked 10 times (step_limit). Native <dialog> errors (aria-invalid /
+      // aria-describedby "error-…") were never seen at all. Shared detector in FormFiller.
+      try {
+        const FF = window.EAM && window.EAM.FormFiller;
+        if (FF && FF.fieldErrorElements && FF.fieldErrorElements(modal).length) return true;
+      } catch (_) {}
       const selectors = ['[role="alert"]', '.artdeco-inline-feedback--error', '.fb-form-element-label__error'];
       for (const selector of selectors) {
         const errors = modal.querySelectorAll(selector);
@@ -1758,8 +1807,61 @@
       return false;
     }
 
+    // v2.5.115: stable job id of a list card (legacy li[data-occludable-job-id] / [data-job-id],
+    // search-results componentkey "job-card-component-ref-<id>", or a /jobs/view/<id> link).
+    // The engine remembers evaluated ids per run so the same card is never re-evaluated.
+    getCardJobId(card) {
+      try {
+        if (!card || !card.getAttribute) return null;
+        const own = card.getAttribute('data-occludable-job-id') || card.getAttribute('data-job-id');
+        if (own && /^\d{5,}$/.test(own)) return own;
+        const inner = card.querySelector && card.querySelector('[data-job-id], [data-occludable-job-id]');
+        const iv = inner && (inner.getAttribute('data-job-id') || inner.getAttribute('data-occludable-job-id'));
+        if (iv && /^\d{5,}$/.test(iv)) return iv;
+        const ck = (card.getAttribute('componentkey') || '').match(/(\d{6,})/);
+        if (ck) return ck[1];
+        const a = card.querySelector && card.querySelector('a[href*="/jobs/view/"]');
+        const m = a && (a.getAttribute('href') || '').match(/\/jobs\/view\/(\d+)/);
+        if (m) return m[1];
+      } catch (_) {}
+      return null;
+    }
+
+    // v2.5.115: the job-list pagination only — never a carousel inside the job details pane.
+    // Live 2026-10-16 (telemetry, /jobs/search/, 1 page of 11 results): no next page existed, the
+    // generic "Next" fallback clicked the right pane's "Company photos Next" carousel button (its
+    // container has an artdeco *pagination* class) → "Next page loaded" → the same 11 cards were
+    // re-scanned every ~30 s for an hour (skips 615 → 1,562, 0 applies). The legacy pagination also
+    // marks the active page with aria-current="page" (not "true") and class "--active", so the
+    // numbered-page branches never matched there.
+    _isSearchPaginationButton(b) {
+      if (!b || b.offsetParent === null) return false;
+      if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+      const aria = (b.getAttribute('aria-label') || '');
+      if (/photo|image|carousel|slide|media/i.test(aria)) return false;
+      if (b.closest('.jobs-search__job-details, .jobs-details, #job-details, .job-view-layout, [class*="job-details" i], [class*="company-photos" i], [class*="carousel" i], dialog, [role="dialog"], .artdeco-modal, #interop-outlet')) return false;
+      return true;
+    }
+
+    _jobListIds() {
+      try { return [...this.getJobCards()].map(c => this.getCardJobId(c)).filter(Boolean); } catch (_) { return []; }
+    }
+
+    // Resolves true once at least one job id that was not in `before` is listed (page really changed).
+    async _waitListChanged(before, ms = 8000) {
+      const seen = new Set(before);
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        await u().wait(500);
+        const now = this._jobListIds();
+        if (now.length && now.some(id => !seen.has(id))) return true;
+      }
+      return false;
+    }
+
     // ── Next page ───────────────────────────────────────────────────────
     async goToNextPage() {
+      const beforeIds = this._jobListIds();
       // Try infinite scroll first (collections, search-results, newer UI)
       const container = document.querySelector('.jobs-search-results-list, .scaffold-layout__list-container, .jobs-search-results__list');
       if (container) {
@@ -1768,81 +1870,74 @@
         window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
         await u().wait(2000);
         const after = this.getJobCards().length;
-        if (after > before) {
+        const afterIds = this._jobListIds();
+        // v2.5.115: only "more jobs" when NEW job ids appeared (a re-render of the same list is not a page).
+        if (after > before && (!beforeIds.length || afterIds.some(id => !beforeIds.includes(id)))) {
           u().log(`Loaded ${after - before} more jobs (total: ${after})`);
           return true;
         }
       }
 
-      // VARIANT A pagination — Apr 2026 redesign uses obfuscated CSS classes
-      // (no `.jobs-search-pagination__pages` wrapper) but keeps stable
-      // aria attributes. Page buttons are <button aria-label="Page N">
-      // with `aria-current="true"` on the active page. Find current,
-      // click N+1.
+      // v2.5.115: "Page X of Y" (legacy /jobs/search/) — on the last page there is nothing to click.
+      try {
+        const st = document.querySelector('.jobs-search-pagination__page-state');
+        const m = st && (st.textContent || '').match(/(\d+)\D+(\d+)/);
+        if (m && parseInt(m[1], 10) >= parseInt(m[2], 10)) {
+          u().log(`Pagination: ${st.textContent.trim()} — last page reached`);
+          return false;
+        }
+      } catch (_) {}
+
+      // v2.5.115: numbered pages, both layouts. Active page = aria-current "true" (search-results) OR
+      // "page" (legacy /jobs/search/) OR the "--active" class. Then wait until new job ids are listed.
       const pageButtons = [...document.querySelectorAll('button[aria-label^="Page "]')]
-        .filter(b => b.offsetParent !== null);
+        .filter(b => /^Page \d+$/.test(b.getAttribute('aria-label') || '') && this._isSearchPaginationButton(b));
       if (pageButtons.length > 0) {
-        const activeBtn = pageButtons.find(b => b.getAttribute('aria-current') === 'true');
+        const activeBtn = pageButtons.find(b => /^(true|page)$/i.test(b.getAttribute('aria-current') || ''))
+          || pageButtons.find(b => /--active\b|\bactive\b|selected/.test(String(b.className || '')));
         if (activeBtn) {
           const currentPage = parseInt((activeBtn.getAttribute('aria-label').match(/Page (\d+)/) || [])[1] || '0');
           const nextPage = currentPage + 1;
-          const nextBtn = pageButtons.find(b =>
-            b.getAttribute('aria-label') === `Page ${nextPage}`
-          );
+          const nextBtn = pageButtons.find(b => b.getAttribute('aria-label') === `Page ${nextPage}`);
           if (nextBtn) {
             u().log(`Pagination: clicking Page ${nextPage} (was on Page ${currentPage})`);
             nextBtn.scrollIntoView({ block: 'center', behavior: 'smooth' });
             await u().wait(400);
             await u().click(nextBtn);
-            await u().wait(2500);
-            // Verify next page loaded by checking new card list
-            return true;
+            await u().wait(1500);
+            if (await this._waitListChanged(beforeIds)) return true;
+            u().log(`Pagination: Page ${nextPage} clicked but the job list did not change — stopping here`);
+            return false;
           }
           u().log(`Pagination: no Page ${nextPage} button — last page reached`);
+          // A search-results "Next" may still exist (pages beyond the visible window) — tried below.
         }
       }
 
-      // Legacy /jobs/search/ pagination wrapper
-      const pagination = document.querySelector('.jobs-search-pagination__pages');
-      if (pagination) {
-        const activeBtn = pagination.querySelector('button.active, button[aria-current="true"], li.active button, li.selected button');
-        if (activeBtn) {
-          const page = parseInt(activeBtn.textContent);
-          const nextBtn = pagination.querySelector(`button[aria-label="Page ${page + 1}"]`) ||
-                         pagination.querySelector(`button[data-test-pagination-page-btn="${page + 1}"]`);
-          if (nextBtn && nextBtn.offsetParent !== null) {
-            await u().click(nextBtn);
-            await u().wait(1000);
-            return true;
+      // v2.5.115: the list's own "Next" button only (legacy `jobs-search-pagination__button--next`
+      // "View next page", or a Next/Suivant button sitting next to the numbered page buttons).
+      const nextCandidates = [...document.querySelectorAll('button.jobs-search-pagination__button--next, button[aria-label="View next page" i], button[aria-label="Page suivante" i], button[aria-label="Next page" i], button, [role="button"]')];
+      for (const btn of nextCandidates) {
+        if (!this._isSearchPaginationButton(btn)) continue;
+        const text = (btn.textContent || '').trim().toLowerCase();
+        const aria = (btn.getAttribute('aria-label') || '').trim().toLowerCase();
+        const isListNext = btn.classList.contains('jobs-search-pagination__button--next')
+          || /^(view next page|page suivante|next page)$/.test(aria);
+        let besidePages = false;
+        if (!isListNext && /^(next|suivant|siguiente|weiter)$/.test(text) && (!aria || /^(next|suivant|next page)$/.test(aria))) {
+          // Same pagination block as the numbered "Page N" buttons (search-results: obfuscated classes).
+          let p = btn.parentElement;
+          for (let k = 0; k < 4 && p && !besidePages; k++, p = p.parentElement) {
+            besidePages = !!p.querySelector('button[aria-label^="Page "]');
           }
         }
-      }
-
-      // Fallback: "Next" button
-      const nextButtons = Array.from(document.querySelectorAll('button, [role="button"]'));
-      for (const btn of nextButtons) {
-        if (!btn.offsetParent) continue;
-        const text = btn.textContent.trim().toLowerCase();
-        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-        if (text === 'next' || text === 'suivant' || text === 'siguiente' ||
-            ariaLabel.includes('next') || ariaLabel.includes('suivant')) {
-          const isPagination = btn.closest('.jobs-search-pagination') ||
-                              btn.closest('[class*="pagination"]') ||
-                              btn.getAttribute('aria-label')?.includes('page');
-          if (isPagination) {
-            await u().click(btn);
-            await u().wait(1000);
-            return true;
-          }
-        }
-      }
-
-      // Icon-based next
-      const iconBtn = document.querySelector('.jobs-search-pagination button[aria-label*="Next"], .jobs-search-pagination button svg[class*="chevron-right"]')?.closest('button');
-      if (iconBtn && iconBtn.offsetParent !== null && !iconBtn.disabled) {
-        await u().click(iconBtn);
-        await u().wait(1000);
-        return true;
+        if (!isListNext && !besidePages) continue;
+        u().log('Pagination: clicking the list "Next" button');
+        await u().click(btn);
+        await u().wait(1500);
+        if (await this._waitListChanged(beforeIds)) return true;
+        u().log('Pagination: "Next" clicked but the job list did not change — stopping here');
+        return false;
       }
 
       return false;

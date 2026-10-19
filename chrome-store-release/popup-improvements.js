@@ -248,6 +248,17 @@ async function checkOnboarding() {
   // instead of being blocked on "connect your account".
   const { eam_session } = await chrome.storage.local.get(['eam_session']);
   const signedIn = !!(eam_session && eam_session.access_token);
+  // v2.5.109 (live gate 2026-10-12): a signed-in user whose info is already filled (set up before the wizard
+  // existed, or via the dashboard) got "Step 2 of 3 — Fill in your info" over the popup at every open.
+  if (signedIn) {
+    try {
+      const p = await chrome.storage.sync.get(['firstName', 'email', 'phone', 'yearsOfExperience']);
+      if (p && p.firstName && p.email && p.phone && String(p.yearsOfExperience || '').trim()) {
+        await chrome.storage.local.set({ onboardingCompleted: true });
+        return;
+      }
+    } catch (_) {}
+  }
   let step = Number(onboardingStep) || 0;
   if (signedIn && step < 1) step = 1;
   showOnboarding(step, signedIn);

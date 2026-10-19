@@ -23,6 +23,7 @@ const runtimeFiles = [
   'popup.css',
   'popup.js',
   'popup-improvements.js',
+  'apply-prefs-sync.js', // 2026-10-15: loaded by background.js (importScripts) + popup.html
 ];
 const runtimeDirs = ['core', 'adapters', 'icons', 'fonts'];
 

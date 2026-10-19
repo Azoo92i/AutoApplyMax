@@ -414,6 +414,13 @@
             <span class="toggle-label">Continue to the next results page<small>Off = stop at the end of the current page.</small></span>
           </label>
         </div>
+        <div class="toggle-group">
+          <label class="toggle">
+            <input type="checkbox" id="skillYearsAsTotal" checked>
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Answer skill-specific experience questions with my total years<small>"How many years of experience with X?" gets your total years. Off = years estimated per skill from your CV.</small></span>
+          </label>
+        </div>
       </div>
 
       <div class="group">
@@ -427,6 +434,18 @@
             <label for="noticePeriod">Notice period</label>
             <input type="text" id="noticePeriod" placeholder="1 month">
           </div>
+        </div>
+        <div class="form-group">
+          <label for="currentSalary">Current salary / CTC <span class="label-hint">optional — only when a form requires it</span></label>
+          <input type="number" id="currentSalary" placeholder="500000" min="0" step="1000">
+        </div>
+        <div class="form-group">
+          <label for="dateOfBirth">Date of birth <span class="label-hint">optional — only when a form requires it</span></label>
+          <input type="date" id="dateOfBirth">
+        </div>
+        <div class="form-group">
+          <label for="postalCode">Postal / ZIP code <span class="label-hint">optional — only when a form requires it</span></label>
+          <input type="text" id="postalCode" placeholder="E1 6AN" maxlength="12" autocomplete="postal-code">
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -534,7 +553,7 @@
         <li><a href="#" class="premium-feature-link" data-section="upgrade">AI answers screening questions during auto-apply — fewer skipped jobs</a></li>
         <li><a href="#" class="premium-feature-link" data-section="cv-generator">A tailored AI CV for every job</a></li>
         <li><a href="#" class="premium-feature-link" data-section="cover-letter">AI cover letters written from each job description</a></li>
-        <li><a href="#" class="premium-feature-link" data-section="upgrade">30 AI credits a month instead of 2</a></li>
+        <li><a href="#" class="premium-feature-link" data-section="upgrade">30 AI credits a month instead of 1</a></li>
       </ul>
       <a href="#" id="premium-upgrade-link" class="btn btn-primary btn-block btn-sm"><span>Go Premium — <span id="premium-price">$6.99</span>/month</span></a>
       <p class="premium-note">Cancel anytime.</p>
@@ -549,6 +568,7 @@
   </div>
 
   <script src="popup-improvements.js"></script>
+  <script src="apply-prefs-sync.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

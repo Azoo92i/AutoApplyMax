@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AutoApplyMax - Auto Apply, Autofill, AI Tailor Resume, ATS Checker",
-  "version": "2.5.97",
+  "version": "2.5.120",
   "description": "Auto-apply on LinkedIn, AI resume tailoring per job, ATS checker. Universal autofill on Indeed, Glassdoor, Workday, Greenhouse.",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
@@ -16,8 +16,7 @@
   ],
   "host_permissions": [
     "https://tgknaopmwbelterrhrnz.supabase.co/*",
-    "https://*/*",
-    "http://*/*"
+    "https://*/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -57,7 +56,9 @@
         "https://autoapplymax.com/*",
         "https://www.autoapplymax.com/*"
       ],
-      "js": ["content-marker.js"],
+      "js": [
+        "content-marker.js"
+      ],
       "run_at": "document_start"
     },
     {
@@ -97,38 +98,12 @@
       ],
       "js": [
         "core/utils.js",
+        "core/job-board-strings.js",
+        "core/form-filler.js",
         "core/ai-form.js",
         "core/ai-draft-manual.js"
       ],
       "run_at": "document_idle"
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "core/*.js",
-        "adapters/*.js",
-        "content-simple.js"
-      ],
-      "matches": [
-        "https://*.linkedin.com/*",
-        "https://*.indeed.com/*",
-        "https://smartapply.indeed.com/*",
-        "https://*.glassdoor.com/*",
-        "https://*.glassdoor.co.uk/*",
-        "https://*.glassdoor.fr/*",
-        "https://*.glassdoor.de/*",
-        "https://*.glassdoor.ca/*",
-        "https://*.glassdoor.com.au/*",
-        "https://*.welcometothejungle.com/*",
-        "https://boards.greenhouse.io/*",
-        "https://job-boards.greenhouse.io/*",
-        "https://jobs.lever.co/*",
-        "https://jobs.ashbyhq.com/*",
-        "https://*.myworkdayjobs.com/*",
-        "https://jobs.smartrecruiters.com/*",
-        "https://careers.smartrecruiters.com/*"
-      ]
     }
   ]
 }
