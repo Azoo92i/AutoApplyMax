@@ -482,14 +482,15 @@ async function renderRunExtras() {
     // only AI can answer (free plan). Once per session (ai-form re-arms it).
     const paid = isPremium || ['premium', 'pro', 'unlimited'].includes(plan) || ['premium', 'pro', 'unlimited'].includes(document.body.dataset.plan);
     if (n && !n.seen && (n.skipped || 0) > 0 && !running && !paid && !document.getElementById('ai-premium-notice')) {
-      const price = (document.getElementById('premium-price')?.textContent || '$6.99').trim();
+      // 2.5.122: the local price even before the profile loaded (the HTML default "$6.99" showed next to "€6.99" in FR).
+      const price = localPremiumPrice();
       const box = buildAlert({
         id: 'ai-premium-notice',
         tone: 'info',
         title: 'Some applications were skipped',
         body: (n.skipped > 1 ? n.skipped + ' applications' : 'One application') + ' had complex screening questions. Go Premium to let AI answer them.',
         // Resolved at click time: auth may still be loading when the notice renders.
-        action: { text: 'Go Premium — ' + price + '/mo', url: () => 'https://www.autoapplymax.com' + (document.body.dataset.auth === 'in' ? '/dashboard?section=upgrade&src=ext_ai_skipped' : '/premium?src=ext_ai_skipped') },
+        action: { text: 'Go Premium — ' + price + '/month', url: () => 'https://www.autoapplymax.com' + (document.body.dataset.auth === 'in' ? '/dashboard?section=upgrade&src=ext_ai_skipped' : '/premium?src=ext_ai_skipped') },
         onClose: async () => { try { await chrome.storage.local.set({ eam_ai_premium_notice: { ...n, seen: true } }); } catch (_) {} },
         closeOnAction: true,
       });
@@ -1542,11 +1543,18 @@ function guessCountryFromTimeZone() {
   } catch (_) {}
   return '';
 }
+let _localPriceCountry = '';
+function localPremiumPrice(country) {
+  const c = String(country || _localPriceCountry || guessCountryFromTimeZone() || '').toUpperCase();
+  return c === 'IN' ? '₹299' : EUR_COUNTRIES.has(c) ? '€6.99' : '$6.99';
+}
 function applyLocalPremiumPrice(country) {
-  const c = String(country || guessCountryFromTimeZone() || '').toUpperCase();
-  const price = c === 'IN' ? '₹299' : EUR_COUNTRIES.has(c) ? '€6.99' : '$6.99';
+  if (country) _localPriceCountry = String(country).toUpperCase();
+  const price = localPremiumPrice(country);
   const el = document.getElementById('premium-price');
   if (el) el.textContent = price;
+  // 2.5.122: every other price already on screen (Premium notices) follows the same currency.
+  try { document.querySelectorAll('#ai-premium-notice a, #ai-premium-notice button').forEach(b => { if (/[$€₹]s?d/.test(b.textContent)) b.textContent = b.textContent.replace(/[$€₹]s?[d.,]+/, price); }); } catch (_) {}
 }
 
 function showLoggedOutState() {
