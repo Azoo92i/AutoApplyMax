@@ -195,6 +195,7 @@ async function injectModularScripts(tabId, siteKey) {
     'core/job-board-strings.js',
     'core/site-registry.js',
     'adapters/base-adapter.js',
+    'core/question-intents.js', // 2026-10-19 "To complete" (skipped-job questions + saved answers)
     'core/ai-form.js',
     'core/form-filler.js',
     'core/engine.js'
@@ -568,7 +569,7 @@ async function loadConfig() {
   try {
     config = await chrome.storage.sync.get([
       'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'city', 'gender',
-      'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'autoNextPage', 'skillYearsAsTotal', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode',
+      'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'autoNextPage', 'skillYearsAsTotal', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode', 'nationality',
       'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense'
     ]);
     local = await chrome.storage.local.get(['resumeFile', 'resumeFileName']);
@@ -604,6 +605,8 @@ async function loadConfig() {
   if (dobEl) dobEl.value = config.dateOfBirth || '';
   const pcEl = document.getElementById('postalCode');
   if (pcEl) pcEl.value = config.postalCode || '';
+  const natEl = document.getElementById('nationality'); // 2026-10-19
+  if (natEl) natEl.value = config.nationality || '';
   document.getElementById('noticePeriod').value = config.noticePeriod || '';
   document.getElementById('blacklistKeywords').value = config.blacklistKeywords || '';
   // v2.5.92: on by default for new installs; a saved choice is always kept.
@@ -656,6 +659,7 @@ async function saveConfig() {
     currentSalary: document.getElementById('currentSalary')?.value || '',
     dateOfBirth: document.getElementById('dateOfBirth')?.value || '',
     postalCode: (document.getElementById('postalCode')?.value || '').trim(),
+    nationality: (document.getElementById('nationality')?.value || '').trim(),
     noticePeriod: document.getElementById('noticePeriod').value,
     blacklistKeywords: document.getElementById('blacklistKeywords').value,
     autoNextPage: document.getElementById('autoNextPage').checked,
@@ -674,7 +678,7 @@ async function saveConfig() {
 function setupAutoSave() {
   const inputFields = [
     'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode',
-    'city', 'gender', 'yearsOfExperience', 'maxYearsRequired', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode', 'blacklistKeywords',
+    'city', 'gender', 'yearsOfExperience', 'maxYearsRequired', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode', 'nationality', 'blacklistKeywords',
     'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense',
     'noticePeriod' // 2026-10-15: was missing — typing a notice period was only saved when another field changed
   ];

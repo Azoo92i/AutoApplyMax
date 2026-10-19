@@ -234,6 +234,8 @@
     updateSkippedCount();
     skipSession.skipped++;
     skipSession.reasons[key] = (skipSession.reasons[key] || 0) + 1;
+    // 2026-10-19: re-apply mode reports WHY its single job was skipped (engine _finishReapply).
+    try { if (window.EAM && window.EAM.utils) window.EAM.utils._lastSkipReason = key; } catch (_) {}
     _persistSkipSession();
   }
   // v2.5.112: jobs skipped because a setting is empty (expectedSalary / currentSalary / postalCode) → popup hint.

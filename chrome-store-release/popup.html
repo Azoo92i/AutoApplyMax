@@ -59,6 +59,11 @@
         <span id="run-skips-text"></span>
       </p>
 
+      <!-- 2026-10-19 "To complete": settings that block the most skips are empty (popup-to-complete.js) -->
+      <div class="tc-prerun" id="tc-prerun" hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <span><span id="tc-prerun-text"></span> <a href="#" id="tc-prerun-add">Add now</a></span>
+      </div>
       <button id="start-btn" class="btn btn-primary btn-block">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 4l14 8-14 8V4z" fill="currentColor"/></svg>
         Start auto-apply
@@ -152,6 +157,7 @@
       <button class="tab active" data-tab="personal" role="tab">Your info</button>
       <button class="tab" data-tab="settings" role="tab">Preferences</button>
       <button class="tab" data-tab="applied" role="tab">Applied</button>
+      <button class="tab tab-tc" data-tab="tocomplete" role="tab" id="tc-tab-btn">To complete<span class="tab-badge" id="tc-badge" hidden>0</span></button>
     </div>
 
     <!-- Your info tab -->
@@ -447,6 +453,10 @@
           <label for="postalCode">Postal / ZIP code <span class="label-hint">optional — only when a form requires it</span></label>
           <input type="text" id="postalCode" placeholder="E1 6AN" maxlength="12" autocomplete="postal-code">
         </div>
+        <div class="form-group">
+          <label for="nationality">Nationality <span class="label-hint">optional — only when a form requires it</span></label>
+          <input type="text" id="nationality" placeholder="Canadian" maxlength="60" autocomplete="off">
+        </div>
         <div class="form-row">
           <div class="form-group">
             <label for="visaSponsorship">Need visa sponsorship?</label>
@@ -530,6 +540,38 @@
       <p class="applied-note">Statuses, interviews and every application from all your devices live on your dashboard.</p>
     </div>
 
+    <!-- 2026-10-19 "To complete" tab (popup-to-complete.js) -->
+    <div id="tocomplete-tab" class="tab-content">
+      <p class="tab-intro">Jobs skipped because a form asked something we had no answer for. Nothing is guessed: answer once here, your answers are saved and reused on every form.</p>
+      <div class="tc-reapply-status" id="tc-reapply-status" hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+        <span id="tc-reapply-text"></span>
+        <button type="button" class="tc-link-btn" id="tc-reapply-cancel">Cancel</button>
+      </div>
+      <div class="group tc-questions-group" id="tc-questions-group" hidden>
+        <h3 class="group-title">Answer once</h3>
+        <div id="tc-questions"></div>
+        <button type="button" class="btn btn-primary btn-block btn-sm" id="tc-save">Save answers</button>
+        <p class="tc-status" id="tc-status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="tc-ready" id="tc-ready" hidden>
+        <button type="button" class="btn btn-primary btn-block" id="tc-reapply">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 4l14 8-14 8V4z" fill="currentColor"/></svg>
+          <span id="tc-reapply-label">Apply to these jobs now</span>
+        </button>
+        <small>Opens LinkedIn and applies to each ready job, one by one. Keep the tab open.</small>
+      </div>
+      <div class="tc-jobs-head" id="tc-jobs-head" hidden><h3>Saved jobs</h3><span id="tc-jobs-count"></span></div>
+      <ul class="tc-jobs" id="tc-jobs"></ul>
+      <div class="empty-state" id="tc-empty">
+        <p>Nothing to complete</p>
+        <small>When a form asks something we have no answer for, the job is saved here instead of being lost.</small>
+      </div>
+      <a href="#" id="tc-open-dashboard" class="tc-dash-link">Also on your dashboard → Applications
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg>
+      </a>
+    </div>
+
     <!-- Auto-save indicator -->
     <div class="autosave-indicator" id="autosave-indicator">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -569,6 +611,9 @@
 
   <script src="popup-improvements.js"></script>
   <script src="apply-prefs-sync.js"></script>
+  <script src="core/question-intents.js"></script>
+  <script src="to-complete.js"></script>
   <script src="popup.js"></script>
+  <script src="popup-to-complete.js"></script>
 </body>
 </html>

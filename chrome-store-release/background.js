@@ -10,6 +10,7 @@ let SUPABASE_URL = 'https://tgknaopmwbelterrhrnz.supabase.co';
 let SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRna25hb3Btd2JlbHRlcnJocm56Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NzYzMTcsImV4cCI6MjA5NDI1MjMxN30.2-V5Z6-ZIKOkC6RJEjdEEAVKjGYbSOdX_FSd3yPdE6Q';
 // 2026-10-15: application details ↔ account sync (messages syncApplyPrefs / applyPrefsEdited).
 try { importScripts('apply-prefs-sync.js'); } catch (e) { console.warn('[EAM] apply-prefs-sync not loaded', e && e.message); }
+try { importScripts('core/question-intents.js', 'to-complete.js'); } catch (e) { console.warn('[EAM] to-complete not loaded', e && e.message); } // 2026-10-19 "To complete" (skipped jobs + answers + re-apply queue)
 
 // v2.5.120 (security audit 2026-10-18 #12): the remote config may only point at OUR project — a tampered
 // supabase-config.json (or a poisoned cache) must never send the user's session to another backend.

@@ -3548,7 +3548,115 @@
   }
 
   // ─── Master fill function ─────────────────────────────────────────────
+  // ─── 2026-10-19 "To complete": answers the user typed once for a question a form asked before ─────────
+  // Saved per question (normalized text) in the To complete list (popup / dashboard) → config.customAnswers.
+  // Used ONLY for the exact same question, ONLY on an empty field, BEFORE the other rules (the user's own answer
+  // wins over the AI and the defaults). Nationality is a setting: any nationality question gets it.
+  // Never invents: no saved answer → the field goes through the normal rules (and back to To complete if required).
+  const _QI = () => (window.EAM && window.EAM.QuestionIntents) || window.AAMQuestionIntents || null;
+  function _fieldQuestionCandidates(el, modal) {
+    const out = [];
+    const push = (s) => { s = String(s || '').replace(/\s+/g, ' ').trim(); if (s && s.length < 400 && !out.includes(s)) out.push(s); };
+    try { push(getFieldQuestion(el, modal)); } catch (_) {}
+    try { if (el.id) push((modal.querySelector(`label[for="${CSS.escape(el.id)}"]`) || {}).textContent); } catch (_) {}
+    try { const fs = el.closest('fieldset'); const lg = fs && fs.querySelector('legend'); if (lg) push(lg.textContent); } catch (_) {}
+    push(el.getAttribute('aria-label'));
+    return out;
+  }
+  function savedAnswerFor(questions, config) {
+    const QI = _QI();
+    if (!QI) return '';
+    const ca = (config && config.customAnswers) || {};
+    for (const q of [].concat(questions || [])) {
+      const key = QI.questionKey(q);
+      if (key && ca[key] && String(ca[key].a || '').trim()) return { value: String(ca[key].a).trim(), question: q, source: 'saved' };
+    }
+    const nat = String((config && config.nationality) || '').trim();
+    if (nat) for (const q of [].concat(questions || [])) if (QI.classify(q).intent === 'nationality') return { value: nat, question: q, source: 'nationality' };
+    return '';
+  }
+  // Option whose text matches the saved answer: same text, then one starting with the other ("Native" ↔ "Native
+  // speaker"), then a 5+ letter common stem ("Canadian" ↔ "Canada").
+  function matchOptionText(texts, answer) {
+    const n = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const a = n(answer);
+    if (!a) return -1;
+    const T = texts.map(n);
+    let i = T.findIndex(t => t && t === a);
+    if (i >= 0) return i;
+    i = T.findIndex(t => t && t.length >= 2 && (t.startsWith(a + ' ') || a.startsWith(t + ' ')));
+    if (i >= 0) return i;
+    const stem = (x, y) => { let k = 0; while (k < x.length && k < y.length && x[k] === y[k]) k++; return k; };
+    let best = -1, bestK = 0;
+    T.forEach((t, j) => { const k = stem(t, a); if (k >= 5 && k >= 0.7 * Math.min(t.length, a.length) && k > bestK) { best = j; bestK = k; } });
+    return best;
+  }
+  function applySavedAnswers(modal, config) {
+    if (!modal) return 0;
+    const hasSaved = config && ((config.customAnswers && Object.keys(config.customAnswers).length) || String(config.nationality || '').trim());
+    if (!hasSaved) return 0;
+    let n = 0;
+    const shown = (el) => el && !el.disabled && (el.offsetParent !== null || el.getClientRects().length > 0);
+    for (const el of modal.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="file"]):not([type="submit"]):not([type="button"]), textarea, select')) {
+      if (!shown(el)) continue;
+      if (el.tagName === 'SELECT') {
+        const cur = el.selectedOptions && el.selectedOptions[0];
+        if (el.value && cur && !/^\s*(select an option|s[ée]lectionnez|selecciona|selecione|choose|choisir)\b/i.test(cur.textContent || '')) continue;
+      } else if (String(el.value || '').trim()) continue;
+      const hit = savedAnswerFor(_fieldQuestionCandidates(el, modal), config);
+      if (!hit) continue;
+      if (el.tagName === 'SELECT') {
+        const opts = Array.from(el.options).filter(o => o.value !== '' && !/^\s*(select an option|s[ée]lectionnez)/i.test(o.textContent || ''));
+        const i = matchOptionText(opts.map(o => o.textContent), hit.value);
+        if (i < 0) { u().log(`Saved answer "${hit.value.slice(0, 30)}" matches no option of "${hit.question.slice(0, 40)}" — left to the normal rules`); continue; }
+        if (_setSelect(el, opts[i].value)) { n++; u().log(`Saved answer (${hit.source}): "${hit.question.slice(0, 40)}" → ${opts[i].textContent.trim().slice(0, 40)}`); }
+      } else {
+        if (isTypeaheadInput && isTypeaheadInput(el)) continue; // typeaheads need a suggestion pick (location rules handle them)
+        u().fill(el, hit.value); n++;
+        u().log(`Saved answer (${hit.source}): "${hit.question.slice(0, 40)}" → ${hit.value.slice(0, 40)}`);
+      }
+    }
+    // Radio groups: the option whose label matches the saved answer, only when nothing is checked yet.
+    const groups = new Map();
+    for (const r of modal.querySelectorAll('input[type="radio"]')) { const k = r.name || ('_' + groups.size); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
+    for (const radios of groups.values()) {
+      if (radios.some(r => r.checked) || !radios.some(shown)) continue;
+      const fs = radios[0].closest('fieldset') || radios[0].parentElement;
+      const qs = _fieldQuestionCandidates(radios[0], modal);
+      const hit = savedAnswerFor(qs, config);
+      if (!hit) continue;
+      const labs = radios.map(r => { const l = _radioLabel(fs || modal, r); return ((l && l.textContent) || r.value || '').trim(); });
+      const i = matchOptionText(labs, hit.value);
+      if (i < 0) continue;
+      const l = _radioLabel(fs || modal, radios[i]);
+      (l || radios[i]).click();
+      if (!radios[i].checked) { radios[i].checked = true; radios[i].dispatchEvent(new Event('change', { bubbles: true })); }
+      n++; u().log(`Saved answer (${hit.source}): "${hit.question.slice(0, 40)}" → ${labs[i].slice(0, 40)}`);
+    }
+    return n;
+  }
+  // Field shape for the To complete list (labels only, never values): select / radio options so the user answers
+  // with one of the form's real choices.
+  function fieldMeta(el, modal) {
+    try {
+      if (!el) return null;
+      if (el.tagName === 'SELECT') {
+        const o = Array.from(el.options).map(x => String(x.textContent || '').replace(/\s+/g, ' ').trim()).filter(t => t && !/^(select an option|s[ée]lectionnez)/i.test(t));
+        // Long lists (countries, schools…): the user types the answer, matched to an option at fill time.
+        return o.length <= 12 ? { kind: 'select', options: o } : { kind: 'select', many: o.length };
+      }
+      if (el.type === 'radio') {
+        const grp = el.name ? Array.from((modal || document).querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)) : [el];
+        const fs = el.closest('fieldset') || el.parentElement;
+        return { kind: 'radio', options: grp.map(r => { const l = _radioLabel(fs || modal || document, r); return String((l && l.textContent) || r.value || '').replace(/\s+/g, ' ').trim(); }).filter(Boolean).slice(0, 12) };
+      }
+      if (el.tagName === 'TEXTAREA') return { kind: 'textarea' };
+      return { kind: el.type === 'number' || el.getAttribute('inputmode') === 'numeric' ? 'number' : el.type === 'date' ? 'date' : 'text' };
+    } catch (_) { return null; }
+  }
+
   async function fillFormStep(modal, config) {
+    try { const k = applySavedAnswers(modal, config); if (k) u().log(`${k} field(s) answered from your saved answers`); } catch (e) { u().log('Saved answers error: ' + (e && e.message)); }
     try { await fillExperienceForms(modal, config); } catch (e) { u().log('Work experience fill error: ' + (e && e.message)); }
     await fillTextInputs(modal, config);
     await fillResumeInputs(modal);
@@ -3573,6 +3681,8 @@
     if (key && st._unknownFieldLabels.map(s => s.toLowerCase()).includes(key)) return;
     st._unknownFieldLabels.push(String(label || '').trim().slice(0, 120));
     st._unknownFieldFails = (st._unknownFieldFails || 0) + 1;
+    // 2026-10-19: field shape (select / radio options) for the To complete list.
+    if (el && key) { st._unknownFieldMeta = st._unknownFieldMeta || {}; const m = fieldMeta(el, modal); if (m) st._unknownFieldMeta[key] = m; }
   }
 
   // ─── v2.5.105: repair LinkedIn validation errors before giving up ──────
@@ -3766,6 +3876,10 @@
 
   // ─── Export ───────────────────────────────────────────────────────────
   window.EAM.FormFiller = {
+    applySavedAnswers, // 2026-10-19 "To complete"
+    savedAnswerFor,
+    matchOptionText,
+    fieldMeta,
     repairValidationErrors,
     validationErrorDetails,
     fieldErrorElements,

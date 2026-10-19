@@ -24,6 +24,8 @@ const runtimeFiles = [
   'popup.js',
   'popup-improvements.js',
   'apply-prefs-sync.js', // 2026-10-15: loaded by background.js (importScripts) + popup.html
+  'to-complete.js', // 2026-10-19: "To complete" (background.js importScripts + popup.html)
+  'popup-to-complete.js', // 2026-10-19: popup UI of "To complete"
 ];
 const runtimeDirs = ['core', 'adapters', 'icons', 'fonts'];
 

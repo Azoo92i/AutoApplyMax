@@ -46,10 +46,14 @@
     { key: 'willingToRelocate', def: 'yes', kind: 'yesno' },
     { key: 'driversLicense', def: 'yes', kind: 'yesno' },
     { key: 'gender', kind: 'gender' },
+    // 2026-10-19 ("To complete"): current city (user_profiles.city — the DB trigger now moves apply_prefs_updated_at
+    // on city changes) and nationality (apply_prefs.nationality): the settings behind most location / nationality skips.
+    { key: 'city', col: 'city', kind: 'city' },
+    { key: 'nationality', kind: 'nationality' },
   ];
   const KEYS = FIELDS.map(f => f.key);
   const BY_KEY = Object.fromEntries(FIELDS.map(f => [f.key, f]));
-  const SELECT = 'id,apply_prefs,apply_prefs_updated_at,years_of_experience,expected_salary';
+  const SELECT = 'id,apply_prefs,apply_prefs_updated_at,years_of_experience,expected_salary,city';
 
   // Canonical string for a value ('' = not set). Mirrors the DB trigger's sanitizer.
   function normalize(key, v) {
@@ -65,6 +69,9 @@
       case 'gender': s = s.toLowerCase(); return ['male', 'female', 'non_binary', 'other'].includes(s) ? s : '';
       case 'date': return /^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s) ? s : '';
       case 'postal': return /^[A-Za-z0-9][A-Za-z0-9 -]{0,11}$/.test(s) ? s : '';
+      case 'city': return s.replace(/[<>]/g, '').slice(0, 80);
+      // Mirrors the DB trigger: letters, spaces and . , ' ( ) - only, max 60.
+      case 'nationality': return s.replace(/[^\p{L}\s.,'()-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60);
       default: return s.slice(0, 40);
     }
   }
