@@ -102,7 +102,7 @@
         }
       } catch (_) {}
       // 2.5.124 "Application answers": the exact questions that blocked it are recorded (never asked mid-apply, never
-      // guessed) so the user answers them once (popup chip / dashboard Smart Profile) for the next forms.
+      // guessed) so the user answers them once (popup chip / dashboard Application answers) for the next forms.
       if (/^(questions|form_invalid|step_limit)$/.test(reason)) {
         try { _recordMissingAnswers(reason, (u()._unknownFieldLabels || []).concat(empty), u()._missingSettings || [], Object.assign({}, emptyMeta, u()._unknownFieldMeta || {})); } catch (_) {}
       }
@@ -130,7 +130,7 @@
 
   // ─── 2.5.124 "Application answers" ─────────────────────────────────────────────────────────────────────
   // An application skipped on unanswerable REQUIRED questions records those questions (labels only, service worker
-  // application-answers.js): the popup chip and the dashboard Smart Profile list them until the user answers once.
+  // application-answers.js): the popup chip and the dashboard Application answers section list them until the user answers once.
   // Unsupported questions (uploads, cover letter, experience sub-forms) are never recorded.
   function _recordMissingAnswers(reason, labels, missing, meta) {
     const st = u();
@@ -143,7 +143,7 @@
     // One in-page hint per run for questions only a job form asks (settings hints keep their own notice).
     if (!st._tcNoticeShown && st._showBotNotice && !(missing || []).length && questions.some(q => q.intent === 'custom')) {
       st._tcNoticeShown = true;
-      try { st._showBotNotice('A question had no saved answer', 'This job asked a question we have no answer for, so it was skipped (never guessed). Answer it once on your AutoApplyMax dashboard → Smart Profile → Application answers; it is reused on every later form. The run goes on.', 'info'); } catch (_) {}
+      try { st._showBotNotice('A question had no saved answer', 'This job asked a question we have no answer for, so it was skipped (never guessed). Answer it once on your AutoApplyMax dashboard → Application answers; it is reused on every later form. The run goes on.', 'info'); } catch (_) {}
     }
   }
 

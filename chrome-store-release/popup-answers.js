@@ -1,6 +1,6 @@
 // popup-answers.js — popup UI of "Application answers" (ext 2.5.124, 2026-10-20). Data + rules: application-answers.js.
 // Header chip "Profile incomplete" → popover: what is missing, "Complete now" (focuses the popup field — Your info /
-// Preferences — or, when only questions a job form asked are left, opens the dashboard Smart Profile answers block),
+// Preferences — or, when only questions a job form asked are left, opens the dashboard "Application answers" section),
 // "Later" (hidden 24 h) and a link to every answer on the dashboard. Missing popup fields get an amber outline.
 // Labels come from job forms (untrusted page text) → DOM APIs + textContent only, never innerHTML.
 (function () {

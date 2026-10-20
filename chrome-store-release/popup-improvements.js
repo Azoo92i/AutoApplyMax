@@ -225,11 +225,12 @@ const OB_STEPS = [
   },
   {
     icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
-    title: 'Fill in your info',
-    text: 'Auto-apply answers each application with these details. The more complete they are, the fewer applications get skipped.',
-    points: ['Name, email, phone and city', 'Years of experience and expected salary', 'Work authorization, notice period, relocation'],
-    primary: { label: 'Fill my info', action: 'personal' },
-    secondary: { label: 'Review my full profile on the dashboard', url: '/dashboard.html#smart-profile' },
+    // 2.5.124: "Set your application answers" — live checklist with progress (obAnswersState), never blocking.
+    title: 'Set your application answers',
+    text: 'The extension fills job applications for you with these answers. It never guesses: a missing answer means the application is skipped.',
+    checklist: true,
+    primary: { label: 'Set my answers', action: 'answers' },
+    secondary: { label: 'All your answers on the dashboard', url: '/dashboard#application-answers' },
   },
   {
     icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l14 8-14 8V4z"/></svg>',
@@ -240,6 +241,23 @@ const OB_STEPS = [
     secondary: { label: 'Finish — I\'ll open LinkedIn later', finishOnly: true },
   },
 ];
+
+// Checklist of the answers job forms ask most (same rules as the "Profile incomplete" chip, application-answers.js).
+let OB_ANS = [];
+const OB_FIELD = { expectedSalary: ['expectedSalary', 'settings'], currentSalary: ['currentSalary', 'settings'], city: ['city', 'personal'], phone: ['phone', 'personal'],
+  noticePeriod: ['noticePeriod', 'settings'], legallyAuthorized: ['legallyAuthorized', 'settings'] };
+async function obAnswersState() {
+  try {
+    const s = await chrome.storage.sync.get(['expectedSalary', 'currentSalary', 'city', 'phone', 'noticePeriod', 'legallyAuthorized', 'country', 'phoneCountryCode']);
+    const l = await chrome.storage.local.get(['accountProfile']);
+    const AA = window.AAMAnswers;
+    const india = (AA && AA.countryHintFrom ? AA.countryHintFrom(s, l) : '') === 'IN';
+    const has = (k) => String(s[k] == null ? '' : s[k]).trim() !== '';
+    OB_ANS = [['expectedSalary', 'Expected salary'], ...(india ? [['currentSalary', 'Current CTC']] : []), ['city', 'Current city'], ['phone', 'Phone'],
+      ['noticePeriod', 'Notice period'], ['legallyAuthorized', 'Work authorization']].map(([key, label]) => ({ key, label, done: has(key) }));
+  } catch (_) { OB_ANS = []; }
+  return OB_ANS;
+}
 
 async function checkOnboarding() {
   const { onboardingCompleted, onboardingStep } = await chrome.storage.local.get(['onboardingCompleted', 'onboardingStep']);
@@ -252,8 +270,9 @@ async function checkOnboarding() {
   // existed, or via the dashboard) got "Step 2 of 3 — Fill in your info" over the popup at every open.
   if (signedIn) {
     try {
-      const p = await chrome.storage.sync.get(['firstName', 'email', 'phone', 'yearsOfExperience']);
-      if (p && p.firstName && p.email && p.phone && String(p.yearsOfExperience || '').trim()) {
+      const p = await chrome.storage.sync.get(['firstName', 'email', 'phone', 'yearsOfExperience', 'expectedSalary', 'city']);
+      // 2.5.124: … and the answers that block most skips (expected salary, city) — else step 2 shows the checklist.
+      if (p && p.firstName && p.email && p.phone && String(p.yearsOfExperience || '').trim() && String(p.expectedSalary || '').trim() && String(p.city || '').trim()) {
         await chrome.storage.local.set({ onboardingCompleted: true });
         return;
       }
@@ -261,6 +280,7 @@ async function checkOnboarding() {
   }
   let step = Number(onboardingStep) || 0;
   if (signedIn && step < 1) step = 1;
+  await obAnswersState();
   showOnboarding(step, signedIn);
 }
 
@@ -297,10 +317,28 @@ function showOnboarding(startStep = 0, signedIn = false) {
     try { showToast('Fill in your info — it saves automatically. Reopen the extension to finish setup.', 'info', 5000); } catch (_) {}
   }
 
+  // 2.5.124: "Set my answers" → the first missing answer in the popup (Your info / Preferences); the step stays on the
+  // checklist until the user moves on, the "Profile incomplete" chip keeps the reminder afterwards.
+  async function goAnswers() {
+    step = 2; saveStep(step);
+    overlay.remove();
+    try { if (signedIn && window.prefillFromAccountFromSession) await window.prefillFromAccountFromSession(); } catch (_) {}
+    await obAnswersState();
+    const first = OB_ANS.find(x => !x.done) || OB_ANS[0];
+    const [id, tab] = OB_FIELD[first ? first.key : 'expectedSalary'] || ['expectedSalary', 'settings'];
+    document.querySelector('[data-tab="' + tab + '"]')?.click();
+    setTimeout(() => { const el = document.getElementById(id); if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); } }, 80);
+    try { showToast('Your answers save automatically. The “Profile incomplete” chip shows what is still missing.', 'info', 5000); } catch (_) {}
+  }
+
   function render() {
     const s = OB_STEPS[step];
     const progress = OB_STEPS.map((_, i) => '<span class="' + (i <= step ? 'done' : '') + '"></span>').join('');
     const points = s.points ? '<ul class="ob-points">' + s.points.map(p => '<li>' + p + '</li>').join('') + '</ul>' : '';
+    const nDone = OB_ANS.filter(x => x.done).length;
+    const check = s.checklist && OB_ANS.length ? '<div class="ob-check" aria-label="' + nDone + ' of ' + OB_ANS.length + ' answers set">' +
+      '<div class="ob-check-head"><span>' + nDone + ' of ' + OB_ANS.length + ' set</span><span class="ob-check-bar"><i style="width:' + Math.round(100 * nDone / OB_ANS.length) + '%"></i></span></div>' +
+      '<ul>' + OB_ANS.map(x => '<li class="' + (x.done ? 'ok' : 'todo') + '">' + (x.done ? UI_ICON.check : '<span class="ob-dot" aria-hidden="true"></span>') + '<span>' + x.label + '</span>' + (x.done ? '' : '<em>missing</em>') + '</li>').join('') + '</ul></div>' : '';
     const note = s.note ? '<div class="ob-note">' + s.note + '</div>' : '';
     const done = (step === 0 && signedIn) ? '<div class="ob-done">' + UI_ICON.check + ' ' + s.doneWhenSignedIn + '</div>' : '';
     const primaryLabel = (step === 0 && signedIn) ? 'Continue' : s.primary.label;
@@ -316,7 +354,7 @@ function showOnboarding(startStep = 0, signedIn = false) {
         '<h2 class="ob-title">' + s.title + '</h2>' +
         done +
         '<p class="ob-text">' + s.text + '</p>' +
-        points + note +
+        points + check + note +
         '<div class="ob-actions">' +
           '<button type="button" class="btn btn-primary btn-block" id="ob-primary">' + primaryLabel + '</button>' +
           // "Continue without an account" carries the same weight as sign-up
@@ -331,6 +369,7 @@ function showOnboarding(startStep = 0, signedIn = false) {
     overlay.querySelector('#ob-primary').addEventListener('click', async () => {
       if (step === 0 && signedIn) { step = 1; saveStep(step); render(); return; }
       if (s.primary.action === 'personal') { await goFillInfo(); return; }
+      if (s.primary.action === 'answers') { await goAnswers(); return; }
       if (s.primary.linkedin) {
         let url = 'https://www.linkedin.com/jobs/search/?f_AL=true';
         try { if (window.buildLinkedInSearchUrl) url = await window.buildLinkedInSearchUrl(); } catch (_) {}
@@ -446,6 +485,10 @@ function showHelp(startStep = 0) {
     const last = step === HELP_STEPS.length - 1;
     const progress = HELP_STEPS.map((_, i) => '<span class="' + (i <= step ? 'done' : '') + '"></span>').join('');
     const points = s.points ? '<ul class="ob-points">' + s.points.map(p => '<li>' + p + '</li>').join('') + '</ul>' : '';
+    const nDone = OB_ANS.filter(x => x.done).length;
+    const check = s.checklist && OB_ANS.length ? '<div class="ob-check" aria-label="' + nDone + ' of ' + OB_ANS.length + ' answers set">' +
+      '<div class="ob-check-head"><span>' + nDone + ' of ' + OB_ANS.length + ' set</span><span class="ob-check-bar"><i style="width:' + Math.round(100 * nDone / OB_ANS.length) + '%"></i></span></div>' +
+      '<ul>' + OB_ANS.map(x => '<li class="' + (x.done ? 'ok' : 'todo') + '">' + (x.done ? UI_ICON.check : '<span class="ob-dot" aria-hidden="true"></span>') + '<span>' + x.label + '</span>' + (x.done ? '' : '<em>missing</em>') + '</li>').join('') + '</ul></div>' : '';
     const links = s.links ? '<div class="help-links">' + s.links.map((l, i) => '<a href="#" data-help-link="' + i + '">' + l.label + '&nbsp;→</a>').join('') + '</div>' : '';
     overlay.innerHTML =
       '<div class="ob-top">' +

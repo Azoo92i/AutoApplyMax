@@ -882,3 +882,14 @@ body.has-pf-chip .wordmark { display: none; } /* room for the chip: the icon alo
 .pf-pop-dash:hover { text-decoration: underline; }
 /* 2.5.124: popup fields that block applications while empty (popup-answers.js) */
 .pf-need { border-color: #f59e0b !important; box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18); }
+
+/* 2.5.124 first-run step 2: "Set your application answers" checklist */
+.ob-check { margin-bottom: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--bg-primary); }
+.ob-check-head { display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
+.ob-check-bar { flex: 1; height: 6px; border-radius: var(--radius-full); background: var(--bg-tertiary); overflow: hidden; }
+.ob-check-bar i { display: block; height: 100%; background: var(--primary); border-radius: var(--radius-full); }
+.ob-check ul { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.ob-check li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-primary); }
+.ob-check li svg { flex-shrink: 0; color: var(--success); }
+.ob-check li em { margin-left: auto; font-style: normal; font-size: 11px; font-weight: 600; color: var(--warning-fg); }
+.ob-dot { width: 10px; height: 10px; flex-shrink: 0; margin: 0 2px; border-radius: 50%; border: 2px solid #f59e0b; }

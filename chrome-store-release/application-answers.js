@@ -3,8 +3,8 @@
 // skipped (as before) and the exact question is RECORDED (labels only, never a value). What is missing is shown in ONE
 // place per surface:
 //   - popup: the "Profile incomplete" header chip + popover (Complete now → the popup field; questions only a form can
-//     ask → the dashboard Smart Profile "Application answers" block) and the amber "!" toolbar badge;
-//   - dashboard: Smart Profile → Application answers (+ a "!" on the Smart Profile sidebar item).
+//     ask → the dashboard "Application answers" section) and the amber "!" toolbar badge;
+//   - dashboard: the "Application answers" section (+ a "!" on its sidebar item).
 // No saved-jobs list, no re-apply queue (Théo 2026-10-20: "saved jobs, we don't care much").
 //
 // Self-contained like apply-prefs-sync.js:
@@ -186,7 +186,7 @@
     return { custom, errors };
   }
 
-  const DASHBOARD_ANSWERS_URL = 'https://www.autoapplymax.com/dashboard?focus=answers#smart-profile';
+  const DASHBOARD_ANSWERS_URL = 'https://www.autoapplymax.com/dashboard?focus=answers#application-answers';
 
   // ─── chrome glue ──────────────────────────────────────────────────────────────────────────────────────
   const hasChrome = typeof chrome !== 'undefined' && chrome && chrome.storage && chrome.runtime;
