@@ -855,7 +855,7 @@
     if (_VARIABLE_PAY_Q.test(q)) return '';
     const raw = String((config && (isCur ? config.currentSalary : config.expectedSalary)) || '').trim();
     if (!raw) return '';
-    // 2.5.122: a fresher's current CTC is 0 (typed by the user in To complete / Preferences) → "0" in any unit.
+    // 2.5.122: a fresher's current CTC is 0 (typed by the user in Preferences / the dashboard answers) → "0" in any unit.
     if (isCur && /^0+$/.test(raw)) return '0';
     const p = parsePayAmount(raw);
     const country = String(profileCountry(config) || '').toLowerCase().trim();
@@ -2117,7 +2117,7 @@
   // 2.5.122 (Théo 2026-10-19): a level question for a language the CV does NOT list ("What is your proficiency
   // level in Arabic?", CV = French / English) got "Professional" — an invented claim. Now: the LOWEST non-zero level
   // the form offers (A1 / Beginner / Elementary / Basic…, never "None", never above Intermediate); if the form has
-  // none, the question stays unanswered (required → the job goes to "To complete"). The yes/no form ("Do you speak
+  // none, the question stays unanswered (required → the skip records the question for the user to answer once). The yes/no form ("Do you speak
   // Arabic?") follows the Oui rule instead (Yes) — 'spoken language' is no longer a No-allowed reason.
   // When the CV lists no language at all, English and the main language of the user's country keep the old
   // default (Professional) — an empty languages section does not mean the user speaks neither.
@@ -3585,11 +3585,11 @@
   }
 
   // ─── Master fill function ─────────────────────────────────────────────
-  // ─── 2026-10-19 "To complete": answers the user typed once for a question a form asked before ─────────
-  // Saved per question (normalized text) in the To complete list (popup / dashboard) → config.customAnswers.
+  // ─── 2026-10-19 (2.5.124 "Application answers"): answers the user typed once for a question a form asked ──
+  // Saved per question (normalized text) on the dashboard Smart Profile → config.customAnswers.
   // Used ONLY for the exact same question, ONLY on an empty field, BEFORE the other rules (the user's own answer
   // wins over the AI and the defaults). Nationality is a setting: any nationality question gets it.
-  // Never invents: no saved answer → the field goes through the normal rules (and back to To complete if required).
+  // Never invents: no saved answer → the field goes through the normal rules (and recorded again if required).
   const _QI = () => (window.EAM && window.EAM.QuestionIntents) || window.AAMQuestionIntents || null;
   function _fieldQuestionCandidates(el, modal) {
     const out = [];
@@ -3672,7 +3672,7 @@
     }
     return n;
   }
-  // Field shape for the To complete list (labels only, never values): select / radio options so the user answers
+  // Field shape for the recorded question (labels only, never values): select / radio options so the user answers
   // with one of the form's real choices.
   function fieldMeta(el, modal) {
     try {
@@ -3718,7 +3718,7 @@
     if (key && st._unknownFieldLabels.map(s => s.toLowerCase()).includes(key)) return;
     st._unknownFieldLabels.push(String(label || '').trim().slice(0, 120));
     st._unknownFieldFails = (st._unknownFieldFails || 0) + 1;
-    // 2026-10-19: field shape (select / radio options) for the To complete list.
+    // 2026-10-19: field shape (select / radio options) for the recorded question.
     if (el && key) { st._unknownFieldMeta = st._unknownFieldMeta || {}; const m = fieldMeta(el, modal); if (m) st._unknownFieldMeta[key] = m; }
   }
 
@@ -3913,7 +3913,7 @@
 
   // ─── Export ───────────────────────────────────────────────────────────
   window.EAM.FormFiller = {
-    applySavedAnswers, // 2026-10-19 "To complete"
+    applySavedAnswers, // 2026-10-19 "Application answers"
     savedAnswerFor,
     matchOptionText,
     fieldMeta,

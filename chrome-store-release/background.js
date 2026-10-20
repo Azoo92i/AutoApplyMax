@@ -10,7 +10,7 @@ let SUPABASE_URL = 'https://tgknaopmwbelterrhrnz.supabase.co';
 let SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRna25hb3Btd2JlbHRlcnJocm56Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NzYzMTcsImV4cCI6MjA5NDI1MjMxN30.2-V5Z6-ZIKOkC6RJEjdEEAVKjGYbSOdX_FSd3yPdE6Q';
 // 2026-10-15: application details ↔ account sync (messages syncApplyPrefs / applyPrefsEdited).
 try { importScripts('apply-prefs-sync.js'); } catch (e) { console.warn('[EAM] apply-prefs-sync not loaded', e && e.message); }
-try { importScripts('core/question-intents.js', 'to-complete.js'); } catch (e) { console.warn('[EAM] to-complete not loaded', e && e.message); } // 2026-10-19 "To complete" (skipped jobs + answers + re-apply queue)
+try { importScripts('core/question-intents.js', 'application-answers.js'); } catch (e) { console.warn('[EAM] application-answers not loaded', e && e.message); } // 2026-10-19 "To complete" (skipped jobs + answers + re-apply queue)
 
 // v2.5.120 (security audit 2026-10-18 #12): the remote config may only point at OUR project — a tampered
 // supabase-config.json (or a poisoned cache) must never send the user's session to another backend.
@@ -928,9 +928,9 @@ async function refreshRunBadge() {
     if (p && p.until > Date.now()) { text = 'WAIT'; color = '#d97706'; }
     else if (!isRunning && d && Date.now() - d < 16 * 3600 * 1000) { text = 'MAX'; color = '#059669'; }
     else {
-      // 2.5.123: amber "!" while the profile lacks fields that block applications (unless "Later" < 24 h)
-      // or "To complete" jobs wait for an answer. Run states above always win.
-      const TC = self.AAMToComplete;
+      // 2.5.123: amber "!" while the profile lacks fields that block applications or a question a job form asked has
+      // no saved answer (2.5.124), unless "Later" < 24 h. Run states above always win.
+      const TC = self.AAMAnswers;
       if (TC && TC.attentionState) {
         const [sy, lo] = await Promise.all([chrome.storage.sync.get(TC.BADGE_SYNC_KEYS), chrome.storage.local.get(TC.BADGE_LOCAL_KEYS)]);
         if (TC.attentionState(sy, lo).badge) { text = '!'; color = '#d97706'; }
@@ -942,7 +942,7 @@ async function refreshRunBadge() {
 }
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && (changes.eam_pause_state || changes.eam_daily_limit_at || changes.isRunning)) refreshRunBadge();
-  const TC = self.AAMToComplete; // 2.5.123: profile / To complete changes repaint the "!" badge
+  const TC = self.AAMAnswers; // 2.5.123: profile / recorded questions / answers changes repaint the "!" badge
   if (TC && TC.BADGE_SYNC_KEYS && ((area === 'sync' && TC.BADGE_SYNC_KEYS.some(k => changes[k])) || (area === 'local' && TC.BADGE_LOCAL_KEYS.some(k => changes[k])))) refreshRunBadge();
 });
 chrome.runtime.onStartup?.addListener?.(refreshRunBadge);

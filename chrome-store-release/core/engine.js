@@ -101,9 +101,10 @@
           const l = lab(el); if (l && !empty.includes(l)) { empty.push(l); try { emptyMeta[l.trim().toLowerCase().slice(0, 120)] = FF && FF.fieldMeta ? FF.fieldMeta(el, modal) : null; } catch (_) {} }
         }
       } catch (_) {}
-      // 2026-10-19 "To complete": the job is kept with the exact questions that blocked it (never asked mid-apply).
+      // 2.5.124 "Application answers": the exact questions that blocked it are recorded (never asked mid-apply, never
+      // guessed) so the user answers them once (popup chip / dashboard Smart Profile) for the next forms.
       if (/^(questions|form_invalid|step_limit)$/.test(reason)) {
-        try { _saveToComplete(reason, (u()._unknownFieldLabels || []).concat(empty), u()._missingSettings || [], Object.assign({}, emptyMeta, u()._unknownFieldMeta || {})); } catch (_) {}
+        try { _recordMissingAnswers(reason, (u()._unknownFieldLabels || []).concat(empty), u()._missingSettings || [], Object.assign({}, emptyMeta, u()._unknownFieldMeta || {})); } catch (_) {}
       }
       // v2.5.109: where the form was stuck (native-dialog step_limit skips showed no error and no empty
       // field — ops alert 2026-10-12): progress ("3/4 pages" / "75 percent"), footer button labels,
@@ -127,44 +128,23 @@
     } catch (_) {}
   }
 
-  // ─── 2026-10-19 "To complete" ───────────────────────────────────────────────────────────────────────
-  // A job skipped on unanswerable REQUIRED questions is saved (service worker, to-complete.js) with those questions
-  // (labels only) so the user answers once and re-applies. Unsupported questions (uploads, cover letter, experience
-  // sub-forms) never make a job "to complete" on their own.
-  function _saveToComplete(reason, labels, missing, meta) {
+  // ─── 2.5.124 "Application answers" ─────────────────────────────────────────────────────────────────────
+  // An application skipped on unanswerable REQUIRED questions records those questions (labels only, service worker
+  // application-answers.js): the popup chip and the dashboard Smart Profile list them until the user answers once.
+  // Unsupported questions (uploads, cover letter, experience sub-forms) are never recorded.
+  function _recordMissingAnswers(reason, labels, missing, meta) {
     const st = u();
     const QI = (window.EAM && window.EAM.QuestionIntents) || window.AAMQuestionIntents;
     if (!QI) return;
     const questions = QI.questionsForSkip(labels, missing, meta);
     if (!questions.length) return;
-    const ji = st.currentJobInfo || {};
-    const id = String(ji.jobId || (String(ji.link || '').match(/\/jobs\/view\/(\d{5,20})/) || [])[1] || st._currentJobId || '');
-    if (!/^\d{5,20}$/.test(id)) return;
-    const entry = { jobId: id, url: `https://www.linkedin.com/jobs/view/${id}/`, title: ji.title || '', company: ji.company || '', location: ji.location || '', questions, reason };
-    try { chrome.runtime.sendMessage({ type: 'toCompleteAdd', entry }, () => void chrome.runtime.lastError); } catch (_) {}
-    st._tcSavedRun = (st._tcSavedRun || 0) + 1;
-    st.log(`Saved to "To complete": ${questions.length} question(s) to answer once (${questions.map(q => q.label.slice(0, 40)).join(' · ')})`);
-    // One in-page hint per run (settings hints keep their own notice).
-    if (!st._tcNoticeShown && st._showBotNotice && !(missing || []).length) {
+    try { chrome.runtime.sendMessage({ type: 'answersRecord', questions, reason }, () => void chrome.runtime.lastError); } catch (_) {}
+    st.log(`Recorded ${questions.length} question(s) with no saved answer — answer once in the extension or on your dashboard (${questions.map(q => q.label.slice(0, 40)).join(' · ')})`);
+    // One in-page hint per run for questions only a job form asks (settings hints keep their own notice).
+    if (!st._tcNoticeShown && st._showBotNotice && !(missing || []).length && questions.some(q => q.intent === 'custom')) {
       st._tcNoticeShown = true;
-      try { st._showBotNotice('Saved to "To complete" — not lost', 'This job asked a question we have no answer for. Open the extension → To complete, answer it once, then click "Apply to these jobs now". The run goes on.', 'info'); } catch (_) {}
+      try { st._showBotNotice('A question had no saved answer', 'This job asked a question we have no answer for, so it was skipped (never guessed). Answer it once on your AutoApplyMax dashboard → Smart Profile → Application answers; it is reused on every later form. The run goes on.', 'info'); } catch (_) {}
     }
-  }
-
-  // Re-apply mode: report this job's result to the service worker, then stop this page's run.
-  async function _finishReapply() {
-    const st = u(); const r = st._reapply;
-    if (!r || r.reported) return;
-    let result = 'not_found', why = '';
-    if (r.done) {
-      let applied = 0; try { applied = st.getSkipSession ? st.getSkipSession().applied : 0; } catch (_) {}
-      if (applied > (r.appliedBefore || 0)) result = 'applied';
-      else { why = String(st._lastSkipReason || ''); result = /^(already_applied|applied_pane|applied_nomodal)$/.test(why) ? 'already_applied' : 'skipped'; }
-    }
-    r.reported = true;
-    st.log(`Re-apply result for job ${r.jobId}: ${result}${why ? ' (' + why + ')' : ''}`);
-    try { chrome.runtime.sendMessage({ type: 'reapplyResult', jobId: r.jobId, result, reason: why }, () => void chrome.runtime.lastError); } catch (_) {}
-    await stopBot('Re-apply: ' + result, result === 'not_found' ? { title: 'This job is not in the list LinkedIn showed', body: 'It may be closed. It stays in "To complete" — open it from there to check.', tone: 'info' } : null);
   }
 
   // v2.5.119: a job skipped because a setting is empty (current CTC, expected salary, postal code, birth date, gender) —
@@ -183,7 +163,7 @@
     const n = ks.reduce((a, k) => a + st._missNoticeKeys[k], 0);
     st._missNotice = {
       title: 'Add ' + list + ' to apply to more jobs',
-      body: (n === 1 ? 'A job asked for ' : n + ' jobs asked for ') + list + ' and it is empty in your settings, so they were saved in "To complete" (never guessed, not lost). Open the AutoApplyMax extension → To complete, answer once, then "Apply to these jobs now". Auto-apply keeps going meanwhile.',
+      body: (n === 1 ? 'A job asked for ' : n + ' jobs asked for ') + list + ' and it is empty in your settings, so they were skipped (never guessed). Open the AutoApplyMax extension → Preferences and fill it in; auto-apply keeps going meanwhile.',
     };
     st._showBotNotice(st._missNotice.title, st._missNotice.body, 'warn');
   }
@@ -648,15 +628,6 @@
           // v2.5.115: a job already evaluated in this run is never re-evaluated (live 2026-10-16: the same
           // 11 cards were re-opened every ~30 s for an hour after a wrong "next page", skips 615 → 1,562).
           const _cardJobId = adapter.getCardJobId ? adapter.getCardJobId(jobCard) : null;
-          // 2026-10-19 re-apply mode ("To complete" → Apply to these jobs now): only the queued job, once.
-          if (state._reapply) {
-            if (state._reapply.done) break;
-            if (!_cardJobId || String(_cardJobId) !== state._reapply.jobId) continue;
-            state._reapply.done = true;
-            try { state._reapply.appliedBefore = state.getSkipSession ? state.getSkipSession().applied : 0; } catch (_) { state._reapply.appliedBefore = 0; }
-            state._lastSkipReason = '';
-            state._evaluatedJobIds && state._evaluatedJobIds.delete(_cardJobId);
-          }
           if (_cardJobId) {
             if (state._evaluatedJobIds.has(_cardJobId)) {
               if (state._resumedJobIds && state._resumedJobIds.has(_cardJobId)) { _pageResumed++; console.log('[EAM][mainLoop] job ' + _cardJobId + ' already checked before Stop — skipped without re-opening'); }
@@ -1023,7 +994,7 @@
             // (every throttle used to silently lose the job that hit it).
             // v2.5.103: resume on the NEXT offer (the one that hit the throttle tends to
             // re-trigger it); this job is retried once at the end of the list.
-            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { if (state._reapply) state._reapply.done = false; jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
+            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
             continue;
           }
 
@@ -1067,7 +1038,7 @@
               if (!keepGoing) break;
               // v2.5.103: resume on the NEXT offer (the one that hit the throttle tends to
             // re-trigger it); this job is retried once at the end of the list.
-            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { if (state._reapply) state._reapply.done = false; jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
+            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
               continue;
             }
             // Modal didn't appear after applyBtn click — most common cause is
@@ -1380,7 +1351,7 @@
           // (never counted as a skip), the next offer is tried after the pause.
           if (_submitErr) {
             if (_submitErr === 'stop' || !state.isRunning) break;
-            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { if (state._reapply) state._reapply.done = false; jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
+            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
             continue;
           }
           if (step === 999 && state.isRunning) {
@@ -1403,9 +1374,6 @@
 
         // Bot stopped during processing?
         if (!state.isRunning) break;
-
-        // 2026-10-19 re-apply mode: one job per page load — report the result, stop (the service worker opens the next).
-        if (state._reapply) { await _finishReapply(); break; }
 
         // v2.5.115: pages in a row without a single Easy Apply job → stop with a clear message instead of
         // paging through an unfiltered search for hours.
@@ -1682,7 +1650,7 @@
       if (b) lines.push({ kind: 'skips', text: T.skipped(sess.skipped, b) });
     }
     // v2.5.119: settings that caused skips stay visible in the end-of-run notice.
-    try { if (state._missNotice) lines.push({ kind: 'skips', text: state._missNotice.title + ' — saved in To complete (extension).' }); } catch (_) {}
+    try { if (state._missNotice) lines.push({ kind: 'skips', text: state._missNotice.title + ' — Preferences in the extension.' }); } catch (_) {}
     let link = null;
     const daily = /daily limit/i.test(String(reason));
     if (daily) {
@@ -1697,14 +1665,6 @@
 
   async function stopBot(reason, notice) {
     const state = u();
-    // 2026-10-19: a re-apply run stopped before its job was evaluated (user Stop, daily limit, throttle stop…) ends
-    // the whole re-apply queue — the remaining jobs go back to "To complete".
-    try {
-      if (state._reapply && !state._reapply.reported) {
-        state._reapply.reported = true;
-        chrome.runtime.sendMessage({ type: 'reapplyResult', jobId: state._reapply.jobId, result: 'stopped', reason: String(reason || '').slice(0, 80) }, () => void chrome.runtime.lastError);
-      }
-    } catch (_) {}
     let _sum = null;
     try { _sum = await _runSummary(reason); } catch (_) {}
     try {
@@ -1839,24 +1799,19 @@
               'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense',
               'autoNextPage', 'skillYearsAsTotal', 'nationality'
             ]);
-            // 2026-10-19 "To complete": answers saved on the dashboard are pulled first (max 3 s, never blocks Start),
+            // 2.5.124 "Application answers": answers saved on the dashboard are pulled first (max 3 s, never blocks Start),
             // then the user's saved answers to custom questions (exact question only — FormFiller.applySavedAnswers).
             try {
               await Promise.race([
-                new Promise(res => chrome.runtime.sendMessage({ type: 'toCompleteSync' }, r => { void chrome.runtime.lastError; res(r || null); })),
+                new Promise(res => chrome.runtime.sendMessage({ type: 'answersSync' }, r => { void chrome.runtime.lastError; res(r || null); })),
                 new Promise(res => setTimeout(res, 3000)),
               ]);
               const { eam_custom_answers } = await chrome.storage.local.get(['eam_custom_answers']);
               state.config.customAnswers = (eam_custom_answers && typeof eam_custom_answers === 'object') ? eam_custom_answers : {};
               const nSaved = Object.keys(state.config.customAnswers).length;
-              if (nSaved) state.log(`${nSaved} saved answer(s) from your To complete list loaded`);
+              if (nSaved) state.log(`${nSaved} saved answer(s) to job-form questions loaded`);
             } catch (_) { state.config.customAnswers = {}; }
-            // Re-apply mode (popup / dashboard "Apply to these jobs now"): only this LinkedIn job id, no pagination;
-            // the result goes back to the service worker (to-complete.js), which opens the next job.
-            state._reapply = (request.reapply && /^\d{5,20}$/.test(String(request.reapply.jobId || '')))
-              ? { jobId: String(request.reapply.jobId), done: false, reported: false } : null;
             state._tcNoticeShown = false;
-            if (state._reapply) state.log(`Re-apply mode: job ${state._reapply.jobId} only`);
             // v2.5.113 (Théo 2026-10-15): "How many years of experience with X?" → the TOTAL years. Popup toggle, default ON.
             state.config.skillYearsAsTotal = state.config.skillYearsAsTotal !== false;
             // v2.5.87: ground AI screening answers in the real CV (education,

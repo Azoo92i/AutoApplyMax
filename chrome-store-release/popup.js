@@ -195,7 +195,7 @@ async function injectModularScripts(tabId, siteKey) {
     'core/job-board-strings.js',
     'core/site-registry.js',
     'adapters/base-adapter.js',
-    'core/question-intents.js', // 2026-10-19 "To complete" (skipped-job questions + saved answers)
+    'core/question-intents.js', // 2026-10-19 (2.5.124 "Application answers"): blocking questions recorded + saved answers
     'core/ai-form.js',
     'core/form-filler.js',
     'core/engine.js'
@@ -1048,13 +1048,8 @@ function renderSkipBreakdown(sess) {
   if (parts.length) {
     const hint = document.createElement('span');
     hint.className = 'run-skips-missing';
-    // 2.5.122: these jobs are saved in "To complete" (not lost) — point there instead of Preferences.
-    hint.textContent = ' — ' + parts.join(', ') + ': saved in ';
-    const go = document.createElement('a');
-    go.href = '#'; go.className = 'run-skips-tc'; go.textContent = 'To complete';
-    go.addEventListener('click', (e) => { e.preventDefault(); const t = document.querySelector('.tab[data-tab="tocomplete"]'); if (t) t.click(); });
-    hint.appendChild(go);
-    hint.appendChild(document.createTextNode('. Answer once there to apply to these jobs.'));
+    // 2.5.124: the field is outlined in amber in Preferences and listed by the "Profile incomplete" chip.
+    hint.textContent = ' — ' + parts.join(', ') + ': add it in Preferences to apply to these jobs.';
     txt.appendChild(hint);
   }
 }

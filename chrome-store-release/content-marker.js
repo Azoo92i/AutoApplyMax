@@ -27,7 +27,7 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
 
   function pushDataToPage() {
     chrome.storage.local.get(
-      ['appliedJobs', 'appliedCount', 'skippedCount', 'aam_pending_jd', 'eam_session', 'eam_to_complete', 'eam_reapply'],
+      ['appliedJobs', 'appliedCount', 'skippedCount', 'aam_pending_jd', 'eam_session'],
       (local) => {
         chrome.storage.sync.get(
           [
@@ -59,15 +59,9 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
               legallyAuthorized: sync.legallyAuthorized || '',
               willingToRelocate: sync.willingToRelocate || '',
               driversLicense: sync.driversLicense || '',
-              // 2026-10-19 "To complete": the dashboard only offers "Apply to these jobs now" to an extension that
-              // understands eam-todo-reapply; counts only (the jobs themselves are read from the account).
-              features: ['to-complete'],
-              toComplete: (() => {
-                const items = (local.eam_to_complete && Array.isArray(local.eam_to_complete.items)) ? local.eam_to_complete.items : [];
-                const re = local.eam_reapply;
-                return { open: items.filter(x => x && (x.status === 'open' || x.status === 'not_found')).length,
-                  reapply: re && re.active ? { done: Number(re.idx) || 0, total: (re.queue || []).length } : null };
-              })()
+              // 2.5.124 "Application answers": this extension records blocking questions + takes custom answers
+              // from the dashboard (eam-custom-answers).
+              features: ['answers']
             };
 
             let el = document.getElementById('eam-extension-data');
@@ -163,7 +157,7 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
   // wait up to 5s for the fresh token — long enough for supabase-js to
   // auto-refresh with its stale localStorage token and invalidate the
   // extension's rotated refresh_token via Supabase's rotation policy.
-  const PUSHED_LOCAL_KEYS = ['appliedJobs', 'appliedCount', 'skippedCount', 'aam_pending_jd', 'eam_session', 'eam_to_complete', 'eam_reapply'];
+  const PUSHED_LOCAL_KEYS = ['appliedJobs', 'appliedCount', 'skippedCount', 'aam_pending_jd', 'eam_session'];
   const PUSHED_SYNC_KEYS = ['firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'city', 'yearsOfExperience',
     'expectedSalary', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense'];
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -213,23 +207,12 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
         chrome.storage.local.remove('eam_session');
       }
     } else if (event.data?.type === 'eam-custom-answers') {
-      // 2026-10-19 "To complete" (dashboard): the user's answers to custom questions. Shape-checked again in the
-      // service worker (to-complete.js normalizeAnswers: key ≤160, question ≤300, answer ≤500, no markup).
+      // 2.5.124 "Application answers" (dashboard Smart Profile): the user's answers to custom questions. Shape-checked
+      // again in the service worker (application-answers.js normalizeCustom: key ≤160, question ≤300, answer ≤500).
       const list = Array.isArray(event.data.answers) ? event.data.answers.slice(0, 50) : [];
       const custom = list.filter(a => a && typeof a.key === 'string' && typeof a.question === 'string' && typeof a.answer === 'string')
         .map(a => ({ key: a.key.slice(0, 160), question: a.question.slice(0, 300), answer: a.answer.slice(0, 500) }));
-      if (custom.length) try { chrome.runtime.sendMessage({ type: 'toCompleteSaveAnswers', custom }, () => void chrome.runtime.lastError); } catch (_) {}
-    } else if (event.data?.type === 'eam-todo-reapply') {
-      // Only LinkedIn /jobs/view/<id>/ URLs survive (to-complete.js canonicalJob); the user's own click on the dashboard.
-      const jobs = Array.isArray(event.data.jobs) ? event.data.jobs.slice(0, 50).filter(j => j && typeof j === 'object')
-        .map(j => ({ jobId: String(j.jobId || '').slice(0, 20), url: String(j.url || '').slice(0, 300), title: String(j.title || '').slice(0, 200),
-          company: String(j.company || '').slice(0, 200), location: String(j.location || '').slice(0, 200) })) : [];
-      // 2.5.122: the answer goes back to the page (eam-todo-reapply-result) — a refusal (already running, LinkedIn daily
-      // limit, nothing to apply) lets the dashboard put its rows back to "open" instead of leaving them "queued".
-      const reply = (r) => { try { window.postMessage({ type: 'eam-todo-reapply-result', ok: !!(r && r.ok), reason: String((r && r.reason) || (r ? '' : 'no_response')).slice(0, 40), total: Number(r && r.total) || 0 }, window.location.origin); } catch (_) {} };
-      if (jobs.length) try { chrome.runtime.sendMessage({ type: 'toCompleteReapply', jobs }, (r) => { void chrome.runtime.lastError; reply(r); }); } catch (_) { reply(null); }
-    } else if (event.data?.type === 'eam-todo-changed') {
-      try { chrome.runtime.sendMessage({ type: 'toCompleteSync' }, () => void chrome.runtime.lastError); } catch (_) {}
+      if (custom.length) try { chrome.runtime.sendMessage({ type: 'answersSaveCustom', custom }, () => void chrome.runtime.lastError); } catch (_) {}
     } else if (event.data?.type === 'eam-profile-update') {
       // Bridge Settings save from dashboard.js to chrome.storage.sync — direct
       // chrome.storage.sync.set from the dashboard's web-page context is a NOOP
@@ -244,7 +227,7 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
         'driversLicense', 'maxYearsRequired', 'noticePeriod', 'blacklistKeywords',
         // 2026-10-15: dashboard Smart Profile "Application details" (apply-prefs-sync.js).
         'currentSalary', 'dateOfBirth', 'postalCode', 'gender',
-        // 2026-10-19: "To complete" answers + Smart Profile.
+        // 2026-10-19: Smart Profile "Application answers" / Application details.
         'nationality'
       ];
       const update = {};
