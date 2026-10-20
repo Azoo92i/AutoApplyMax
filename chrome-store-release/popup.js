@@ -1041,17 +1041,8 @@ function renderSkipBreakdown(sess) {
   });
   box.title = C.tip;
   box.hidden = false;
-  // v2.5.112: jobs skipped only because a setting is empty → say which one.
-  const miss = sess.missing || {};
-  const MISS_COPY = { expectedSalary: 'your expected salary', currentSalary: 'your current salary / CTC', postalCode: 'your postal code', dateOfBirth: 'your date of birth', gender: 'your gender' };
-  const parts = Object.keys(MISS_COPY).filter(k => miss[k] > 0).map(k => miss[k] + ' asked ' + MISS_COPY[k]);
-  if (parts.length) {
-    const hint = document.createElement('span');
-    hint.className = 'run-skips-missing';
-    // 2.5.124: the field is outlined in amber in Preferences and listed by the "Profile incomplete" chip.
-    hint.textContent = ' — ' + parts.join(', ') + ': add it in Preferences to apply to these jobs.';
-    txt.appendChild(hint);
-  }
+  // 2.5.125: jobs skipped because an answer is missing → one line under it ("N jobs skipped because your <field> is
+  // missing → Add"), rendered by popup-answers.js (it knows what is STILL missing right now).
 }
 
 // Listen for updates from content script

@@ -237,8 +237,11 @@
     _persistSkipSession();
   }
   // v2.5.112: jobs skipped because a setting is empty (expectedSalary / currentSalary / postalCode) → popup hint.
+  // 2.5.125: also the recorded-question intents (city, nationality, custom…) + missingJobs = jobs skipped for a missing answer
+  // (popup end-of-run line "N jobs skipped because your <field> is missing → Add"). Called once per skipped job.
   function noteMissingSettings(keys) {
     skipSession.missing = skipSession.missing || {};
+    if ((keys || []).length) skipSession.missingJobs = (skipSession.missingJobs || 0) + 1;
     for (const k of keys || []) { const key = String(k).slice(0, 20); skipSession.missing[key] = (skipSession.missing[key] || 0) + 1; }
     _persistSkipSession();
   }
@@ -247,7 +250,7 @@
     _persistSkipSession();
   }
   function getSkipSession() {
-    return { at: skipSession.at, applied: skipSession.applied, skipped: skipSession.skipped, reasons: { ...skipSession.reasons }, missing: { ...(skipSession.missing || {}) } };
+    return { at: skipSession.at, applied: skipSession.applied, skipped: skipSession.skipped, reasons: { ...skipSession.reasons }, missing: { ...(skipSession.missing || {}) }, missingJobs: skipSession.missingJobs || 0 };
   }
   // reasons {key:n} → { applied, not_ea, filters, questions, other, total }
   function groupSkipReasons(reasons) {

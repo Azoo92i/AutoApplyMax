@@ -103,8 +103,9 @@
       } catch (_) {}
       // 2.5.124 "Application answers": the exact questions that blocked it are recorded (never asked mid-apply, never
       // guessed) so the user answers them once (popup chip / dashboard Application answers) for the next forms.
+      let recIntents = [];
       if (/^(questions|form_invalid|step_limit)$/.test(reason)) {
-        try { _recordMissingAnswers(reason, (u()._unknownFieldLabels || []).concat(empty), u()._missingSettings || [], Object.assign({}, emptyMeta, u()._unknownFieldMeta || {})); } catch (_) {}
+        try { recIntents = _recordMissingAnswers(reason, (u()._unknownFieldLabels || []).concat(empty), u()._missingSettings || [], Object.assign({}, emptyMeta, u()._unknownFieldMeta || {})); } catch (_) {}
       }
       // v2.5.109: where the form was stuck (native-dialog step_limit skips showed no error and no empty
       // field — ops alert 2026-10-12): progress ("3/4 pages" / "75 percent"), footer button labels,
@@ -121,7 +122,10 @@
       const base = { reason, errs: errs.slice(0, 3), unknown: fails, empty, repaired: u()._repairTried || 0 };
       // v2.5.112: settings whose absence caused the skip (expectedSalary / currentSalary / postalCode) → popup hint.
       const miss = (u()._missingSettings || []).slice(0, 3);
-      if (miss.length) { base.miss = miss; try { u().noteMissingSettings && u().noteMissingSettings(miss); } catch (_) {} try { _missingSettingNotice(miss); } catch (_) {} }
+      // 2.5.125: settings + recorded-question intents, counted once per job (popup end-of-run line)
+      const runMiss = Array.from(new Set(miss.concat(Array.isArray(recIntents) ? recIntents : []))).slice(0, 8);
+      if (runMiss.length) { try { u().noteMissingSettings && u().noteMissingSettings(runMiss); } catch (_) {} }
+      if (miss.length) { base.miss = miss; try { _missingSettingNotice(miss); } catch (_) {} }
       const fit = (o) => JSON.stringify(o).length <= 780;
       if (!fit(base)) { base.unknown = base.unknown.map(s => s.slice(0, 50)); base.empty = base.empty.map(s => s.slice(0, 60)); base.errs = base.errs.map(e => ({ msg: String(e.msg || '').slice(0, 60), label: String(e.label || '').slice(0, 60) })); }
       _diag('form_skip_detail', fit({ ...base, ...where }) ? { ...base, ...where } : base);
@@ -137,7 +141,7 @@
     const QI = (window.EAM && window.EAM.QuestionIntents) || window.AAMQuestionIntents;
     if (!QI) return;
     const questions = QI.questionsForSkip(labels, missing, meta);
-    if (!questions.length) return;
+    if (!questions.length) return [];
     try { chrome.runtime.sendMessage({ type: 'answersRecord', questions, reason }, () => void chrome.runtime.lastError); } catch (_) {}
     st.log(`Recorded ${questions.length} question(s) with no saved answer — answer once in the extension or on your dashboard (${questions.map(q => q.label.slice(0, 40)).join(' · ')})`);
     // One in-page hint per run for questions only a job form asks (settings hints keep their own notice).
@@ -145,6 +149,7 @@
       st._tcNoticeShown = true;
       try { st._showBotNotice('A question had no saved answer', 'This job asked a question we have no answer for, so it was skipped (never guessed). Answer it once on your AutoApplyMax dashboard → Smart Profile → Answers for auto-apply; it is reused on every later form. The run goes on.', 'info'); } catch (_) {}
     }
+    return questions.map(q => q.intent);
   }
 
   // v2.5.119: a job skipped because a setting is empty (current CTC, expected salary, postal code, birth date, gender) —
