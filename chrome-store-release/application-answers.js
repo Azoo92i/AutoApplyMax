@@ -186,7 +186,7 @@
     return { custom, errors };
   }
 
-  const DASHBOARD_ANSWERS_URL = 'https://www.autoapplymax.com/dashboard?focus=answers#application-answers';
+  const DASHBOARD_ANSWERS_URL = 'https://www.autoapplymax.com/dashboard#smart-profile?focus=answers';
 
   // ─── chrome glue ──────────────────────────────────────────────────────────────────────────────────────
   const hasChrome = typeof chrome !== 'undefined' && chrome && chrome.storage && chrome.runtime;

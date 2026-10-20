@@ -143,7 +143,7 @@
     // One in-page hint per run for questions only a job form asks (settings hints keep their own notice).
     if (!st._tcNoticeShown && st._showBotNotice && !(missing || []).length && questions.some(q => q.intent === 'custom')) {
       st._tcNoticeShown = true;
-      try { st._showBotNotice('A question had no saved answer', 'This job asked a question we have no answer for, so it was skipped (never guessed). Answer it once on your AutoApplyMax dashboard → Application answers; it is reused on every later form. The run goes on.', 'info'); } catch (_) {}
+      try { st._showBotNotice('A question had no saved answer', 'This job asked a question we have no answer for, so it was skipped (never guessed). Answer it once on your AutoApplyMax dashboard → Smart Profile → Answers for auto-apply; it is reused on every later form. The run goes on.', 'info'); } catch (_) {}
     }
   }
 
