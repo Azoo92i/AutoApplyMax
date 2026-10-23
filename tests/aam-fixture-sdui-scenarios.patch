@@ -1,0 +1,74 @@
+--- a/scripts/ext-fixture-e2e.js
++++ b/scripts/ext-fixture-e2e.js
+@@ -122,6 +122,24 @@
+         'Were you referred to work at LOCAL, and if so, by whom?': 'No', 'Major / Field of study': 'Management', 'How soon would you be able to start if presented with a job offer?': '1 month' } } },
+     CTCHINT: { desc: 'required "current CTC" not in the settings → skipped, never guessed, and the page tells the user to add it', path: '/jobs/search/', layout: 'legacy', modal: 'artdeco',
+       jobs: [J({ company: 'Ctc', questions: [Q.currentCtc(), Q.privacy()] }), J({ company: 'Normal' })], expect: { submitsIds: [1], noticeRe: 'current salary / CTC' } },
++    // 2.5.126 — native SDUI dialog: a filled-but-invalid answer gets a bare <p> message in the field helper (no role / class /
++    // aria-invalid); the page before Review never advances. 2.5.120: step_limit after 10 Review clicks, no error seen.
++    SDUI_CTC: { desc: 'SDUI page before Review: current CTC "4.5 LPA" in a numeric text field → bare-<p> numeric error → repaired to 450000, submitted', path: '/jobs/search-results/', layout: 'new', eaControl: 'a', modal: 'native', fieldStyle: 'sdui',
++      cfg: { currentSalary: '4.5 LPA' },
++      jobs: [J({ company: 'SduiCtc', questions: [{ kind: 'text', label: 'What is your current CTC?', required: true, numeric: true, numericMsg: 'Enter a decimal number larger than 0.0' }, Q.privacy()] }), J({ company: 'Normal' })],
++      expect: { submits: 2, answers: { 'What is your current CTC?': '450000' }, consoleNotRe: ['10 form steps without reaching Submit'] } },
++    SDUI_NUM: { desc: 'SDUI page before Review: "Yes" left in a numeric question (whole number 0-99, translated message keeps "whole") → repaired, submitted', path: '/jobs/search-results/', layout: 'new', eaControl: 'a', modal: 'native', fieldStyle: 'sdui',
++      jobs: [J({ company: 'SduiNum', questions: [{ kind: 'text', label: 'Have you led a SAP S/4HANA rollout?', value: 'Yes', required: true, numeric: true, numericMsg: '0 - 99 arasında bir whole sayısı girin' }, Q.privacy()] }), J({ company: 'Normal' })],
++      expect: { submits: 2, consoleNotRe: ['10 form steps without reaching Submit'] } },
++    SDUI_UNFIXABLE: { desc: 'SDUI: an error we cannot repair (LinkedIn-saved non-numeric current CTC, no CTC setting) → discarded fast as form_invalid with the message, not 10 Review clicks', path: '/jobs/search-results/', layout: 'new', eaControl: 'a', modal: 'native', fieldStyle: 'sdui',
++      jobs: [J({ company: 'SduiBad', questions: [{ kind: 'text', label: 'What is your current CTC?', value: 'ask me', required: true, numeric: true, numericMsg: 'The answer must be a number' }, Q.privacy()] }), J({ company: 'Normal' })],
++      expect: { submitsIds: [1], consoleNotRe: ['10 form steps without reaching Submit'], consoleRe: ['Validation error'] } },
++    SDUI_ODD: { desc: 'SDUI: Review refused with a message in no known wording → seen from the 2nd unchanged click, not repairable → form_invalid fast (not 10 clicks)', path: '/jobs/search-results/', layout: 'new', eaControl: 'a', modal: 'native', fieldStyle: 'sdui',
++      jobs: [J({ company: 'SduiOdd', questions: [{ kind: 'text', label: 'Kundennummer', value: 'abc', required: true, numeric: true, numericMsg: 'Antwort ungültig – nur Ziffern' }, Q.privacy()] }), J({ company: 'Normal' })],
++      expect: { submitsIds: [1], consoleRe: ['Validation error after Next click'], consoleNotRe: ['10 form steps without reaching Submit'] } },
++    SDUI_SILENT: { desc: 'SDUI: Review refused with NO message → given up after 4 unchanged clicks (step_limit), next job applied', path: '/jobs/search-results/', layout: 'new', eaControl: 'a', modal: 'native', fieldStyle: 'sdui',
++      jobs: [J({ company: 'SduiSilent', questions: [{ kind: 'text', label: 'Reference code', value: 'abc', required: true, numeric: true, silent: true }, Q.privacy()] }), J({ company: 'Normal' })],
++      expect: { submitsIds: [1], consoleRe: ['without the form moving', 'Form refused 4× in a row'] } },
+     DUP: { desc: 'duplicate/already-applied jobs skipped (badge + silent pane status)', path: '/jobs/search-results/', layout: 'new', eaControl: 'a', modal: 'native',
+       jobs: [J({ company: 'Badge', applied: true }), J({ company: 'Silent', silentlyApplied: true }), J({ company: 'Fresh' })], expect: { submitsIds: [2] } },
+   };
+@@ -148,7 +166,7 @@
+   const ext = await ctx.newPage();
+   await ext.goto(`chrome-extension://${extId}/popup.html`, { waitUntil: 'domcontentloaded' });
+   const E = (fn, arg) => ext.evaluate(fn, arg);
+-  const cfg = { ...PERSONA, autoNextPage: scn.autoNextPage === false ? false : true, gender: scn.gender || PERSONA.gender };
++  const cfg = { ...PERSONA, ...(scn.cfg || {}), autoNextPage: scn.autoNextPage === false ? false : true, gender: scn.gender || PERSONA.gender };
+   // popup.js writes autoNextPage:true on first open when it is undefined (async) — let that
+   // land before our clear+set, otherwise it can overwrite autoNextPage:false (NOPAGE flake).
+   await ext.waitForTimeout(2500);
+--- a/tests/fixtures/linkedin-ea/fixture.js
++++ b/tests/fixtures/linkedin-ea/fixture.js
+@@ -272,6 +272,10 @@
+   if (f.kind === 'file') { // upload-only step (no stored résumé card to pick)
+     return '<div class="fb-dash-form-element" data-fx-field="'+i+'"><label for="'+id+'">'+lab+'</label><input id="'+id+'" type="file" accept=".pdf,.doc,.docx"'+req+'></div>';
+   }
++  if (SCN.fieldStyle === 'sdui' && (f.kind === 'text' || !f.kind)) { // 2.5.126: SDUI native-dialog text question (live DOM 2026-10-13, Y-VOIR 3/4 page)
++    return '<div data-fx-field="'+i+'"><p>'+esc(f.label)+(f.required ? '*' : '')+'</p><div componentkey="easyApplyFieldFocus_ea_validation_p2_0_'+i+'"><div><input'+(f.required ? ' required' : '')+' id="'+id+'" dir="auto" aria-describedby="'+id+'-info" aria-label="'+esc(f.label)+'" type="text" value="'+esc(f.value||'')+'"></div>'
++      + '<div data-testid="text-input-helper-text" id="'+id+'-info"><div><p aria-live="polite" aria-atomic="true"><span aria-hidden="true">0/20</span><span>0 of 20 characters</span></p></div></div></div></div>';
++  }
+   return '<div class="fb-dash-form-element" data-fx-field="'+i+'"><label for="'+id+'" class="artdeco-text-input--label">'+lab+'</label><input id="'+id+'" class="artdeco-text-input--input" type="'+(f.type||'text')+'"'+req+' value="'+esc(f.value||'')+'"></div>';
+ }
+ 
+@@ -299,7 +303,7 @@
+     // determinate div[role=progressbar][aria-valuenow] ("0% / 50% / 100%", live 2026-09-26).
+     + '<div class="mbody">'+(SCN.modal === 'artdeco'
+         ? '<progress class="artdeco-completeness-meter-linear__progress-element" max="100" value="'+pct+'"></progress><span role="note" aria-label="Your job application progress is at '+pct+' percent.">'+pct+'%</span>'
+-        : '<div role="progressbar" aria-valuenow="'+pct+'" aria-valuemin="0" aria-valuemax="100">'+pct+'%</div>')+body+'</div>'
++        : '<div role="progressbar" aria-valuenow="'+pct+'" aria-valuemin="0" aria-valuemax="100">'+pct+'%</div>'+(SCN.fieldStyle === 'sdui' ? '<p>'+(stepIdx+1)+'/'+steps.length+' pages</p>' : ''))+body+'</div>'
+     + '<div class="mfoot">'+(stepIdx>0?'<button class="btn" type="button" aria-label="Back to previous step" data-fx-back><span>Back</span></button>':'')+btn+'</div>';
+   modalEl.querySelector('[aria-label="Dismiss"]').onclick = () => askDiscard();
+   { const fa = modalEl.querySelector('[data-fx-follow][role="checkbox"]'); if (fa) fa.onclick = () => fa.setAttribute('aria-checked', fa.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); }
+@@ -332,12 +336,15 @@
+ function onNext(){
+   const { j, steps } = modalCtx; const s = steps[stepIdx];
+   modalEl.querySelectorAll('.artdeco-inline-feedback--error').forEach(e => e.remove());
++  modalEl.querySelectorAll('[data-fx-err]').forEach(e => e.remove());
+   let bad = 0;
+   s.fields.forEach((f, i) => {
+     const v = readField(f, i);
+     let err = null;
+     if (f.required && !v) err = 'Please enter a valid answer';
+     else if (v && f.numeric && !/^\\d+(\\.\\d+)?$/.test(v)) err = f.numericMsg || 'Enter a whole number between 0 and 99';
++    if (err && f.silent) { bad++; return; } // refused with no message at all
++    if (err && SCN.fieldStyle === 'sdui' && (f.kind === 'text' || !f.kind)) { bad++; const info = modalEl.querySelector('[data-fx-field="'+i+'"] [data-testid="text-input-helper-text"]'); const e = document.createElement('div'); e.setAttribute('data-fx-err', '1'); e.innerHTML = '<p>'+err+'</p>'; info.insertBefore(e, info.firstChild); return; }
+     if (err) { bad++; const w = modalEl.querySelector('[data-fx-field="'+i+'"]'); const e = document.createElement('div'); e.className = 'artdeco-inline-feedback artdeco-inline-feedback--error'; e.setAttribute('role', 'alert'); e.innerHTML = '<span class="artdeco-inline-feedback__message">'+err+'</span>'; w.appendChild(e); }
+     else answers[f.label] = v;
+   });

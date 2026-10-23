@@ -3623,16 +3623,100 @@
     // v2.5.109 (live 2026-10-12): Workable / SmartRecruiters questions in the native <dialog> show a bare
     // "<p>This field is required</p>" under the field — no error class, role, id or aria link, and no
     // aria-invalid on checkboxes / textareas → 4 jobs clicked Review 10× with 0 error seen (step_limit).
+    // v2.5.126 (telemetry 2.5.120: 168 step_limit skips / 25 users in 7 days on the page before Review with errs=[] inv=0;
+    // in 14 days native-dialog skips never reported one number / format message while legacy forms reported hundreds):
+    // the native <dialog> shows EVERY field message as a bare text under the field, not only "This field is required".
+    // "Enter a decimal number larger than 0.0", "Enter a whole number between 0 and 99" and translations that keep the
+    // English "whole" / "decimal" token were invisible → no repair, Review clicked 10× (fixture SDUI_CTC / SDUI_NUM).
     for (const p of modal.querySelectorAll('p, span, div')) {
       if (p.children.length) continue;
       const t = String(p.textContent || '').trim();
-      if (!t || t.length > 80 || !_REQ_MSG.test(t) || !_shown(p)) continue;
+      if (!t || t.length > 140 || !_shown(p)) continue;
+      const req = t.length <= 80 && _REQ_MSG.test(t);
+      if (!req && !_isFormatErrMsg(t, p)) continue;
       if (out.some(o => o === p || o.contains(p) || p.contains(o))) continue;
       let f = null;
-      for (let n = p.parentElement, k = 0; n && n !== modal && !f && k < 4; n = n.parentElement, k++) f = n.querySelector('input:not([type="hidden"]), select, textarea');
+      if (req) { for (let n = p.parentElement, k = 0; n && n !== modal && !f && k < 4; n = n.parentElement, k++) f = n.querySelector('input:not([type="hidden"]), select, textarea'); }
+      else { f = _nearField(p, modal); if (!f) continue; } // a format message always sits under its own field
       if (f) _errField.set(p, f);
       out.push(p);
     }
+    // v2.5.126: any OTHER text LinkedIn added under a field while Next / Review left the page unchanged (armed by the
+    // engine only from the 2nd click on the same page) — whatever its wording or language.
+    if (_clickSnap && _clickSnap.armed) {
+      for (const { el, f } of newTextsAfterClick(modal)) {
+        if (out.some(o => o === el || o.contains(el) || el.contains(o))) continue;
+        _errField.set(el, f); out.push(el);
+      }
+    }
+    return out;
+  }
+  // Number / format validation message — never a question (no "?" / "*" ending), never in a label / legend / button.
+  const _FORMAT_ERR_RE = /^(please\s+)?(enter|provide|type|use)\s+(a|an)\s+(valid\s+)?(whole|decimal|positive|non-negative|numeric)?\s*(number|integer|amount|value|answer|date|email(\s+address)?|phone(\s+number)?|year|url|time)\b|^(the\s+)?(value|answer|number|amount|entry)\s+(must|should|has\s+to|needs\s+to)\s+be\b|^(must|should)\s+be\s+(a|an|between|less|greater|larger|smaller|at\s+(least|most)|no\s+more)\b|\b(whole|decimal)\b[^.?]{0,50}\d|\d[^.?]{0,50}\b(whole|decimal)\b|^(only\s+)?(numbers?|digits?|numeric\s+values?)\s+(are\s+)?(allowed|accepted)\b|^(saisissez|entrez|indiquez|veuillez\s+(saisir|entrer|indiquer))\s+(un|une)\s+(nombre|valeur|r[ée]ponse|montant|date)|^(introduce|ingresa|ingrese|escribe)\s+(un|una)\s+(n[uú]mero|valor|respuesta)|^(insira|digite|informe)\s+(um|uma)\s+(n[uú]mero|valor|resposta)|^geben\s+sie\s+(eine|einen)\s+(g[uü]ltige[nr]?\s+)?(zahl|wert|antwort|ganzzahl)|^inserisci\s+(un|una)\s+(numero|valore|risposta)/i;
+  function _isFormatErrMsg(t, el) {
+    const s = String(t || '').replace(/\s+/g, ' ').trim();
+    if (!s || s.length > 140 || /[?*]\s*$/.test(s) || /^\d[\d\s,./]*$/.test(s)) return false;
+    if (/\d+\s*(\/|of|sur|de|von)\s*\d+/i.test(s) && /characters?|caract[eè]res|zeichen/i.test(s)) return false; // "4 of 20 characters"
+    if (_NOT_FIELD_ERR.test(s)) return false;
+    if (el && el.closest && el.closest('label, legend, button, footer, [role="listbox"], [role="option"]')) return false;
+    return _FORMAT_ERR_RE.test(s);
+  }
+  // The field a message sits under (≤ 4 levels up, never past the form footer / the whole form).
+  function _nearField(p, modal) {
+    let f = null;
+    for (let n = p.parentElement, k = 0; n && n !== modal && !f && k < 4; n = n.parentElement, k++) {
+      if (n.querySelector('footer')) break;
+      f = n.querySelector('input:not([type="hidden"]), select, textarea');
+    }
+    return f;
+  }
+
+  // ─── v2.5.126: did Next / Review move the form? ────────────────────────────
+  // The engine snapshots the page right before each Next / Review click. A page still identical afterwards (same
+  // progress, same fields, same headings) was refused; the texts LinkedIn added under a field are its messages.
+  let _clickSnap = null;
+  function _leafTexts(modal) {
+    const out = [];
+    try { for (const el of modal.querySelectorAll('p, span, div, small, li')) { if (el.children.length) continue; const t = String(el.textContent || '').replace(/\s+/g, ' ').trim(); if (t) out.push(t); } } catch (_) {}
+    return out;
+  }
+  function pageSignature(modal) {
+    if (!modal) return '';
+    try {
+      const t = String(modal.textContent || '');
+      const pg = (t.match(/(\d+)\s*\/\s*(\d+)\s*pages?/i) || t.match(/(\d{1,3})\s*(%|percent)/i) || [''])[0];
+      const fields = Array.from(modal.querySelectorAll('input:not([type="hidden"]), select, textarea')).map(el => el.id || el.name || el.getAttribute('aria-label') || el.type).join('|');
+      const h = Array.from(modal.querySelectorAll('h1, h2, h3, legend')).map(x => String(x.textContent || '').trim().slice(0, 40)).join('|');
+      return pg + '#' + fields + '#' + h;
+    } catch (_) { return ''; }
+  }
+  // The texts are those of the FIRST click on this page: LinkedIn's message stays on screen between two clicks, so a
+  // later snapshot would already contain it.
+  function snapshotBeforeClick(modal) {
+    if (!modal) { _clickSnap = null; return; }
+    const sig = pageSignature(modal);
+    if (_clickSnap && _clickSnap.sig === sig) { _clickSnap.armed = false; return; }
+    _clickSnap = { sig, texts: new Set(_leafTexts(modal)), armed: false };
+  }
+  function clearClickSnapshot() { _clickSnap = null; }
+  function samePageAsSnapshot(modal) { return !!(_clickSnap && modal && _clickSnap.sig && pageSignature(modal) === _clickSnap.sig); }
+  function armNewTextErrors(modal) { if (samePageAsSnapshot(modal)) { _clickSnap.armed = true; return true; } return false; }
+  // [{ el, f, text }] — visible leaf texts added under a field since the snapshot, page unchanged.
+  function newTextsAfterClick(modal) {
+    const out = [];
+    if (!samePageAsSnapshot(modal)) return out;
+    try {
+      for (const el of modal.querySelectorAll('p, span, div, small, li')) {
+        if (el.children.length || !_shown(el)) continue;
+        const t = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (t.length < 3 || t.length > 160 || _clickSnap.texts.has(t)) continue;
+        if (_NOT_FIELD_ERR.test(t) || /^\d[\d\s,./%]*$/.test(t) || (/\d+\s*(\/|of|sur|de|von)\s*\d+/i.test(t) && /characters?|caract[eè]res|zeichen/i.test(t))) continue;
+        if (el.closest('label, legend, button, footer, [role="listbox"], [role="option"], [data-eam-bot-notice]')) continue;
+        const f = _nearField(el, modal);
+        if (f) out.push({ el, f, text: t });
+        if (out.length >= 4) break;
+      }
+    } catch (_) {}
     return out;
   }
   const _REQ_MSG = /^(this field is (required|mandatory)|this is a required field|required field|ce champ est (obligatoire|requis)|champ (obligatoire|requis)|please (make a selection|enter a valid answer|check this box|select an option|fill (in|out) this field)|este campo es (obligatorio|requerido)|campo obligatorio|dieses feld ist (erforderlich|ein pflichtfeld)|pflichtfeld|questo campo [èe] obbligatorio)\.?$/i;
@@ -3706,14 +3790,28 @@
         // v2.5.109: pay / identity / EEO answers are never "repaired" into a made-up value
         // ("Enter a whole number larger than 100" on "current CTC" would have become 101).
         if (isPayQuestion(label) && !/how\s+many\s+years|years?\s+of\s+(experience|exp)/i.test(label)) {
-          const sal = input ? salaryAnswer(label, config, input) : ''; // current pay only from the currentSalary setting
+          let sal = input ? salaryAnswer(label, config, input) : ''; // current pay only from the currentSalary setting
+          // v2.5.126: the field wants a number ("Enter a decimal number larger than 0.0" under "current CTC", setting
+          // "4.5 LPA") → the SAME amount as a plain number (450000; lakhs stay lakhs when the question asks LPA, monthly /
+          // yearly follow the question). Never another value: a whole-number field only gets an exact whole number.
+          if (sal && !/^\d+(\.\d+)?$/.test(sal) && /whole|decimal|d[ée]cimal|number|nombre|n[uú]mero|zahl|numero|entier|integer|amount|montant|digit/.test(msg)) {
+            const p = parsePayAmount(sal);
+            if (p && p.amount > 0) {
+              const lakhQ = /\blpa\b|\blakhs?\b|\blacs?\b|\bin\s+lakh/i.test(label);
+              const monthQ = /per\s+month|monthly|\/\s*month|par\s+mois|mensuel|al\s+mes|pro\s+monat/i.test(label);
+              let n = lakhQ ? p.amount / 1e5 : (monthQ && !p.monthly ? p.amount / 12 : (!monthQ && p.monthly ? p.amount * 12 : p.amount));
+              n = Math.round(n * 100) / 100;
+              sal = String(n);
+            } else sal = '';
+          }
+          if (sal && /whole|entier|integer|ganzzahl/.test(msg) && /^\d+\.\d+$/.test(sal) && Number(sal) !== Math.round(Number(sal))) sal = ''; // never rounded
           if (sal && sal !== String(input.value || '')) { u().fill(input, sal); fixed++; u().log(`Validation repair: pay "${label.slice(0, 50)}" → ${sal}`); }
           else u().log(`Validation repair: pay field "${label.slice(0, 50)}" left as is (no profile value) — ${msg.slice(0, 60)}`);
           continue;
         }
         if (_NO_REPAIR_Q.test(label) && !(select || radios.length)) { u().log(`Validation repair: "${label.slice(0, 50)}" not guessed`); continue; }
         // 1. Numbers: "Enter a whole number between 0 and 99", "Enter a decimal number larger than 0.0"
-        if (input && /whole number|entier|decimal|décimal|number|nombre|número|zahl|between|entre|larger than|greater than|supérieur|mayor que/.test(msg)) {
+        if (input && /whole|entier|decimal|décimal|number|nombre|número|zahl|between|entre|larger than|greater than|supérieur|mayor que/.test(msg)) {
           const dec = /decimal|décimal/.test(msg);
           let v = parseFloat(String(input.value || '').replace(',', '.').replace(/[^\d.\-]/g, ''));
           if (_isYesNoNumericQ(label) && !(v >= 1)) v = 1; // v2.5.113: yes/no asked as a number → 1 (Yes)
@@ -3769,6 +3867,14 @@
     repairValidationErrors,
     validationErrorDetails,
     fieldErrorElements,
+    // v2.5.126
+    isFormatErrMsg: _isFormatErrMsg,
+    pageSignature,
+    snapshotBeforeClick,
+    clearClickSnapshot,
+    samePageAsSnapshot,
+    armNewTextErrors,
+    newTextsAfterClick,
     isPayQuestion,
     isCurrentPayQuestion,
     profileDateOfBirth,

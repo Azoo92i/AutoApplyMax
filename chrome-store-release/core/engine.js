@@ -109,6 +109,15 @@
         const pg = t.match(/(\d+)\s*\/\s*(\d+)\s*pages?/i) || t.match(/(\d{1,3})\s*(%|percent)/i);
         const btns = modal ? Array.from(modal.querySelectorAll('button')).filter(b => b.offsetParent !== null).map(b => String(b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 24)).filter(Boolean).slice(-4) : [];
         where = { prog: pg ? pg[0].slice(0, 20) : '', btns, inv: modal ? modal.querySelectorAll('[aria-invalid="true"]').length : 0, files: modal ? modal.querySelectorAll('input[type="file"]').length : 0 };
+        // v2.5.126: clicks that left the page unchanged, texts LinkedIn added after the last click (its messages, never
+        // the answers: input values are not text nodes) and fields the browser itself flags invalid (pattern / min / max).
+        try {
+          const FFw = window.EAM && window.EAM.FormFiller;
+          where.same = u()._sameClicks || 0;
+          const nt = FFw && FFw.newTextsAfterClick && modal ? FFw.newTextsAfterClick(modal).map(x => x.text.slice(0, 60)).slice(0, 2) : [];
+          if (nt.length) where.nt = nt;
+          where.cv = modal ? Array.from(modal.querySelectorAll('input:not([type="hidden"]), select, textarea')).filter(el => el.validity && !el.validity.valid && !el.validity.valueMissing).length : 0;
+        } catch (_) {}
       } catch (_) {}
       // ext-diag-ingest replaces any meta > 800 bytes with {_truncated:true}: shorten the lists, and
       // the "where" fields only ride along when they still fit.
@@ -1061,6 +1070,11 @@
           // ── Multi-step form loop ──────────────────────────────────────
           let step = 0;
           let _submitErr = null; // v2.5.119: 'paused' | 'stop' after LinkedIn's "couldn't submit" message
+          // v2.5.126: Next / Review clicks in a row that left the page unchanged, and "a repair was just applied"
+          // (the old message stays on screen until LinkedIn re-validates: re-click before judging it again).
+          let _sameClicks = 0, _justRepaired = false;
+          state._sameClicks = 0;
+          try { window.EAM.FormFiller && window.EAM.FormFiller.clearClickSnapshot && window.EAM.FormFiller.clearClickSnapshot(); } catch (_) {}
           const appStart = Date.now();
           const appTimeout = 180000; // 3 min
           const loadingTimeout = 20000; // 20s
@@ -1127,10 +1141,11 @@
               const se = await _submitErrorPause(adapter, state, modal, 'form');
               if (se) { _submitErr = se; step = 999; break; }
             }
-            if (modal && adapter.hasValidationErrors(modal)) {
+            const _skipCheck = _justRepaired; _justRepaired = false;
+            if (modal && !_skipCheck && adapter.hasValidationErrors(modal)) {
               // v2.5.105: fix what LinkedIn's message asks for (number range, missing
               // selection, required text via AI, length) once per application, then retry.
-              if (await _tryRepair(modal)) continue;
+              if (await _tryRepair(modal)) { _justRepaired = true; continue; }
               state.log('Validation error detected - discarding');
               _skipDetail('form_invalid', modal);
               await adapter.discardApplication();
@@ -1234,6 +1249,10 @@
             // review step (and re-check "Follow <company>") after handlePreSubmit.
             if (isSubmit && adapter.ensureUnfollowed) await adapter.ensureUnfollowed(modal);
 
+            // v2.5.126: page snapshot right before Next / Review (did the click move the form?).
+            const _FFs = window.EAM && window.EAM.FormFiller;
+            if (!isSubmit) { try { _FFs && _FFs.snapshotBeforeClick && _FFs.snapshotBeforeClick(modal); } catch (_) {} }
+
             await state.click(nextBtn);
             await state.wait(1000);
 
@@ -1243,8 +1262,17 @@
               const se = await _submitErrorPause(adapter, state, stillModal, isSubmit ? 'submit' : 'next');
               if (se) { _submitErr = se; step = 999; break; }
             }
+            // v2.5.126 (2.5.120 telemetry: page before Review clicked 10× with no error seen): count clicks that left the
+            // page unchanged; from the 2nd one, any text LinkedIn added under a field counts as its message.
+            if (stillModal && !isSubmit) {
+              let same = false;
+              try { same = !!(_FFs && _FFs.samePageAsSnapshot && _FFs.samePageAsSnapshot(stillModal)); } catch (_) {}
+              _sameClicks = same ? _sameClicks + 1 : 0;
+              state._sameClicks = _sameClicks;
+              if (_sameClicks >= 2) { try { _FFs.armNewTextErrors(stillModal); } catch (_) {} }
+            }
             if (stillModal && !isSubmit && adapter.hasValidationErrors(stillModal)) {
-              if (await _tryRepair(stillModal)) continue;
+              if (await _tryRepair(stillModal)) { _justRepaired = true; continue; }
               state.log('Validation error after Next click - discarding');
               _skipDetail('form_invalid', stillModal);
               await adapter.discardApplication();
@@ -1253,6 +1281,13 @@
               break;
             }
             if (step === 999) break;
+            // v2.5.126: 4 clicks in a row on an unchanged page, nothing to repair → give up now (was: 10 clicks, ~35 s per
+            // job, each one a request LinkedIn may count against the throttle). Same skip reason as before.
+            if (!isSubmit && _sameClicks >= 4) {
+              state.log(`Next / Review clicked ${_sameClicks}× without the form moving and no message to fix — giving up on this application`);
+              step = Math.max(step, 10);
+              break;
+            }
 
             // Submit flow
             if (isSubmit) {
@@ -1334,7 +1369,7 @@
           } else if (step >= 10 && state.isRunning) {
             const left = adapter.getFormModal && adapter.getFormModal();
             if (left && state.isShown(left)) {
-              state.log('10 form steps without reaching Submit — discarding this application');
+              state.log(_sameClicks >= 4 ? 'Form refused 4× in a row with no message to fix — discarding this application' : '10 form steps without reaching Submit — discarding this application');
               _skipDetail('step_limit', left);
               await adapter.discardApplication();
               if (adapter.getFormModal() && adapter.clearAllModals) await adapter.clearAllModals(3);
