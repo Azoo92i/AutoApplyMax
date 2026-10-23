@@ -1727,6 +1727,59 @@
     for (const [why, test] of _NO_ALLOWED) { try { if (test(q)) return why; } catch (_) {} }
     return '';
   }
+
+  // ─── 2.5.126 (Théo 2026-10-23): "Forcer oui si pas d'IA (sauf si on sait que non) et IA choisi le oui non" ───
+  // No-AI path: Oui stays the default, EXCEPT when the CV shows the answer is No. knownNoFromProfile(q, config) returns
+  // the reason when a FACT question (a named school / school type, a specific degree, a named past employer) is not in
+  // the candidate's CV, '' otherwise (no data = unknown = Oui). Same lists as the server
+  // (ai-generate/form-answer-truth.ts). Live gate 2026-10-23 (Powerdot): "classe préparatoire ?", "top grande école
+  // d'ingénieur ?", "Did you attend CentraleSupélec, Polytechnique, Mines…?" → Yes for a DUT GEA + ICN profile.
+  const _deacc = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ');
+  const _ENG_EV = /ingenieur|engineer|polytechni|centrale|supelec|\bmines\b|ponts|supaero|isae|ensta|ensae|telecom|insa\b|\butc\b|arts et metiers|\bens\b|ecole normale|epita|epitech|esiee|isep|efrei|esilv/;
+  const _TOP_EV = /polytechni|centrale|supelec|\bmines\b|ponts|\bens\b|ecole normale|\bhec\b|essec|escp|edhec|em ?lyon|sciences ?po|insead|harvard|stanford|\bmit\b|oxford|cambridge|\blse\b|wharton|yale|princeton|berkeley|columbia|\biit\b|\biim\b/;
+  const _SCHOOL_TERMS = [
+    [/classes?\s+pr[ée]paratoires?|\bpr[ée]pas?\b|\bcpge\b|prep(aratory)?\s+class/i, /prepa|cpge|classes? preparatoires?|\b(mpsi|pcsi|ptsi|bcpst|ecg|hypokhagne|khagne)\b|preparatory class/],
+    [/[ée]coles?\s+d.ing[ée]nieurs?|engineering\s+school|dipl[oô]me\s+d.ing[ée]nieur|titre\s+d.ing[ée]nieur/i, _ENG_EV],
+    [/grandes?\s+[ée]coles?/i, new RegExp(_ENG_EV.source + '|' + _TOP_EV.source + '|grande ecole|skema|neoma|kedge|audencia|\\bicn\\b|business school|ecole (superieure )?de commerce')],
+    [/ivy\s+league/i, /harvard|yale|princeton|columbia|brown university|cornell|dartmouth|upenn|university of pennsylvania|wharton/],
+    [/russell\s+group/i, /oxford|cambridge|imperial college|\blse\b|london school of economics|\bucl\b|king.s college|edinburgh|manchester|bristol|warwick|durham|glasgow|leeds|nottingham|southampton|birmingham|exeter|york|newcastle|cardiff|queen mary/],
+    [/\biit\b|indian institutes?\s+of\s+technology/i, /\biit\b|indian institute of technology/],
+    [/\biim\b|indian institutes?\s+of\s+management/i, /\biim\b|indian institute of management/],
+    [/top[- ](tier|ranked)\s+(universit|school|college|business school)|top\s+\d+\s+(universit|school|business school|college)|t[oô]p\s+[ée]cole/i, _TOP_EV],
+  ];
+  const _NAMED_SCHOOLS = [[/polytechnique/i, /polytechnique/], [/centrale|sup[ée]lec/i, /centrale|supelec/], [/\bmines\b/i, /\bmines\b/], [/\bponts\b/i, /ponts/],
+    [/supa[ée]ro|\bisae\b/i, /supaero|isae/], [/\bhec\b/i, /\bhec\b/], [/\bessec\b/i, /essec/], [/\bescp\b/i, /escp/], [/\bedhec\b/i, /edhec/], [/sciences\s?po/i, /sciences ?po/],
+    [/harvard/i, /harvard/], [/stanford/i, /stanford/], [/oxford/i, /oxford/], [/cambridge/i, /cambridge/], [/insead/i, /insead/], [/wharton/i, /wharton/]];
+  const _SPECIFIC_DEGREES = [[/\bph\.?\s?d\b|\bdoctora(te|t)\b|\bdphil\b/i, /\bph\.? ?d\b|doctora|dphil/], [/\bmba\b/i, /\bmba\b|master of business administration/],
+    [/\bcpa\b|\bacca\b|\bcfa\b|chartered accountant|expert[- ]comptable/i, /\bcpa\b|\bacca\b|\bcfa\b|chartered accountant|expert[- ]comptable/]];
+  const _EDU_VERB = /\b(attend|attended|study|studied|graduate[sd]?|alumn|enrolled|admitted|degree|dipl[oô]m|int[ée]gr|fait|suivi|[ée]tudi|issu|sorti|went\s+to|school|[ée]cole|universit|college|titulaire)/i;
+  const _EMPLOYER_Q = /\b(?:worked|been\s+employed|employed|interned)\s+(?:at|for|by)\s+((?:[A-Z][\w&.'’-]*)(?:\s+(?:[A-Z][\w&.'’-]*|&|de|of|and))*)|travaill[ée]e?s?\s+(?:chez|pour)\s+((?:[A-Z][\w&.'’-]*)(?:\s+(?:[A-Z][\w&.'’-]*|&|de|du|des))*)/;
+  function knownNoFromProfile(question, config) {
+    const q = String(question || '').replace(/\s+/g, ' ').trim().replace(/(pr[ée]paratoires?|pr[ée]pas?)\s+aux\s+grandes\s+[ée]coles/ig, '$1');
+    if (!q) return '';
+    const cv = (config && config.cvProfile) || {};
+    const eduArr = Array.isArray(cv.education) ? cv.education : [];
+    const edu = _deacc(eduArr.map(e => [e && e.degree, e && e.school, e && e.institution, e && e.field].filter(Boolean).join(' ')).join('\n'));
+    const tests = [];
+    for (const [rx, ev] of _SCHOOL_TERMS) if (rx.test(q)) tests.push(ev);
+    if (_EDU_VERB.test(q)) for (const [rx, ev] of _NAMED_SCHOOLS) if (rx.test(q)) tests.push(ev);
+    for (const [rx, ev] of _SPECIFIC_DEGREES) if (rx.test(q)) tests.push(ev);
+    if (tests.length) {
+      if (!edu.trim()) return ''; // no education data: unknown → Oui
+      if (/ing[ée]nieur|engineering/i.test(q) && !_ENG_EV.test(edu)) return 'education fact: no engineering school in the CV';
+      return tests.some(ev => ev.test(edu)) ? '' : 'education fact: not in the CV';
+    }
+    const m = q.match(_EMPLOYER_Q);
+    if (m) {
+      const org = _deacc(m[1] || m[2] || '').trim();
+      const exp = _deacc((Array.isArray(cv.experience) ? cv.experience : []).map(e => (e && e.company) || '').join('\n') + '\n' + ((config && config.currentCompany) || ''));
+      if (org && !/^(a|an|any|the|our|this|une?|des|notre|nos|cette)\b/.test(org) && exp.trim()) {
+        const names = org.split(/\s*(?:,|\bor\b|\bou\b|\/)\s*/).filter(s => s.length >= 2);
+        if (names.length && !names.some(n => exp.includes(n) || exp.includes(n.split(' ')[0]))) return 'named employer: not in the CV';
+      }
+    }
+    return '';
+  }
   // Yes / No option labels ("Yes", "Oui", "Sí", "Ja", "Sim", "Yes, I have…" / "No", "Non", "Nein", "Não").
   const YES_OPTION_RE = /^(yes|oui|s[ií]|ja|sim)\b/i;
   const NO_OPTION_STRICT_RE = /^(no|non|nein|n[ãa]o)\b/i;
@@ -2413,6 +2466,8 @@
           else if (/legal.*work|authori[sz]ed\s+to\s+work|right\s+to\s+work|autoris[ée]\(?e?\)?\s+[àa]\s+travailler|permis de travail|droit de travailler/i.test(questionText) && config.legallyAuthorized) fact = config.legallyAuthorized;
           else if (/relocat|d[ée]m[ée]nag/i.test(questionText) && config.willingToRelocate) fact = config.willingToRelocate;
           else if (/driv(er|ing).{0,3}licen[cs]e|permis (de conduire|b)\b/i.test(questionText) && config.driversLicense) fact = config.driversLicense;
+          // 2.5.126 (Théo 2026-10-23): a school / degree / employer the CV does not show → a saved "Oui" becomes "Non".
+          else if (knownNoFromProfile(((questionLabel ? questionLabel.textContent : '') || questionRaw || questionText), config)) fact = 'known-no';
           else if (educationQuestionAnswer(questionText, config)) fact = educationQuestionAnswer(questionText, config);
           // v2.5.116 (Oui rule): a saved "Non" (an older AI answer LinkedIn remembers) on a capability / experience
           // question is corrected to "Oui" — never for a question where No is legitimate.
@@ -2421,7 +2476,7 @@
           fact = String(fact || '').toLowerCase();
           // Théo 2026-10-08: yes/no default is "Oui" — a pre-filled answer is only ever corrected
           // TOWARDS "Oui" (e.g. a stale "Non" to "autorisé à travailler" / "niveau d'études requis").
-          if (fact === 'yes') {
+          if (fact === 'yes' || fact === 'known-no') {
             const want = fact === 'yes' ? /^(yes|oui|sí|si|ja|y)$/ : /^(no|non|nein|n)$/;
             const checked = Array.from(radioInputs).find(r => r.checked);
             const lab = (r) => { const l = _radioLabel(fieldset, r); return ((l ? l.textContent : r.value) || '').trim().toLowerCase(); };
@@ -2461,6 +2516,11 @@
       } else if (_ADJUSTMENTS_Q.test(questionText)) {
         // v2.5.112: "Do you require any reasonable adjustments / accommodations…?" — the user declared no need.
         desiredAnswer = 'no';
+      } else if (knownNoFromProfile(((questionLabel ? questionLabel.textContent : '') || questionRaw || questionText), config)) {
+        // 2.5.126 (Théo 2026-10-23): "Forcer oui … sauf si on sait que non" — a school / school type / degree / employer
+        // the CV does not show (Powerdot: prépa, grande école d'ingénieur, Centrale/Polytechnique → were "Yes").
+        desiredAnswer = 'no';
+        u().log(`Radio no (${knownNoFromProfile(((questionLabel ? questionLabel.textContent : '') || questionRaw || questionText), config)}): ${questionText.substring(0, 50)}`);
       } else if (questionText.match(/visa|sponsor|sponsorship/i) && config.visaSponsorship) {
         desiredAnswer = config.visaSponsorship;
       } else if (questionText.match(/author|legal.*work|permit.*work|eligib.*work|right.*work|autoris[ée]\(?e?\)?\s+[àa]\s+travailler|permis de travail|droit de travailler/i) && config.legallyAuthorized) {
@@ -2516,12 +2576,11 @@
             const labs = Array.from(radioInputs).map(r => { const l = _radioLabel(fieldset, r); return ((l ? l.textContent : r.value) || '').trim(); }).filter(Boolean);
             const cleanQ = ((questionLabel ? questionLabel.textContent : '') || questionRaw || '').trim() || questionText;
             const pick = String(await window.EAM.aiForm.askAI(cleanQ, config, 'radio', labs) || '').trim().toLowerCase();
-            // v2.5.116 (Théo 2026-10-16, Oui rule): the AI's "No" stands only for a question where No is legitimate
-            // (yesNoNoAllowedReason); a capability / experience / willingness question stays "Yes".
-            const whyNo = yesNoNoAllowedReason(cleanQ);
-            const aiNo = /^(no|non|nein|n)$/.test(pick);
-            if (aiNo && whyNo) desiredAnswer = 'no';
-            u().log(`Radio AI (premium): "${cleanQ.substring(0, 50)}" → ${pick || '(none)'} → ${desiredAnswer}${aiNo && !whyNo ? ' (Oui rule: AI "No" overruled)' : ''}`);
+            // 2.5.126 (Théo 2026-10-23, "IA choisi le oui non"): the AI's Yes / No stands — the 2.5.116 overrule of an
+            // AI "No" is gone. No usable pick ("skip", error) → the Oui default.
+            if (NO_OPTION_STRICT_RE.test(pick) || pick === 'n') desiredAnswer = 'no';
+            else if (YES_OPTION_RE.test(pick) || pick === 'y') desiredAnswer = 'yes';
+            u().log(`Radio AI (premium): "${cleanQ.substring(0, 50)}" → ${pick || '(none)'} → ${desiredAnswer}`);
           }
         } catch (_) {}
       }
@@ -3057,9 +3116,14 @@
           const cur = select.options[select.selectedIndex];
           const yn = Array.from(select.options).filter(o => o.index > 0).map(o => o.text.trim());
           const q = selQ || labelText;
-          if (cur && NO_OPTION_STRICT_RE.test(cur.text.trim()) && isYesNoOptions(yn) && !yesNoNoAllowedReason(q) && !isSelfDeclarationQuestion(q) && !isMarketingOptInLabel(q)) {
+          const kn = isYesNoOptions(yn) ? knownNoFromProfile(q, config) : '';
+          if (cur && NO_OPTION_STRICT_RE.test(cur.text.trim()) && isYesNoOptions(yn) && !kn && !yesNoNoAllowedReason(q) && !isSelfDeclarationQuestion(q) && !isMarketingOptInLabel(q)) {
             const yes = Array.from(select.options).find(o => o.index > 0 && YES_OPTION_RE.test(o.text.trim()));
             if (yes) { select.value = yes.value; select.dispatchEvent(new Event('change', { bubbles: true })); u().log(`Saved "No" → "${yes.text.trim()}" (Oui rule): ${q.slice(0, 50)}`); }
+          } else if (cur && YES_OPTION_RE.test(cur.text.trim()) && kn) {
+            // 2.5.126: a saved "Yes" to a school / degree / employer the CV does not show → "No"
+            const no = Array.from(select.options).find(o => o.index > 0 && NO_OPTION_STRICT_RE.test(o.text.trim()));
+            if (no) { select.value = no.value; select.dispatchEvent(new Event('change', { bubbles: true })); u().log(`Saved "Yes" → "${no.text.trim()}" (${kn}): ${q.slice(0, 50)}`); }
           }
         } catch (_) {}
         continue;
@@ -3232,6 +3296,8 @@
             // v2.5.116: same notice-period rule as the radios (was the blind options[1]).
             const np = String(config.noticePeriod || '').toLowerCase().trim();
             desired = (!np || /^0\b|^(none|aucun|imm[ée]diat|immediate)/.test(np)) ? 'yes' : 'no';
+          } else if (knownNoFromProfile(getFieldQuestion(select, modal) || labelText, config)) {
+            desired = 'no'; // 2.5.126: school / degree / employer the CV does not show
           } else if (!yesNoNoAllowedReason(getFieldQuestion(select, modal) || labelText)) {
             // v2.5.116 (Théo 2026-10-16, Oui rule): any other yes/no select → "Yes" (was options[1] — "Non" when
             // the form lists Non before Oui).
@@ -3924,6 +3990,7 @@
     isSelfDeclarationQuestion,
     NEGATIVE_OPTION_RE,
     yesNoNoAllowedReason,
+    knownNoFromProfile,
     isYesNoOptions,
     YES_OPTION_RE,
     NO_OPTION_STRICT_RE,
