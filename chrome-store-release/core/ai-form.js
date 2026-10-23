@@ -166,7 +166,7 @@
   // A yes/no screening question leans YES: an AI (or cached) "No" is turned into the Yes option / "Yes" unless
   // the question is one where No is legitimate (FormFiller.yesNoNoAllowedReason: self-declaration, opt-in,
   // sponsorship / authorisation / relocation / licence / notice settings, adjustments, clearance, EEO, student
-  // status, "do you require…", age, legal history, spoken language, pay). Live 2026-10-16 (KYC): "projets de
+  // status, "do you require…", age, legal history, pay; 2.5.122: spoken language removed). Live 2026-10-16 (KYC): "projets de
   // Transformation RH et/ou conduite du changement ?" → "Non" with "Conduite du Changement" in the CV skills.
   const _NO_TEXT_RE = /^(no|non|nein|n[ãa]o)\s*[.!]?$/i;
   const _YES_FOR_NO = { no: 'Yes', non: 'Oui', nein: 'Ja', 'não': 'Sim', nao: 'Sim' };
