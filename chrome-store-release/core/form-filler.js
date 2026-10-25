@@ -1734,6 +1734,17 @@
   // the candidate's CV, '' otherwise (no data = unknown = Oui). Same lists as the server
   // (ai-generate/form-answer-truth.ts). Live gate 2026-10-23 (Powerdot): "classe préparatoire ?", "top grande école
   // d'ingénieur ?", "Did you attend CentraleSupélec, Polytechnique, Mines…?" → Yes for a DUT GEA + ICN profile.
+  // 2.5.126 (live gate 2026-10-25, k-ciopé "au moins 4 ans … Product Owner ?" → forced Oui on premium): premium = the AI
+  // decides yes / no questions, so the client "Oui rule" paths (forced Yes on "at least N years…", saved-No → Yes
+  // corrections, the yes/no select default) run ONLY on the free / no-AI path. FREE after 3 s if the plan read hangs.
+  function _premiumAIAvailable() {
+    if (!(window.EAM && window.EAM.aiForm && window.EAM.aiForm.askAI)) return Promise.resolve(false);
+    return new Promise(res => {
+      const done = r => res(!(!r || (r.plan === 'free' && !r.isPremium)));
+      const tm = setTimeout(() => res(false), 3000);
+      try { const p = chrome.storage.local.get(['plan', 'isPremium'], r => { clearTimeout(tm); done(r); }); if (p && typeof p.then === 'function') p.then(r => { clearTimeout(tm); done(r); }, () => { clearTimeout(tm); res(false); }); } catch (_) { clearTimeout(tm); res(false); }
+    });
+  }
   const _deacc = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ');
   const _ENG_EV = /ingenieur|engineer|polytechni|centrale|supelec|\bmines\b|ponts|supaero|isae|ensta|ensae|telecom|insa\b|\butc\b|arts et metiers|\bens\b|ecole normale|epita|epitech|esiee|isep|efrei|esilv/;
   const _TOP_EV = /polytechni|centrale|supelec|\bmines\b|ponts|\bens\b|ecole normale|\bhec\b|essec|escp|edhec|em ?lyon|sciences ?po|insead|harvard|stanford|\bmit\b|oxford|cambridge|\blse\b|wharton|yale|princeton|berkeley|columbia|\biit\b|\biim\b/;
@@ -2471,8 +2482,10 @@
           else if (educationQuestionAnswer(questionText, config)) fact = educationQuestionAnswer(questionText, config);
           // v2.5.116 (Oui rule): a saved "Non" (an older AI answer LinkedIn remembers) on a capability / experience
           // question is corrected to "Oui" — never for a question where No is legitimate.
+          // 2.5.126: free / no-AI path only — on premium a saved answer is never flipped to "Oui" by the client.
           else if (String((questionLabel ? questionLabel.textContent : '') || questionRaw || '').replace(/\b(oui|non|yes|no|si|sí|ja|nein)\b/gi, '').replace(/[^a-zà-ÿ]+/gi, '').length >= 8
-                   && !yesNoNoAllowedReason(((questionLabel ? questionLabel.textContent : '') || questionRaw))) fact = 'yes';
+                   && !yesNoNoAllowedReason(((questionLabel ? questionLabel.textContent : '') || questionRaw))
+                   && !(await _premiumAIAvailable())) fact = 'yes';
           fact = String(fact || '').toLowerCase();
           // Théo 2026-10-08: yes/no default is "Oui" — a pre-filled answer is only ever corrected
           // TOWARDS "Oui" (e.g. a stale "Non" to "autorisé à travailler" / "niveau d'études requis").
@@ -2536,7 +2549,9 @@
         // v2.5.98: "This job is on site, are you willing to work in Saudi Arabia?" got the Yes
         // default for a Paris candidate with relocate = no (live 2026-10-04, discarded at review).
         desiredAnswer = workLocationAnswer(questionText, config);
-      } else if (minYearsQuestionAnswer(questionText, config)) {
+      } else if (minYearsQuestionAnswer(questionText, config) && !(await _premiumAIAvailable())) {
+        // 2.5.126 (live gate 2026-10-25): free / no-AI path only — on premium "at least N years of X?" goes to the AI
+        // (k-ciopé "au moins 4 ans … Product Owner ?" was a forced Oui for a 3-year profile with no PO role).
         // v2.5.98: "Justifiez-vous d'au moins 3 ans d'expérience dans l'utilisation de l'outil
         // mentionné dans l'annonce ?" got the Yes default (MERITIS, live 2026-10-04, discarded).
         // v2.5.109 (live 2026-10-12 MERITIS, discarded): this still answered "Non". Théo's 2026-10-08 rule wins —
@@ -3117,7 +3132,8 @@
           const yn = Array.from(select.options).filter(o => o.index > 0).map(o => o.text.trim());
           const q = selQ || labelText;
           const kn = isYesNoOptions(yn) ? knownNoFromProfile(q, config) : '';
-          if (cur && NO_OPTION_STRICT_RE.test(cur.text.trim()) && isYesNoOptions(yn) && !kn && !yesNoNoAllowedReason(q) && !isSelfDeclarationQuestion(q) && !isMarketingOptInLabel(q)) {
+          if (cur && NO_OPTION_STRICT_RE.test(cur.text.trim()) && isYesNoOptions(yn) && !kn && !yesNoNoAllowedReason(q) && !isSelfDeclarationQuestion(q) && !isMarketingOptInLabel(q)
+              && !(await _premiumAIAvailable())) { // 2.5.126: free / no-AI path only (premium: a saved answer is never flipped)
             const yes = Array.from(select.options).find(o => o.index > 0 && YES_OPTION_RE.test(o.text.trim()));
             if (yes) { select.value = yes.value; select.dispatchEvent(new Event('change', { bubbles: true })); u().log(`Saved "No" → "${yes.text.trim()}" (Oui rule): ${q.slice(0, 50)}`); }
           } else if (cur && YES_OPTION_RE.test(cur.text.trim()) && kn) {
@@ -3302,6 +3318,18 @@
             // v2.5.116 (Théo 2026-10-16, Oui rule): any other yes/no select → "Yes" (was options[1] — "Non" when
             // the form lists Non before Oui).
             desired = 'yes';
+            // 2.5.126 (Théo 2026-10-23, "IA choisi le oui non"): on premium the AI picks Yes / No for these selects too
+            // (same as the radios); no usable pick → the Oui default.
+            try {
+              if (await _premiumAIAvailable()) {
+                const q = (getFieldQuestion(select, modal) || labelText || '').trim();
+                const labs = options.filter(o => o.index > 0 || (o.value && o.text.trim())).map(o => o.text.trim()).filter(Boolean);
+                const pick = String(await window.EAM.aiForm.askAI(q, config, 'select', labs) || '').trim().toLowerCase();
+                if (NO_OPTION_STRICT_RE.test(pick) || pick === 'n') desired = 'no';
+                else if (YES_OPTION_RE.test(pick) || pick === 'y') desired = 'yes';
+                u().log(`Select AI (premium): "${q.substring(0, 50)}" → ${pick || '(none)'} → ${desired}`);
+              }
+            } catch (_) {}
           }
           if (desired) {
             const want = desired.toString().toLowerCase().trim();

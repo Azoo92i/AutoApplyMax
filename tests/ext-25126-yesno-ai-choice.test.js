@@ -92,6 +92,35 @@ const CENTRALE = 'Did you attend CentraleSupélec, Polytechnique, Mines ParisTec
   r = await radio('Avez-vous une expérience avec Salesforce CPQ ?', THEO, { pre: 'no' }); T('pre-filled "Non" to a skill → Oui (no-AI Oui rule kept)', r.picked === 'Oui', r);
   r = await radio(CENTRALE, XGRAD, { pre: 'yes', yes: 'Yes', no: 'No' }); T('pre-filled "Yes" for a Polytechnique grad stays Yes', r.picked === 'Yes', r);
 
+  // Live gate 2026-10-25 (k-ciopé): "au moins 4 ans … Product Owner ?" was a forced Oui on PREMIUM (minYears rule ran
+  // before the AI). Premium → the AI decides; free → Oui (unchanged).
+  const PO4 = "Avez-vous au moins 4 ans d'expérience en tant que Product Owner ou rôle équivalent ?";
+  const THEO3 = { ...THEO, yearsOfExperience: '3' };
+  r = await radio(PO4, THEO3, { plan: 'premium', ai: 'Non' }); T('premium: "au moins 4 ans PO" → AI asked, its Non stands', r.picked === 'Non' && r.aiCalls === 1, r);
+  r = await radio(PO4, THEO3, { plan: 'premium', ai: 'Oui' }); T('premium: "au moins 4 ans PO" → AI Oui stands', r.picked === 'Oui' && r.aiCalls === 1, r);
+  r = await radio(PO4, THEO3); T('free: "au moins 4 ans PO" → forced Oui, no AI call', r.picked === 'Oui' && r.aiCalls === 0, r);
+  r = await radio('Avez-vous une expérience avec Salesforce CPQ ?', THEO, { plan: 'premium', pre: 'no' }); T('premium: pre-filled "Non" to a skill is NOT flipped to Oui', r.picked === 'Non', r);
+
+  // Yes/no SELECTS (2.5.126 live gate 2026-10-25): premium → AI picks; free → Oui; saved "Non" flipped only on free.
+  const sel = (q, config, { plan = 'free', ai = null, pre = null } = {}) => page.evaluate(async ({ q, config, plan, ai, pre }) => {
+    window.__plan = plan; window.__aiCalls = 0;
+    window.EAM.aiForm.askAI = async () => { window.__aiCalls++; return ai; };
+    const root = document.getElementById('root');
+    root.innerHTML = `<div class="m"><div><label for="s">${q}</label><select id="s"><option value="">Sélectionner une option</option>
+      <option value="Oui"${pre === 'yes' ? ' selected' : ''}>Oui</option><option value="Non"${pre === 'no' ? ' selected' : ''}>Non</option></select></div></div>`;
+    await window.EAM.FormFiller.fillSelectDropdowns(root.querySelector('.m'), config);
+    const s = root.querySelector('select');
+    return { picked: s.selectedIndex > 0 ? s.options[s.selectedIndex].text : '', aiCalls: window.__aiCalls };
+  }, { q, config, plan, ai, pre });
+  const BANK = 'Avez-vous une expérience dans le secteur bancaire ?';
+  r = await sel(BANK, THEO); T('select free: generic yes/no → Oui, no AI call', r.picked === 'Oui' && r.aiCalls === 0, r);
+  r = await sel(BANK, THEO, { plan: 'premium', ai: 'Non' }); T('select premium: AI Non stands', r.picked === 'Non' && r.aiCalls === 1, r);
+  r = await sel(BANK, THEO, { plan: 'premium', ai: 'Oui' }); T('select premium: AI Oui stands', r.picked === 'Oui' && r.aiCalls === 1, r);
+  r = await sel(BANK, THEO, { plan: 'premium', ai: 'skip' }); T('select premium: AI skip → Oui default', r.picked === 'Oui', r);
+  r = await sel(BANK, THEO, { pre: 'no' }); T('select free: saved Non → Oui (Oui rule kept)', r.picked === 'Oui', r);
+  r = await sel(BANK, THEO, { plan: 'premium', pre: 'no' }); T('select premium: saved Non is NOT flipped', r.picked === 'Non', r);
+  r = await sel(PREPA, THEO, { plan: 'premium', ai: 'Oui' }); T('select premium: Théo prépa → Non (known No, no AI call)', r.picked === 'Non' && r.aiCalls === 0, r);
+
   // leanYes is a pass-through now
   const ly = await page.evaluate(() => [window.EAM.aiForm.leanYes('Do you have experience with X?', 'radio', ['Yes', 'No'], 'No'), window.EAM.aiForm.leanYes('Do you know X?', 'text', [], 'Non')]);
   T('leanYes no longer flips an AI / cached "No"', ly[0] === 'No' && ly[1] === 'Non', ly);
