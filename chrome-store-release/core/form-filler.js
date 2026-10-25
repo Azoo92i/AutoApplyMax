@@ -1942,6 +1942,11 @@
   async function checkboxGroupPicks(question, opts, config) {
     const q = String(question || '');
     const idx = (pred) => opts.map((o, i) => pred(String(o || '')) ? i : -1).filter(i => i >= 0);
+    // 0. 2.5.127: EEO self-identification (gender identity → the gender setting, orientation / ethnicity → decline).
+    {
+      const e = eeoOptionPick(q, opts, config);
+      if (e !== null) return e >= 0 ? [e] : [];
+    }
     // 1. work mode willingness → every mode offered (Théo 2026-10-08: work-mode questions are "Oui").
     const modeOpts = idx(o => _MODE_OPT.test(o.trim()));
     if (modeOpts.length >= 2 && (modeOpts.length === opts.filter(Boolean).length || _WORK_MODE_Q.test(_deaccent(q)) || /office\s+setting|work(ing)?\s+(arrangement|setting|model|mode|environment|style)|work\s+location\s+(type|preference)/i.test(q))) {
@@ -1970,15 +1975,8 @@
     // 2b. highest education level (Advancio "High School (A2) / Bachelors (B1) / Masters (C2) / PHD (C1)") → the
     //     option at the highest CV degree level (never above it).
     if (_EDU_Q.test(q) || /highest\s+(level\s+of\s+)?(education|degree)|education\s+level/i.test(q)) {
-      const be = _bestEducation(config);
-      const beR = be ? (eduRank([be.degree, be.field].join(' ')) || (/universit|college|institut|polytechn|[ée]cole|school\s+of|business\s+school/i.test(String(be.school || '')) ? 3 : 0)) : 0;
-      const target = Math.max(cvEduRank(config) || 0, beR) || null;
-      if (target != null) {
-        let bi = -1, br = -1;
-        opts.forEach((o, i) => { const rr = eduRank(String(o).replace(/\([A-C][12]\)/g, '')); if (rr != null && rr <= target && rr > br) { br = rr; bi = i; } });
-        if (bi >= 0) return [bi];
-      }
-      return [];
+      const bi = educationOptionPick(opts, config);
+      return bi >= 0 ? [bi] : [];
     }
     // 3. Premium: AI multi-choice; Free (AI blocked / empty): the options the CV itself names.
     try {
@@ -2117,6 +2115,34 @@
     }
     u().log(`Gender: no matching option for "${canonicalGender}" — leaving blank`);
     return true; // don't fall back to Yes/first — wrong answer is worse than blank
+  }
+
+  // 2.5.127 (bug report 2026-10-22, free US user, Justworks EEO page on 2.5.120): "Are you a veteran?", "Are you a
+  // spouse or domestic partner to a veteran?", "Would you describe yourself as transgender?" and "Voluntary
+  // self-identification of disability" all went out as "Yes" (the free-path Oui default); the gender identity /
+  // sexual orientation / ethnicity checkbox groups stayed blank. EEO self-identification never follows the Oui rule:
+  // veteran / disability / transgender → the "No" answer; orientation / ethnicity / race / religion → the "I don't wish
+  // to answer" option. Never "Yes". Returns the option index, -1 = leave blank, null = not an EEO question.
+  const _EEO_NO_Q = /\b(are|is)\s+you\s+(a\s+|an\s+)?(\w+\s+){0,2}veteran|veteran\s+status|protected\s+veteran|(spouse|partner)\b.{0,40}\bveteran|served\s+in\s+the\s+(u\.?s\.?\s+)?(military|armed\s+forces)|ancien\s+combattant|disability\s+(status|self)|self[- ]identif\w*\s+(of\s+)?disabilit|(have|had|has)\s+(a\s+)?(history\s+of\s+(having\s+)?(a\s+)?)?disabilit|are\s+you\s+(disabled|a\s+person\s+with\s+a\s+disabilit)|identify\s+as\s+(having\s+a\s+disabilit|disabled|a\s+person\s+with)|situation\s+de\s+handicap|\brqth\b|travailleur\s+handicap|transgender|transgenre/i;
+  const _EEO_DECLINE_Q = /sexual\s+orientation|orientation\s+sexuelle|\bethnicit|\bethnic\s+(origin|group|background|identity)|\brace\b|\bracial\b|hispanic\s+or\s+latin|(your|religious)\s+(religion|belief|affiliation)|religious\s+(belief|affiliation)|gender\s+identity|identit[ée]\s+de\s+genre|self[- ]identif|auto[- ]identif/i;
+  const _EEO_NO_OPT = /^(no|non|nein|n[ãa]o)\b|\b(i\s+am\s+not|i'?m\s+not|not\s+a\s+(protected\s+)?veteran|i\s+don.?t\s+have\s+a\s+disabilit|do\s+not\s+have\s+a\s+disabilit|no\s+disability|je\s+ne\s+suis\s+pas|je\s+n.ai\s+pas)\b/i;
+  function eeoOptionPick(question, optionTexts, config) {
+    const q = String(question || '').replace(/\s+/g, ' ');
+    const opts = (optionTexts || []).map(t => String(t || '').replace(/\s+/g, ' ').trim());
+    const noQ = _EEO_NO_Q.test(q);
+    if (!noQ && !_EEO_DECLINE_Q.test(q)) return null;
+    const decline = opts.findIndex(t => t && _GENDER_DECLINE_RE.test(t));
+    // gender identity → the user's gender setting when it is one of the options, else the decline option
+    if (!noQ && _isGenderChoice(q, opts)) {
+      const g = config && config.gender;
+      const gi = g ? opts.findIndex(t => t && matchGenderOption(t, g)) : -1;
+      return gi >= 0 ? gi : decline;
+    }
+    if (noQ) {
+      const no = opts.findIndex(t => t && _EEO_NO_OPT.test(t) && !YES_OPTION_RE.test(t) && !_GENDER_DECLINE_RE.test(t));
+      if (no >= 0) return no;
+    }
+    return decline;
   }
 
   // Language-level radio (English / French / Spanish + A1..C2 or Basic
@@ -2420,6 +2446,44 @@
         if (fillGenderRadio(fieldset, radioInputs, config.gender)) {
           // v2.5.112: a required gender question left blank (no gender in the settings, no "prefer not to say") → popup hint.
           if (!Array.from(radioInputs).some(x => x.checked) && /\*/.test(questionText)) _noteMissingSetting('gender');
+          continue;
+        }
+      }
+
+      // 2.5.127: EEO self-identification (veteran / disability / transgender → "No", orientation / ethnicity → decline),
+      // also over a saved "Yes" — never the Oui default, the AI or the first option.
+      {
+        const labs = Array.from(radioInputs).map(r => { const l = _radioLabel(fieldset, r); return ((l ? l.textContent : r.value) || '').trim(); });
+        const eq = ((questionLabel ? questionLabel.textContent : '') || questionRaw || questionText).trim();
+        const pick = eeoOptionPick(eq, labs, config);
+        if (pick !== null) {
+          const target = pick >= 0 ? radioInputs[pick] : null;
+          if (target && !target.checked) {
+            const l = _radioLabel(fieldset, target);
+            (l || target).click();
+            if (!target.checked) { target.checked = true; target.dispatchEvent(new Event('change', { bubbles: true })); }
+          }
+          u().log(target ? `EEO self-id → "${labs[pick].substring(0, 40)}": ${eq.substring(0, 40)}` : `EEO self-id left blank (no No / decline option): ${eq.substring(0, 40)}`);
+          continue;
+        }
+      }
+
+      // 2.5.127: highest education level as radios ("GED or high school diploma / … / Bachelor's / Master's, JD, and/or
+      // PhD") → the option at the CV level (was the blind first option "GED" for a Master's profile). Unknown level →
+      // the decline option, else left blank (skip) — never a guessed level.
+      {
+        const labs = Array.from(radioInputs).map(r => { const l = _radioLabel(fieldset, r); return ((l ? l.textContent : r.value) || '').trim(); });
+        const eq = ((questionLabel ? questionLabel.textContent : '') || questionRaw || questionText).trim();
+        if (_EDU_Q.test(eq) && !_EDU_YN_Q.test(eq) && !isYesNoOptions(labs)) {
+          let pick = educationOptionPick(labs, config);
+          if (pick < 0) pick = labs.findIndex(t => _GENDER_DECLINE_RE.test(t));
+          const target = pick >= 0 ? radioInputs[pick] : null;
+          if (target && !target.checked) {
+            const l = _radioLabel(fieldset, target);
+            (l || target).click();
+            if (!target.checked) { target.checked = true; target.dispatchEvent(new Event('change', { bubbles: true })); }
+          }
+          u().log(target ? `Education level (radio) → "${labs[pick].substring(0, 40)}"` : `Education level (radio) left blank (no CV degree): ${eq.substring(0, 40)}`);
           continue;
         }
       }
@@ -2732,6 +2796,23 @@
     if (/\bbac\b|baccalaureat|high\s*school|lycee|secondary|a[- ]levels?|bachillerato/.test(t)) return 1;
     return null;
   }
+  // 2.5.127: rank of an OPTION that lists several levels ("Master's, JD, and/or PhD" = a Master's qualifies → 5, was 8
+  // through "PhD") → the lowest level it names.
+  function eduRankOption(text) {
+    const s = String(text || '').replace(/\([A-C][12]\)/g, ' ');
+    const rs = s.split(/\s*(?:,|;|\/|\band\/or\b|\bor\b|\bou\b|\bo\b)\s*/i).map(p => eduRank(p)).filter(r => r != null);
+    return rs.length ? Math.min(...rs) : eduRank(s);
+  }
+  // The option at the highest CV degree level (never above it); -1 when the CV level is unknown or no option ranks.
+  function educationOptionPick(opts, config) {
+    const be = _bestEducation(config);
+    const beR = be ? (eduRank([be.degree, be.field].join(' ')) || (/universit|college|institut|polytechn|[ée]cole|school\s+of|business\s+school/i.test(String(be.school || '')) ? 3 : 0)) : 0;
+    const target = Math.max(cvEduRank(config) || 0, beR) || null;
+    if (target == null) return -1;
+    let bi = -1, br = -1;
+    (opts || []).forEach((o, i) => { const rr = eduRankOption(o); if (rr != null && rr <= target && rr > br) { br = rr; bi = i; } });
+    return bi;
+  }
   function cvEduRank(config) {
     const edu = config && config.cvProfile && Array.isArray(config.cvProfile.education) ? config.cvProfile.education : [];
     let best = null;
@@ -2899,6 +2980,9 @@
     if (_POSTAL_Q.test(s)) return postalCodeValue(config); // never invented: '' without a postal code in the settings / CV
     if (_ENGLISH_LEVEL_TEXT_Q.test(s) && s.length < 80) return englishLevelText(config);
     if (_EDU_TEXT_Q.test(s)) return educationTextAnswer(config) || null;
+    // 2.5.127 (ops alert 2026-10-25, premium FR): "Quel est votre plus haut niveau de diplôme obtenu ?" as a text field —
+    // the AI answered it twice then returned nothing → required field empty → 9 offers skipped. The CV degree.
+    if (_EDU_Q.test(s) && !_EDU_YN_Q.test(s) && s.length < 160) return educationTextAnswer(config) || null;
     // v2.5.119 (telemetry 2026-10-17, 7 skips): "Major / Field of study*" — from the CV degree; no education → '' (left).
     if (_STUDY_FIELD_TEXT_Q.test(s)) return studyFieldAnswer(config);
     // v2.5.119: "Province (two characters, ON for Ontario)*" / "State*" → the region of the profile city (code when the
@@ -3090,9 +3174,9 @@
     if (target == null) return false;
     const options = Array.from(select.options).filter(o => o.index > 0);
     let best = null, bestR = -1;
-    for (const o of options) { const r = eduRank(o.text); if (r != null && r <= target && r > bestR) { best = o; bestR = r; } }
+    for (const o of options) { const r = eduRankOption(o.text); if (r != null && r <= target && r > bestR) { best = o; bestR = r; } }
     if (!best) return false;
-    const cur = select.selectedIndex > 0 ? eduRank(select.options[select.selectedIndex].text) : null;
+    const cur = select.selectedIndex > 0 ? eduRankOption(select.options[select.selectedIndex].text) : null;
     if (cur != null && cur === bestR) return true;   // pre-filled answer already at the CV level (higher or lower is corrected: never claim a degree the CV doesn't show)
     select.value = best.value;
     select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -4019,6 +4103,9 @@
     NEGATIVE_OPTION_RE,
     yesNoNoAllowedReason,
     knownNoFromProfile,
+    eeoOptionPick,
+    educationOptionPick,
+    eduRankOption,
     isYesNoOptions,
     YES_OPTION_RE,
     NO_OPTION_STRICT_RE,
