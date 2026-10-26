@@ -52,8 +52,12 @@
         '.topcard__org-name-link',
       ],
     },
+    // v2.5.129 (test agent 2026-10-26, fr.indeed.com/viewjob): Indeed's 2026-10 React Native Web layout dropped
+    // #jobDescriptionText and jobsearch-JobInfoHeader-title → no button. Current hooks first, legacy kept as fallbacks.
     'indeed.com': {
       titleSel: [
+        '[data-testid="vj-job-title"]',
+        '[data-testid="desktop-job-header"] [role="heading"]',
         'h2[data-testid="simpler-jobTitle"]',
         'h1[data-testid="simpler-jobTitle"]',
         'h2[data-testid="jobsearch-JobInfoHeader-title"]',
@@ -62,10 +66,13 @@
         'h2.jobsearch-JobInfoHeader-title',
       ],
       jdSel: [
+        '[data-testid="vj-rcv-flag-sentinel-jobDescriptionTitleSeen"] + div',
+        '[data-testid="vj-job-description-heading"] ~ div:not([data-testid])',
         '#jobDescriptionText',
         'div[data-testid="jobDescriptionText"]',
       ],
       companySel: [
+        '[data-testid="company-info-metadata"] a',
         'div[data-testid="inlineHeader-companyName"] a',
         'div[data-company-name] a',
         '.jobsearch-InlineCompanyRating a',
@@ -433,6 +440,15 @@
     return null;
   }
 
+  // v2.5.129: the new Indeed description block starts with <style> rules — never part of the JD text.
+  function _plainText(el) {
+    if (!el) return '';
+    if (!el.querySelector('style, script, noscript')) return (el.textContent || '').trim();
+    const c = el.cloneNode(true);
+    c.querySelectorAll('style, script, noscript').forEach(x => x.remove());
+    return (c.textContent || '').trim();
+  }
+
   function extractJob() {
     let titleEl = firstMatching(config.titleSel);
     let jdEl = firstMatching(config.jdSel);
@@ -474,7 +490,7 @@
     }
     if (!titleEl || !jdEl) return null;
     const title = syntheticTitle || (titleEl.textContent || '').trim();
-    const jd = (jdEl.textContent || '').trim();
+    const jd = _plainText(jdEl);
     if (!title || jd.length < 100) return null;
     const companyEl = firstMatching(config.companySel || []);
     const company = (companyEl?.textContent || '').trim();

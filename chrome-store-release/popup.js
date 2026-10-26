@@ -94,6 +94,7 @@ const ATS_PATTERNS = [
   { pattern: /jobs\.ashbyhq\.com\/([^/]+)/i,     extract: 1 },
   { pattern: /([^.]+)\.taleo\.net/i,             extract: 1 },
   { pattern: /([^.]+)\.icims\.com/i,             extract: 1 },
+  { pattern: /smartrecruiters\.com\/oneclick-ui\/company\/([^/?#]+)/i, extract: 1 },   // v2.5.129: was "Oneclick Ui"
   { pattern: /jobs\.smartrecruiters\.com\/([^/]+)/i, extract: 1 },
   { pattern: /careers\.([^.]+)\./i,              extract: 1 },
   { pattern: /jobs\.([^.]+)\./i,                 extract: 1 }
@@ -117,14 +118,54 @@ function extractCompanyFromUrl(url) {
   }
 }
 
-function extractJobTitleFromPageTitle(title) {
+// v2.5.129: "Palantir Technologies" vs the URL company "Palantir" → same company.
+function _companyKey(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, ''); }
+function _sameCompany(text, company) {
+  const a = _companyKey(text), b = _companyKey(company);
+  if (a.length < 3 || b.length < 3) return false;
+  return a === b || a.startsWith(b) || b.startsWith(a);
+}
+
+function _isAtsJobHost(url) {
+  try { return /(^|\.)(lever\.co|greenhouse\.io|ashbyhq\.com|smartrecruiters\.com|workable\.com|myworkdayjobs\.com|myworkdaysite\.com|workday\.com)$/i.test(new URL(url).hostname); }
+  catch (_) { return false; }
+}
+// Runs IN the job page (chrome.scripting): visible job-title headings, most specific ATS selectors first.
+function _pageJobHeadings() {
+  const sels = ['.posting-headline h2', 'h1.app-title', '.job__title h1', '#header h1', 'h1.section-header', '[data-automation-id="jobPostingHeader"]',
+    'h1[data-ui="job-title"]', 'h1.job-title', '.job-title h1', '[class*="jobPostingTitle"]', 'h1[class*="title" i]', 'h1'];
+  const out = [];
+  for (const s of sels) {
+    let els = [];
+    try { els = document.querySelectorAll(s); } catch (_) { continue; }
+    for (const el of els) {
+      if (!el.getClientRects().length) continue;
+      const t = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t.length >= 3 && t.length <= 120 && !out.includes(t)) out.push(t);
+      if (out.length >= 4) return out;
+    }
+  }
+  return out;
+}
+
+function extractJobTitleFromPageTitle(title, company) {
   if (!title) return '';
   const separators = [' | ', ' - ', ' – ', ' — ', ' at ', ' @ '];
-  let extracted = title;
+  // Greenhouse: "Job Application for <title> at <company>".
+  let extracted = String(title).replace(/^\s*(job application for|application for|apply for)\s+/i, '');
   for (const sep of separators) {
     const idx = extracted.indexOf(sep);
     if (idx > 0) {
-      extracted = extracted.substring(0, idx).trim();
+      const first = extracted.substring(0, idx).trim();
+      const rest = extracted.substring(idx + sep.length).trim();
+      // v2.5.129 (test agent 2026-10-26, Lever "Palantir Technologies - Administrative Business Partner" saved as
+      // "Palantir Technologies"): when the first part is the company, the title is the part after the separator.
+      if (rest && _sameCompany(first, company) && !_sameCompany(rest, company)) {
+        extracted = rest;
+        for (const s2 of [' | ', ' - ', ' – ', ' — ', ' @ ']) { const j = extracted.indexOf(s2); if (j > 0) { extracted = extracted.substring(0, j).trim(); break; } }
+      } else {
+        extracted = first;
+      }
       break;
     }
   }
@@ -307,8 +348,21 @@ async function openTrackForm() {
   const trackBtn = document.getElementById('track-btn');
   if (!titleInput || !companyInput || !trackBtn) return;
 
-  titleInput.value = extractJobTitleFromPageTitle(tab.title);
-  companyInput.value = extractCompanyFromUrl(tab.url);
+  const company0 = extractCompanyFromUrl(tab.url);
+  // v2.5.129: on ATS job pages the page heading is the job title (the tab title often starts with the company).
+  let heading = '';
+  if (_isAtsJobHost(tab.url) && tab.id != null) {
+    try {
+      const inj = await Promise.race([
+        chrome.scripting.executeScript({ target: { tabId: tab.id }, func: _pageJobHeadings }),
+        new Promise(r => setTimeout(() => r(null), 1500)),
+      ]);
+      const cands = (inj && inj[0] && Array.isArray(inj[0].result)) ? inj[0].result : [];
+      heading = cands.find(c => !_sameCompany(c, company0)) || '';
+    } catch (_) {}
+  }
+  titleInput.value = heading || extractJobTitleFromPageTitle(tab.title, company0);
+  companyInput.value = company0;
 
   // Track button
   trackBtn.addEventListener('click', async () => {
@@ -563,12 +617,85 @@ function setupTabs() {
   });
 }
 
+// ─── v2.5.129: phone country code / country never default to the US ─────
+// Test agent 2026-10-26: the select fell back to "+1" when nothing was stored, the first auto-save persisted it,
+// and autofill derived Country = United States from it (phone "+1…", city "Paris, TX", "Based in US? Yes").
+// Where the code came from is stored as phoneCountryCodeSource: 'user' (picked in the select — never overridden),
+// 'account' (dashboard profile), 'timezone' (browser guess), 'default' (+1, nothing known — never used to derive
+// a country). Legacy installs have no source: a stored "+1" is then treated as the untouched default.
+const _ISO_DIAL = { FR: '33', US: '1', CA: '1', IN: '91', GB: '44', UK: '44', DE: '49', ES: '34', IT: '39', BE: '32', CH: '41', NL: '31', PT: '351', IE: '353', LU: '352',
+  MA: '212', PK: '92', AE: '971', SG: '65', AU: '61', KR: '82', JP: '81', CN: '86', HK: '852', TW: '886', BR: '55', MX: '52', AR: '54', CO: '57', CL: '56', PE: '51',
+  ZA: '27', NG: '234', KE: '254', EG: '20', SA: '966', QA: '974', KW: '965', BH: '973', OM: '968', JO: '962', LB: '961', IQ: '964', IR: '98', TR: '90', PL: '48', SE: '46',
+  NO: '47', DK: '45', FI: '358', AT: '43', GR: '30', RO: '40', CZ: '420', HU: '36', UA: '380', IL: '972', PH: '63', MY: '60', ID: '62', TH: '66', VN: '84', BD: '880',
+  LK: '94', NP: '977', NZ: '64', TN: '216', DZ: '213', SN: '221', CI: '225', EE: '372', LV: '371', LT: '370', CY: '357', HR: '385', SK: '421', SI: '386', BG: '359',
+  RS: '381', MT: '356', IS: '354', GH: '233', MG: '261', SS: '211', SD: '249', ET: '251', UG: '256', TZ: '255', RW: '250', CM: '237', ZW: '263', ZM: '260', RU: '7', KZ: '7', UZ: '998' };
+const _TZ_ISO = { 'Europe/Paris': 'FR', 'Europe/Berlin': 'DE', 'Europe/London': 'GB', 'Europe/Madrid': 'ES', 'Atlantic/Canary': 'ES', 'Europe/Rome': 'IT', 'Europe/Brussels': 'BE',
+  'Europe/Zurich': 'CH', 'Europe/Amsterdam': 'NL', 'Europe/Lisbon': 'PT', 'Europe/Dublin': 'IE', 'Europe/Luxembourg': 'LU', 'Europe/Vienna': 'AT', 'Europe/Warsaw': 'PL',
+  'Europe/Stockholm': 'SE', 'Europe/Oslo': 'NO', 'Europe/Copenhagen': 'DK', 'Europe/Helsinki': 'FI', 'Europe/Athens': 'GR', 'Europe/Bucharest': 'RO', 'Europe/Prague': 'CZ',
+  'Europe/Budapest': 'HU', 'Europe/Kiev': 'UA', 'Europe/Kyiv': 'UA', 'Europe/Istanbul': 'TR', 'Europe/Tallinn': 'EE', 'Europe/Riga': 'LV', 'Europe/Vilnius': 'LT',
+  'Asia/Nicosia': 'CY', 'Europe/Zagreb': 'HR', 'Europe/Bratislava': 'SK', 'Europe/Ljubljana': 'SI', 'Europe/Sofia': 'BG', 'Europe/Belgrade': 'RS', 'Europe/Malta': 'MT',
+  'Africa/Casablanca': 'MA', 'Africa/Tunis': 'TN', 'Africa/Algiers': 'DZ', 'Africa/Cairo': 'EG', 'Africa/Lagos': 'NG', 'Africa/Nairobi': 'KE', 'Africa/Johannesburg': 'ZA',
+  'Africa/Accra': 'GH', 'Africa/Dakar': 'SN', 'Africa/Abidjan': 'CI', 'Africa/Addis_Ababa': 'ET', 'Africa/Kampala': 'UG', 'Africa/Dar_es_Salaam': 'TZ',
+  'Asia/Kolkata': 'IN', 'Asia/Calcutta': 'IN', 'Asia/Karachi': 'PK', 'Asia/Dubai': 'AE', 'Asia/Riyadh': 'SA', 'Asia/Qatar': 'QA', 'Asia/Kuwait': 'KW', 'Asia/Bahrain': 'BH',
+  'Asia/Muscat': 'OM', 'Asia/Amman': 'JO', 'Asia/Beirut': 'LB', 'Asia/Baghdad': 'IQ', 'Asia/Tehran': 'IR', 'Asia/Singapore': 'SG', 'Asia/Tokyo': 'JP', 'Asia/Seoul': 'KR',
+  'Asia/Shanghai': 'CN', 'Asia/Hong_Kong': 'HK', 'Asia/Taipei': 'TW', 'Asia/Manila': 'PH', 'Asia/Kuala_Lumpur': 'MY', 'Asia/Jakarta': 'ID', 'Asia/Bangkok': 'TH',
+  'Asia/Ho_Chi_Minh': 'VN', 'Asia/Saigon': 'VN', 'Asia/Dhaka': 'BD', 'Asia/Colombo': 'LK', 'Asia/Kathmandu': 'NP', 'Asia/Katmandu': 'NP', 'Asia/Jerusalem': 'IL',
+  'Asia/Tel_Aviv': 'IL', 'Pacific/Auckland': 'NZ', 'America/Sao_Paulo': 'BR', 'America/Mexico_City': 'MX', 'America/Argentina/Buenos_Aires': 'AR', 'America/Buenos_Aires': 'AR',
+  'America/Bogota': 'CO', 'America/Santiago': 'CL', 'America/Lima': 'PE', 'America/Toronto': 'CA', 'America/Vancouver': 'CA', 'America/Edmonton': 'CA',
+  'America/Winnipeg': 'CA', 'America/Halifax': 'CA', 'America/Montreal': 'CA', 'America/Regina': 'CA', 'America/St_Johns': 'CA', 'Pacific/Honolulu': 'US' };
+const _US_TZ = /^America\/(New_York|Chicago|Denver|Los_Angeles|Phoenix|Anchorage|Detroit|Boise|Juneau|Adak|Sitka|Nome|Yakutat|Metlakatla|Menominee|Indiana\/|Kentucky\/|North_Dakota\/)/;
+function _tzIso() {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    if (_TZ_ISO[tz]) return _TZ_ISO[tz];
+    if (_US_TZ.test(tz)) return 'US';
+    if (/^Australia\//.test(tz)) return 'AU';
+  } catch (_) {}
+  return '';
+}
+// "+91" / "91" / " +33 " → "+91"; garbage seen in user_profiles ("600026", "+919623292288", "1 8638442472") → ''.
+function _normDial(raw) {
+  const s = String(raw == null ? '' : raw).replace(/[\s()-]/g, '');
+  return /^\+?\d{1,4}$/.test(s) && !/^\+?0/.test(s) ? '+' + s.replace(/^\+/, '') : '';
+}
+// ISO-2 code of the account country ("FR", "in", "UK") — '' when not a real region code.
+function _validIso(raw) {
+  let c = String(raw || '').trim().toUpperCase();
+  if (c === 'UK') c = 'GB';
+  if (!/^[A-Z]{2}$/.test(c)) return '';
+  if (_ISO_DIAL[c]) return c;
+  try { const n = new Intl.DisplayNames(['en'], { type: 'region' }).of(c); return n && n !== c && !/unknown/i.test(n) ? c : ''; } catch (_) { return ''; }
+}
+function _isoName(iso) {
+  try { const n = new Intl.DisplayNames(['en'], { type: 'region' }).of(iso); if (n && n !== iso) return n; } catch (_) {}
+  return '';
+}
+function _dialForIso(iso) { return iso && _ISO_DIAL[iso] ? '+' + _ISO_DIAL[iso] : ''; }
+// Dial code the account implies: its phone_country_code, else its country.
+function _accountDial(p) {
+  if (!p) return '';
+  return _normDial(p.phone_country_code != null ? p.phone_country_code : p.phoneCountryCode) || _dialForIso(_validIso(p.country));
+}
+// Stored code is not a user choice and may be replaced by the account's: auto-filled, or the legacy untouched "+1".
+function _ccOverridable(code, source, accDial) {
+  if (source === 'user') return false;
+  if (source === 'account' || source === 'timezone' || source === 'default') return true;
+  return _normDial(code) === '+1' && !!accDial && accDial !== '+1';   // legacy: only the untouched +1, only for a non-US account
+}
+function _setDialSelect(el, dial) {
+  if (!el || !dial) return;
+  el.value = dial;
+  if (el.value !== dial) { const o = document.createElement('option'); o.value = dial; o.textContent = dial; el.appendChild(o); el.value = dial; }
+}
+let _ccSource = '';
+if (typeof window !== 'undefined') window._aamCc = { _normDial, _validIso, _isoName, _dialForIso, _accountDial, _ccOverridable, _tzIso };
+
 // Load saved configuration
 async function loadConfig() {
   let config = {}, local = {};
   try {
     config = await chrome.storage.sync.get([
-      'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'city', 'gender',
+      'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'phoneCountryCodeSource', 'city', 'gender',
       'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'autoNextPage', 'skillYearsAsTotal', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode',
       'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense'
     ]);
@@ -586,11 +713,17 @@ async function loadConfig() {
     const ccEl = document.getElementById('phoneCountryCode');
     const rawCc = String(config.phoneCountryCode || '').trim();
     const normCc = /^\+?\d{1,4}$/.test(rawCc) ? '+' + rawCc.replace(/^\+/, '') : rawCc;
-    ccEl.value = normCc || '+1';
-    if (normCc && ccEl.value !== normCc) {
-      // Unknown code: keep it selectable rather than blank (a save must never erase it).
-      const o = document.createElement('option'); o.value = normCc; o.textContent = normCc; ccEl.appendChild(o); ccEl.value = normCc;
+    if (normCc) {
+      _setDialSelect(ccEl, normCc);   // unknown code: kept selectable rather than blank (a save must never erase it)
+      _ccSource = config.phoneCountryCodeSource || '';
+    } else {
+      // v2.5.129: nothing stored → the browser time zone's code (the account's replaces it once signed in), never a blind +1.
+      const tzDial = _dialForIso(_tzIso());
+      _setDialSelect(ccEl, tzDial || '+1');
+      _ccSource = tzDial ? 'timezone' : 'default';
     }
+    // A code picked by hand is the user's: never replaced by the account / time zone afterwards.
+    ccEl.addEventListener('change', () => { _ccSource = 'user'; });   // programmatic .value never fires change
   }
   document.getElementById('phone').value = config.phone || '';
   document.getElementById('city').value = config.city || '';
@@ -648,6 +781,7 @@ async function saveConfig() {
     lastName: document.getElementById('lastName').value,
     email: document.getElementById('email').value,
     phoneCountryCode: document.getElementById('phoneCountryCode').value,
+    phoneCountryCodeSource: _ccSource,   // '' = legacy install, kept as is
     phone: document.getElementById('phone').value,
     city: document.getElementById('city').value,
     gender: document.getElementById('gender')?.value || '',
@@ -806,12 +940,25 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
       'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'city',
       'yearsOfExperience', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode',
       'gender', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate',
-      'driversLicense', 'noticePeriod',
+      'driversLicense', 'noticePeriod', 'phoneCountryCodeSource',
     ]);
 
     if (!config.firstName && !config.email) {
       showToast('Please fill in at least your name or email in Personal Info first.', 'warning');
       return;
+    }
+
+    // v2.5.129: the account country wins over the dial code for "Country" fields, and an auto / untouched "+1"
+    // gives way to the account's code (FR / IN users were filled as US: "+1…", "Paris, TX", "Based in US? Yes").
+    {
+      let ap = null;
+      try { ap = (await chrome.storage.local.get(['accountProfile'])).accountProfile || null; } catch (_) {}
+      const accIso = _validIso(ap && ap.country);
+      const accDial = _accountDial(ap);
+      if (accDial && _normDial(config.phoneCountryCode) !== accDial && _ccOverridable(config.phoneCountryCode, config.phoneCountryCodeSource, accDial)) config.phoneCountryCode = accDial;
+      // "+1" chosen by nobody (no account, no time zone hint) → no code and no country rather than the US.
+      if (!accDial && config.phoneCountryCodeSource === 'default') config.phoneCountryCode = '';
+      if (accIso) config.country = _isoName(accIso) || '';
     }
 
     // Combine phone with country code — but ONLY if the phone doesn't already
@@ -838,7 +985,9 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
     {
       const CC = { '33': 'France', '91': 'India', '1': 'United States', '44': 'United Kingdom', '49': 'Germany', '34': 'Spain', '39': 'Italy', '32': 'Belgium', '41': 'Switzerland', '31': 'Netherlands', '351': 'Portugal', '352': 'Luxembourg', '212': 'Morocco', '216': 'Tunisia', '213': 'Algeria', '971': 'United Arab Emirates', '92': 'Pakistan', '61': 'Australia', '353': 'Ireland', '48': 'Poland' };
       const cc = String(config.phoneCountryCode || '').replace(/[^\d]/g, '');
-      if (CC[cc]) config.country = CC[cc];
+      if (!config.country && CC[cc]) config.country = CC[cc];
+      // v2.5.129: any other one-country code → its country (+1 stays United States via the table above).
+      if (!config.country && cc) { const iso = Object.keys(_ISO_DIAL).find(k => _ISO_DIAL[k] === cc && !['UK', 'KZ', 'CA'].includes(k)); if (iso) config.country = _isoName(iso); }
     }
 
     // v2.5.119: dashboard Smart Profile values for settings left empty here (expected salary, city) — same fallback
@@ -1399,7 +1548,7 @@ async function checkAuthState() {
     }
 
     const fetchProfile = (token) => fetch(
-      `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=plan,ai_credits_used,ai_credits_total,credits_reset_date,email,first_name,last_name,phone,city,country,years_of_experience,expected_salary`,
+      `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=plan,ai_credits_used,ai_credits_total,credits_reset_date,email,first_name,last_name,phone,phone_country_code,city,country,years_of_experience,expected_salary`,
       { headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY } }
     );
 
@@ -1437,7 +1586,8 @@ async function checkAuthState() {
 
       if (needsReset && profile.plan !== 'unlimited') {
         const plan = profile.plan || 'free';
-        const monthlyTotal = plan === 'premium' ? 30 : 2;
+        // v2.5.129: free = 1 credit / month since 2026-10-06 (the server trigger enforces it; display only).
+        const monthlyTotal = plan === 'premium' ? 30 : 1;
         profile.ai_credits_used = 0;
         profile.ai_credits_total = monthlyTotal;
         // Reset on server
@@ -1457,6 +1607,11 @@ async function checkAuthState() {
         }).catch(e => console.warn('Credit reset failed:', e));
       }
       showLoggedInState(profile, eam_session);
+      // v2.5.129: country / dial code for autofill and auto-apply, without waiting for the service-worker sync.
+      try {
+        const { accountProfile: ap0 } = await chrome.storage.local.get(['accountProfile']);
+        await chrome.storage.local.set({ accountProfile: Object.assign({}, ap0 || {}, { country: profile.country || '', phoneCountryCode: profile.phone_country_code || '' }) });
+      } catch (_) {}
       prefillFromAccount(profile, eam_session);
     } else {
       // Profile exists in auth but no user_profiles row yet
@@ -1465,7 +1620,7 @@ async function checkAuthState() {
         first_name: '',
         plan: 'free',
         ai_credits_used: 0,
-        ai_credits_total: 2
+        ai_credits_total: 1
       }, eam_session);
     }
   } catch (e) {
@@ -1480,7 +1635,7 @@ async function checkAuthState() {
 async function prefillFromAccount(profile, session) {
   try {
     if (!profile) return 0;
-    const saved = await chrome.storage.sync.get(['firstName', 'lastName', 'email', 'phone', 'city', 'yearsOfExperience', 'expectedSalary']);
+    const saved = await chrome.storage.sync.get(['firstName', 'lastName', 'email', 'phone', 'city', 'yearsOfExperience', 'expectedSalary', 'phoneCountryCode', 'phoneCountryCodeSource']);
     const digits = String(profile.phone || '').replace(/\D/g, '');
     const map = {
       firstName: profile.first_name,
@@ -1500,8 +1655,26 @@ async function prefillFromAccount(profile, session) {
       const el = document.getElementById(id);
       if (el) { el.value = v; filled++; }
     }
+    // v2.5.129: phone country code from the account (phone_country_code, else its country) unless the user picked one.
+    // Decided on the STORED value (the popup form may be older than storage); only these two keys are written —
+    // a full saveConfig() from a stale form overwrote settings written meanwhile (fixture S1 2026-10-26: email wiped).
+    let ccWrite = null;
+    {
+      const ccEl = document.getElementById('phoneCountryCode');
+      const accDial = _accountDial(profile);
+      const storedCc = _normDial(saved.phoneCountryCode);
+      const cur = storedCc || (ccEl ? ccEl.value : '');
+      const src = storedCc ? (saved.phoneCountryCodeSource || '') : _ccSource;
+      if (ccEl && accDial && (cur !== accDial ? _ccOverridable(cur, src, accDial) : (src === 'timezone' || src === 'default' || !storedCc))) {
+        _setDialSelect(ccEl, accDial); _ccSource = 'account';
+        ccWrite = { phoneCountryCode: accDial, phoneCountryCodeSource: 'account' };
+      } else if (ccEl && storedCc && src !== _ccSource && src) {
+        _setDialSelect(ccEl, storedCc); _ccSource = src;   // storage changed since the form loaded
+      }
+    }
     if (filled) await saveConfig();
-    return filled;
+    else if (ccWrite) await chrome.storage.sync.set(ccWrite);
+    return filled + (ccWrite ? 1 : 0);
   } catch (_) { return 0; }
 }
 window.prefillFromAccount = prefillFromAccount;
@@ -1511,7 +1684,7 @@ window.prefillFromAccountFromSession = async function () {
     const { eam_session } = await chrome.storage.local.get(['eam_session']);
     const uid = eam_session && (eam_session.user_id || eam_session.user?.id);
     if (!uid || !eam_session.access_token) return 0;
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${uid}&select=email,first_name,last_name,phone,city,years_of_experience,expected_salary`,
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${uid}&select=email,first_name,last_name,phone,phone_country_code,country,city,years_of_experience,expected_salary`,
       { headers: { 'Authorization': `Bearer ${eam_session.access_token}`, 'apikey': SUPABASE_ANON_KEY } });
     if (!r.ok) return 0;
     const rows = await r.json();
@@ -1581,7 +1754,7 @@ function showLoggedInState(profile, session) {
   const planLabels = { free: 'Free', premium: 'Premium', unlimited: 'Unlimited' };
   const planLabel = planLabels[plan] || 'Free';
   const creditsUsed = profile.ai_credits_used || 0;
-  const creditsTotal = profile.ai_credits_total || (plan === 'premium' ? 30 : 2);
+  const creditsTotal = profile.ai_credits_total || (plan === 'premium' ? 30 : 1);   // v2.5.129: free = 1 / month
   const creditsLeft = Math.max(0, creditsTotal - creditsUsed);
   document.body.dataset.auth = 'in';
   document.body.dataset.plan = plan;

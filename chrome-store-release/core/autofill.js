@@ -736,6 +736,20 @@
         await new Promise(r => setTimeout(r, 250));
         pick = pickOption(visibleOptions(input).map(o => ({ o, text: optionText(o) })), q, config);
       }
+      // v2.5.129 (test agent 2026-10-26, Lever required "Current location" left empty): the suggestion list sometimes
+      // never opens for the first keystrokes (slow location API) → retype once and wait longer before giving up.
+      if (!pick && !visibleOptions(input).length && tgt.kind !== 'yesno') {
+        setNativeValue(input, '');
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'deleteContentBackward' }));
+        await new Promise(r => setTimeout(r, 300));
+        input.focus();
+        await typeChars(input, typed);
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        for (let t = 0; t < 24 && !pick; t++) {
+          await new Promise(r => setTimeout(r, 250));
+          pick = pickOption(visibleOptions(input).map(o => ({ o, text: optionText(o) })), q, config);
+        }
+      }
       if (pick) {
         pressOption(pick.o);
         // SmartRecruiters listens on the dropdown item host; the role=option div alone may not select it.

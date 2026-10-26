@@ -1664,6 +1664,21 @@
     for (const [cc, names] of Object.entries(COUNTRY_NAMES)) if (names.some(x => _deaccent(x).toLowerCase() === n)) return cc === 'UK' ? 'GB' : cc;
     return '';
   }
+  // v2.5.129 (test agent 2026-10-26): the popup used to store "+1" for everyone who never picked a code → FR / IN users
+  // auto-applied as US. Same rule as the popup: a code the user picked (phoneCountryCodeSource 'user', or any legacy
+  // non-+1 code) is kept; an auto one ('account' / 'timezone' / 'default') or the legacy untouched +1 gives way to the
+  // dashboard phone code, else the dashboard country's code; a +1 nobody chose ('default') with no account info is dropped.
+  // → { code: '+33' | '' | unchanged, changed }
+  function resolveDialCode(config, accountProfile) {
+    const src = String((config && config.phoneCountryCodeSource) || '');
+    const cur = String((config && config.phoneCountryCode) || '').replace(/[^\d]/g, '');
+    const apCc = String((accountProfile && accountProfile.phoneCountryCode) || '').replace(/[\s()+-]/g, '');
+    const accDial = (/^[1-9]\d{0,3}$/.test(apCc) ? apCc : '') || (accountProfile && accountProfile.country ? (_CC_DIAL[countryCode(accountProfile.country)] || '') : '');
+    const overridable = src === 'account' || src === 'timezone' || src === 'default' || (!src && cur === '1' && !!accDial && accDial !== '1');
+    if (accDial && accDial !== cur && overridable) return { code: '+' + accDial, changed: true };
+    if (!accDial && src === 'default' && cur) return { code: '', changed: true };
+    return { code: (config && config.phoneCountryCode) || '', changed: false };
+  }
   // v2.5.119: "Phone country code" options read "South Korea (+82)" / "+82" / "Korea, Republic of (+82)": the name
   // (without the dial part) or, failing that, the dial code (the user's phoneCountryCode, else the country's code).
   function findCountryOption(options, textOf, config) {
@@ -4154,6 +4169,9 @@
     educationYears,
     isAvailabilitySlot,
     countryCode,
+    // v2.5.129: dial code of a profile country ("FR" / "France" → "33")
+    dialForCountry: (raw) => _CC_DIAL[countryCode(raw)] || '',
+    resolveDialCode,
     findCountryOption,
     regionForCity,
     fillEducationEntry,

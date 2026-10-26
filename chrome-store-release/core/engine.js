@@ -1803,7 +1803,7 @@
             // was saved but never honored — the bot always paginated).
             state._missNotice = null; state._missNoticeKeys = {}; // v2.5.119: per run
             state.config = await chrome.storage.sync.get([
-              'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'gender',
+              'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'phoneCountryCodeSource', 'gender',
               'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'city', 'country', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode',
               'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense',
               'autoNextPage', 'skillYearsAsTotal'
@@ -1836,6 +1836,17 @@
                 // empty for users whose extension settings were blank): the dashboard phone when the extension has none.
                 const ph = String(accountProfile.phone || '').replace(/[^\d+]/g, '');
                 if (!String(state.config.phone || '').trim() && ph.replace(/\D/g, '').length >= 7) { state.config.phone = ph; state.log('Phone taken from your dashboard profile'); }
+              }
+              // v2.5.129 (test agent 2026-10-26): the popup used to store "+1" for everyone who never picked a code → FR / IN
+              // users answered as US. Same rule as the popup: a code the user picked is kept; an auto one (or the legacy
+              // untouched +1) gives way to the dashboard phone code / country; a +1 nobody chose is dropped.
+              {
+                const _FFc = window.EAM && window.EAM.FormFiller;
+                const rd = _FFc && _FFc.resolveDialCode ? _FFc.resolveDialCode(state.config, accountProfile) : null;
+                if (rd && rd.changed) {
+                  state.config.phoneCountryCode = rd.code;
+                  if (rd.code) state.log(`Phone country code taken from your dashboard profile (${rd.code})`);
+                }
               }
               // v2.5.119: the user's other REAL cities (dashboard, CV) — used when the extension city is empty or matches no
               // LinkedIn location suggestion ("Hanumant Colony Tilpat" → "Faridabad, India"). Never a guessed city.

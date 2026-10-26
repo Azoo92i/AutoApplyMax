@@ -205,7 +205,19 @@
   // ≥ 1; X absent → total years) — never the AI's "0".
   const _YEARS_Q_RE = /how many years|years? of\b.{0,60}experience|combien d.ann[ée]es|nombre d.ann[ée]es|ann[ée]es? d.exp[ée]rience|a[ñn]os de experiencia|jahre\b.{0,30}erfahrung/i;
 
+  // v2.5.129 (test agent 2026-10-26, Ashby): field ids leaked into the question sent to the AI —
+  // "Additional Information f189fed2-624b-41a1-a76f-0c67a2611d1a f189fed2 624b 41a1 a76f 0c67a". UUIDs, their
+  // space-split fragments and long hex ids are not words of the question.
+  function stripIdTokens(q) {
+    return String(q == null ? '' : q)
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, ' ')
+      .replace(/\b[0-9a-f]{8}(?:[\s_-]+[0-9a-f]{4}){3}(?:[\s_-]+[0-9a-f]{1,12})?\b/gi, ' ')
+      .replace(/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{16,}\b/gi, ' ')
+      .replace(/\s+/g, ' ').trim();
+  }
+
   async function askAI(question, config, fieldType, options) {
+    { const q2 = stripIdTokens(question); if (q2.length >= 3) question = q2; }
     // Skip all AI calls if premium_required was already received this session
     // v2.5.99: the premium block only stops the AI call (checked below, before the prompt) —
     // deterministic guards and exact cached answers keep working on the free plan.
@@ -548,6 +560,7 @@ Answer:`;
 
   window.EAM.aiForm = {
     askAI,
+    stripIdTokens,
     isPremiumBlocked: () => premiumBlocked,
     findCached,
     isMarketingOptIn,

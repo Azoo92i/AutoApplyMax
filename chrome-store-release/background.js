@@ -188,7 +188,7 @@ async function syncCvProfileFromServer() {
   const base = `${SUPABASE_URL}/rest/v1/user_profiles`;
   // v2.5.112: + expected_salary / country / city (dashboard Smart Profile) — fallbacks for empty extension settings.
   // v2.5.113: + years_of_experience (the extension's own years setting is never filled by onboarding → 0 everywhere).
-  const SEL = '?select=cv_data_updated_at,expected_salary,country,city,years_of_experience,phone&limit=1'; // v2.5.119: + phone
+  const SEL = '?select=cv_data_updated_at,expected_salary,country,city,years_of_experience,phone,phone_country_code&limit=1'; // v2.5.119: + phone; v2.5.129: + phone_country_code
   let s = await fetch(base + SEL, { headers: H });
   if (s.status === 401) { // expired JWT (1 h) → refresh once
     const fresh = await refreshSupabaseToken();
@@ -199,7 +199,7 @@ async function syncCvProfileFromServer() {
   if (!s.ok) return { ok: false, reason: 'http_' + s.status };
   const row0 = (await s.json())?.[0] || {};
   const stamp = row0.cv_data_updated_at || null;
-  try { await chrome.storage.local.set({ accountProfile: { expectedSalary: row0.expected_salary || '', country: row0.country || '', city: row0.city || '', phone: row0.phone || '', yearsOfExperience: row0.years_of_experience != null ? String(row0.years_of_experience) : '', at: Date.now() } }); } catch (_) {}
+  try { await chrome.storage.local.set({ accountProfile: { expectedSalary: row0.expected_salary || '', country: row0.country || '', city: row0.city || '', phone: row0.phone || '', phoneCountryCode: row0.phone_country_code || '', yearsOfExperience: row0.years_of_experience != null ? String(row0.years_of_experience) : '', at: Date.now() } }); } catch (_) {}
   // v2.5.113: a copy taken at signup is an EMPTY object (new accounts start with cv_data = {}) → always re-fetched.
   const hasCv = (c) => !!(c && typeof c === 'object' && ((Array.isArray(c.experience) && c.experience.length) || (Array.isArray(c.skills) && c.skills.length) || (Array.isArray(c.education) && c.education.length) || c.rawText || c.summary));
   if (!stamp || (hasCv(local.cvProfile) && local.cvProfileServerStamp === stamp)) return { ok: true, changed: false };
