@@ -2155,8 +2155,9 @@
   function _detectLanguageInQuestion(questionText) {
     const q = questionText.toLowerCase();
     const map = [
-      { rx: /\benglish\b|\banglais\b|\bingl[eé]s\b|\binglese\b/i,        canonical: 'english',    aliases: ['english','anglais','inglés','ingles','inglese'] },
-      { rx: /\bfrench\b|\bfran[çc]ais\b|\bfranc[eé]s\b|\bfrancese\b/i,   canonical: 'french',     aliases: ['french','français','francais','francés','francese'] },
+      // (+ a name the employer cut: "proficiency in Englis ?" / "in Frenc ?", live DXC 2026-10-26)
+      { rx: /\benglish\b|\bengl(?:i(?:sh?)?)?(?=\s*[?:*.,)]|\s*$)|\banglais\b|\bingl[eé]s\b|\binglese\b/i,        canonical: 'english',    aliases: ['english','anglais','inglés','ingles','inglese'] },
+      { rx: /\bfrench\b|\bfrenc?(?=\s*[?:*.,)]|\s*$)|\bfran[çc]ais\b|\bfranc[eé]s\b|\bfrancese\b/i,   canonical: 'french',     aliases: ['french','français','francais','francés','francese'] },
       { rx: /\bspanish\b|\bespagnol\b|\bespa[nñ]ol\b|\bspagnolo\b/i,     canonical: 'spanish',    aliases: ['spanish','espagnol','español','espanol','spagnolo'] },
       { rx: /\bgerman\b|\ballemand\b|\balem[aá]n\b|\btedesco\b/i,        canonical: 'german',     aliases: ['german','allemand','alemán','aleman','tedesco','deutsch'] },
       { rx: /\bitalian\b|\bitalien\b|\bitaliano\b/i,                     canonical: 'italian',    aliases: ['italian','italien','italiano'] },
@@ -4050,6 +4051,12 @@
           // any other long list or EEO question → never a blind first option (was "Afghanistan").
           if (isCountryQuestion(label) || looksLikeCountryList(opts.map(o => o.text))) pick = findCountryOption(opts, o => o.text, config);
           else if (_isGenderChoice(label, opts.map(o => o.text))) pick = config && config.gender ? opts.find(o => matchGenderOption(o.text, config.gender)) : opts.find(o => _GENDER_DECLINE_RE.test(o.text || ''));
+          // 2.5.128 (live 2026-10-26, DXC "What is your level of proficiency in Englis ?"): a language-level list is
+          // ranked like any language question, never the blind first option ("None"); language unknown → left blank
+          else if (/\b(niveau|level|proficiency|proficien[cç]y|nivel|livello)\b/i.test(label) && opts.filter(o => _optionLevelRank(o.text) > 0 || _ZERO_LEVEL_RE.test(o.text)).length >= 3) {
+            pick = _detectLanguageInQuestion(label) ? pickLanguageLevelOption(opts, o => o.text, label, (config && (config.languages || (config.cvProfile && config.cvProfile.languages))) || [], config && config.country) : null;
+            if (pick && _ZERO_LEVEL_RE.test(pick.text || '')) pick = null;
+          }
           else if (_NO_REPAIR_Q.test(label) || opts.length > 30 || isCurrentPayQuestion(label)) pick = null;
           else pick = opts.find(o => _YES_RE.test(o.text.trim())) || opts.find(o => !_isOtherOption(o.text)) || opts[0];
           if (pick) { select.value = pick.value; select.dispatchEvent(new Event('change', { bubbles: true })); fixed++; u().log(`Validation repair: select "${label.slice(0, 50)}" → ${pick.text.trim()}`); }
