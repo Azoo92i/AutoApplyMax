@@ -269,7 +269,8 @@
         && !/^\s*(do|did|have|has|are|is|can|could|will|would|avez|[êe]tes|poss[ée]dez|disposez|justifiez|pouvez)\b/i.test(String(question))
         && !/\b(at least|minimum|au moins|au minimum|more than|plus de)\s+\d/i.test(String(question))) {
       try {
-        const y = FF.yearsForQuestion(question, config);
+        // 2.5.130: premium → the AI's CV-grounded years (FF.yearsForQuestionAsync); free / no AI → the deterministic rule.
+        const y = FF.yearsForQuestionAsync ? await FF.yearsForQuestionAsync(question, config) : FF.yearsForQuestion(question, config);
         if (y && isFinite(y.years)) { log()(`AI [years guard]: "${String(question).substring(0, 50)}" → ${y.years} (${y.basis})`); return String(y.years); }
       } catch (_) {}
     }
@@ -482,7 +483,7 @@ RULES:
 - Degree / education-level questions: answer ONLY from "Education" above. A higher degree (Master, MBA, PhD, "Bac+5") means the lower levels (Bachelor, Licence, Associate, high school) are completed too.
 - Never present the candidate as already holding the target job's title, and in written answers never claim an industry, employer, tool, certification or experience that is not in the candidate data above (v2.5.98: "I am a bilingual Service Delivery Manager…" was written for an events/strategy profile). Headline / summary / cover letter: describe the candidate's REAL background, then why it fits the target job.
 - "Do you have experience in / with X?", "Have you worked on X projects?", "Are you familiar with X?", "Can you …?" → "Yes" when the data shows it or closely related experience, otherwise "No" (2.5.126: the answer must be true to the CV; in open text, cite the closest real experience). "Are you willing to work in <place>?" → "Yes" when the place is the candidate's location or "Willing to relocate" is yes, otherwise "No".
-- Numeric "how many years of X": X in the candidate data → the years of the matching roles (at least 1); X absent → the candidate's total "Years of experience" above (never "0").
+- Numeric "how many years of X": an honest whole number grounded in the candidate data, never above the total "Years of experience": X used in roles → those roles' span (at least 1); related / adjacent experience → a reasonable estimate; X clearly absent and unrelated → 0 or 1.
 - Never write a number, percentage, amount or metric (e.g. "increased engagement by 15%") that is not written in the candidate data above — quote the real achievements from "Recent experience" or stay qualitative.
 - Questions about the size / scope / number of something the candidate did (team size, engineers coordinated, budget managed, number of projects) that the data above does not state → the smallest / "none" option, or "skip" — never a mid-range guess (v2.5.98: "10-19 engineers" was invented).
 - Match the language of the question${config && config.formLanguage ? ' — here: ' + config.formLanguage + ' (FORM LANGUAGE)' : ''}.
@@ -556,10 +557,52 @@ Answer:`;
     }
   }
 
+  // ─── 2.5.130: PREMIUM years questions answered by the AI (Théo 2026-10-27) ─────────────────────────────────────
+  // "Depuis combien d'années utilisez-vous C++ ?" got the TOTAL years (3) for a consultant who never coded: the
+  // deterministic rule (item absent → total) stays on the free / no-AI path; on premium the AI estimates the years
+  // from the CV (roles, dates, bullets, skills). FormFiller builds the prompt (it owns the CV date helpers) and clamps
+  // the number to [0, total]. Cache: own namespace keyed on the ITEM ("SQL" — same answer for "Depuis combien d'années
+  // utilisez-vous SQL ?" and "How many years … with SQL?"; live 27/10 the model gave 1 and 3) + a fingerprint of the CV
+  // data the answer depends on, so an edited CV / total asks again; the main cache's years answers are never reused.
+  // Temperature 0 (background passes it to ai-generate): the same CV and item should always give the same figure.
+  const YEARS_NS = 'years-ai-v1:';
+  async function askYearsAI(question, config, prompt, cvKey, itemKey) {
+    if (!prompt) return null;
+    await loadCache();
+    const key = cacheKey(YEARS_NS + String(itemKey || question || '') + ' #' + String(cvKey || ''), 'number', null);
+    const hit = cache[key];
+    if (typeof hit === 'string' && /^\d{1,2}$/.test(hit)) { log()(`AI [years cache]: "${String(question).substring(0, 45)}" → ${hit}`); return hit; }
+    if (premiumBlocked) return null;
+    if (await cachedPlanIsFree()) { markPremiumBlocked(); return null; }
+    let answer = null;
+    try {
+      log()(`AI [years]: "${String(question).substring(0, 50)}"`);
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ type: 'ai-form-answer', prompt, temperature: 0 }, (resp) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message)); else resolve(resp);
+        });
+      });
+      if (response && response.error) {
+        if (response.error === 'premium_required') markPremiumBlocked();
+        else if (/session_expired|unauthorized|no_session|not_logged_in/.test(String(response.error))) premiumBlocked = true;
+        log()(`AI [years error]: ${response.error}`);
+        return null;
+      }
+      answer = String((response && response.answer) || '').trim();
+    } catch (e) { log()(`AI [years error]: ${e.message}`); return null; }
+    const m = answer.match(/\d+(?:[.,]\d+)?/);
+    if (!m) { log()(`AI [years]: no number in "${answer.slice(0, 30)}"`); return null; }
+    const v = String(Math.floor(parseFloat(m[0].replace(',', '.'))));
+    if (!/^\d{1,2}$/.test(v)) return null;
+    cache[key] = v; await saveCache();
+    return v;
+  }
+
   // ─── Export ─────────────────────────────────────────────────────────
 
   window.EAM.aiForm = {
     askAI,
+    askYearsAI,
     stripIdTokens,
     isPremiumBlocked: () => premiumBlocked,
     findCached,

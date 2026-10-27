@@ -907,7 +907,7 @@
         const q = questionText(input) || '';
         let v = '';
         try {
-          if (fieldType === 'yearsOfExperience') { const y = FF.yearsForQuestion(q, config); v = y && isFinite(y.years) ? String(y.years) : ''; }
+          if (fieldType === 'yearsOfExperience') { const y = FF.yearsForQuestionAsync ? await FF.yearsForQuestionAsync(q, config) : FF.yearsForQuestion(q, config); v = y && isFinite(y.years) ? String(y.years) : ''; }
           else v = FF.salaryAnswer(q, config, input) || ''; // current pay only from the currentSalary setting
         } catch (_) { v = ''; }
         if (v !== '') {
@@ -1108,7 +1108,7 @@
         const q = questionText(r) || '';
         if (!/(how many|combien|wie viele|cu[aá]ntos)[^?]{0,60}(years?|ans|ann[ée]es|jahre|a[ñn]os)|years? of\b.{0,60}experience|ann[ée]es? d.exp/i.test(q)) continue;
         let y = NaN;
-        try { const a = FF && FF.yearsForQuestion ? FF.yearsForQuestion(q, config) : null; if (a && isFinite(a.years)) y = Number(a.years); } catch (_) {}
+        try { const a = FF && FF.yearsForQuestionAsync ? await FF.yearsForQuestionAsync(q, config) : FF && FF.yearsForQuestion ? FF.yearsForQuestion(q, config) : null; if (a && isFinite(a.years)) y = Number(a.years); } catch (_) {}
         if (!isFinite(y)) y = parseFloat(config.yearsOfExperience);
         if (!isFinite(y)) continue;
         const v = Math.min(max, Math.max(min, Math.round((y - min) / step) * step + min));

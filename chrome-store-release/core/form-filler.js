@@ -462,6 +462,109 @@
     if (r.years === 0 && /CV experience mentioning|listed in the CV|tech roles/.test(r.basis)) return { ...r, years: 1, basis: r.basis + ' (≥ 1: in the CV)' };
     return r;
   }
+
+  // ─── 2.5.130: PREMIUM years = the AI, grounded in the CV (Théo 2026-10-27) ───────────────────────────────────────
+  // "Laisse 3 comme base pour les non-premium. Avec l'IA (premium), il faut adapter la réponse à mon profil."
+  // Live 2026-10-27: every "Depuis combien d'années utilisez-vous X ?" got the total (3) for a consultant / project
+  // manager — C++, Python, HTML, Titrisation, Summit, SAP… Premium: a skill / tool / sector years question goes to the
+  // AI with the dated roles, bullets and skills; it answers an honest whole number (used in roles → their span; related
+  // → an estimate; clearly absent → 0 or 1), clamped here to [0, total]. Generic "years of experience" questions,
+  // free users, no CV roles, or any AI failure → the deterministic yearsForQuestion (unchanged). On premium the AI also
+  // wins over the popup toggle "answer with my total years" (that toggle is the no-AI rule).
+  function _yearsBullets(e) {
+    const b = Array.isArray(e.bullets) ? e.bullets : Array.isArray(e.achievements) ? e.achievements : Array.isArray(e.description) ? e.description : [];
+    const lines = b.map(x => String(typeof x === 'string' ? x : (x && x.text) || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+    if (!lines.length && typeof e.description === 'string' && e.description.trim()) lines.push(...e.description.split(/\n+|•/).map(s => s.trim()).filter(Boolean));
+    return lines.slice(0, 5).map(l => l.replace(/^[•\-*]\s*/, '').slice(0, 200));
+  }
+  // "Avril – Août 2023" / "Janvier – Juin 2022" (Théo's CV, live 27/10): the start month has no year → the end's year.
+  function _yearsRoleRange(e) {
+    try { const r = _entryRangeClean(e); if (r) return r; } catch (_) {}
+    const raw = String(e.duration || e.dates || e.period || '').split(/\s*\|\s*/)[0];
+    const m = raw.match(/^\s*([A-Za-zÀ-ÿ.]{3,12})\s*(?:–|—|-|à|to|au)\s*([A-Za-zÀ-ÿ.]{3,12})\s+(\d{4})\s*$/);
+    if (!m) return null;
+    const a = _parseYM(m[1].replace(/\.$/, '') + ' ' + m[3], false), b = _parseYM(m[2].replace(/\.$/, '') + ' ' + m[3], true);
+    return a != null && b != null && b >= a ? [a, b] : null;
+  }
+  function _yearsRoleLines(cv) {
+    return ((cv && cv.experience) || []).filter(Boolean).slice(0, 10).map(e => {
+      let months = null;
+      const r = _yearsRoleRange(e); if (r) months = r[1] - r[0] + 1;
+      const dates = String(e.duration || e.dates || e.period || [e.startDate || e.start || '', e.endDate || e.end || ''].filter(Boolean).join(' – ') || '').split(/\s*\|\s*/)[0];
+      const head = `- ${String(e.title || '').trim()} @ ${String(e.company || '').trim()}${dates ? ' (' + dates + ')' : ''}${months != null ? ` — ${months} months` : ' — dates unknown'}`;
+      const b = _yearsBullets(e).map(x => `    • ${x}`).join('\n');
+      return head + (b ? '\n' + b : '');
+    }).join('\n');
+  }
+  function _yearsCvKey(config, total) {
+    const cv = (config && config.cvProfile) || {};
+    const s = JSON.stringify([total, (cv.experience || []).map(e => e && [e.title, e.company, e.duration || e.dates || e.startDate, _yearsBullets(e).length]), (cv.skills || []).length]);
+    let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+    return h.toString(36);
+  }
+  // Literal CV evidence for a skill / tool item (not sectors): in the skills / summary, and the roles naming it.
+  function _yearsItemEvidence(question, config) {
+    try {
+      const cv = (config && config.cvProfile) || {};
+      const raw = _yearsForQuestionRaw(question, { ...config, skillYearsAsTotal: false });
+      const item = raw && raw.skill;
+      if (!item || raw.sector) return null;
+      const skills = (cv.skills || []).map(s => typeof s === 'string' ? s : (s && s.name) || '').join(', ');
+      const inSkills = _mentions(skills + ' ' + String((config && config.summary) || cv.summary || ''), item);
+      const roles = (cv.experience || []).filter(e => e && _mentions([e.title, e.company, ..._yearsBullets(e)].join(' '), item)).map(e => String(e.title || '').trim()).filter(Boolean);
+      return { item, inSkills, roles };
+    } catch (_) { return null; }
+  }
+  function yearsAIPrompt(question, config, total) {
+    const cv = (config && config.cvProfile) || {};
+    const skills = (cv.skills || []).map(s => typeof s === 'string' ? s : (s && s.name) || '').filter(Boolean).slice(0, 40).join(', ');
+    const _cs = (window.EAM && window.EAM.utils && window.EAM.utils.cleanProfileSummary) || ((x) => x || '');
+    const summary = String(_cs(config && config.summary) || _cs(cv.summary) || '').slice(0, 500);
+    const edu = (cv.education || []).slice(0, 4).map(e => `- ${e.degree || ''}${e.school ? ', ' + e.school : ''}${e.year ? ' (' + e.year + ')' : ''}`).filter(s => s.length > 4).join('\n');
+    const q = String(question || '').replace(/\s+/g, ' ').trim();
+    // Text check (an anchor so the same CV gets the same kind of answer): where the extension's matcher finds the item.
+    // The AI still judges related / adjacent work — the check only lists literal (stem / synonym) matches.
+    const ev = _yearsItemEvidence(q, config);
+    const check = ev ? `Text check for "${ev.item}": ${ev.inSkills ? 'listed in Top skills / summary (→ at least 1)' : 'not in Top skills / summary'}; roles naming it literally: ${ev.roles.length ? ev.roles.join(' ; ') : 'none (related work in a role can still count)'}.\n` : '';
+    return `You are filling a job application form for the candidate below. The field asks how many years the candidate has used / worked with a tool, skill, method, domain or sector. IMPORTANT: Reply with ONLY a single number. No text, no units, no punctuation. Just the number.
+
+CANDIDATE:
+Years of experience: ${total} (total professional experience — the maximum possible answer)
+${summary ? `Professional summary: ${summary}\n` : ''}${skills ? `Top skills: ${skills}\n` : ''}
+Recent experience (every role, with its duration):
+${_yearsRoleLines(cv) || '- (no roles)'}
+${edu ? `\nEducation:\n${edu}\n` : ''}${check ? '\n' + check : ''}
+YEARS RULES (honest, grounded in the data above — never invented):
+- The item is named in, or clearly part of, one or more roles above (title, company activity, bullets) → the total duration of those roles in whole years (months / 12, rounded down), at least 1.
+- The item is only in "Top skills" / the summary, or the roles show closely related / adjacent work (same family of tool, task or sector, e.g. Excel for "Microsoft Office", project management for "Gestion de projet", a consulting firm for "services et conseil") → a reasonable estimate between 1 and the duration of the roles where it was plausibly used.
+- The item is clearly absent and unrelated to every role above (e.g. C++ or Python for a consultant who never coded, a sector none of the employers works in) → 0 (or 1 when there is a faint link).
+- Studies do not count as professional years. Never answer more than ${total}.
+- A truncated or mixed-language item ("Jav", "SQ", "Linu", "ou have with XM") means the obvious item (Java, SQL, Linux, XML).
+
+Question: "${q.replace(/"/g, "'")}"
+Answer:`;
+  }
+  async function yearsForQuestionAsync(question, config) {
+    const det = yearsForQuestion(question, config);
+    try {
+      if (!det || !det.skill) return det; // generic "years of experience" → total, no AI needed
+      const ai = window.EAM && window.EAM.aiForm;
+      if (!ai || !ai.askYearsAI) return det;
+      const cv = config && config.cvProfile;
+      if (!cv || !Array.isArray(cv.experience) || !cv.experience.length) return det; // nothing to ground the AI on
+      if (!(await _premiumAIAvailable())) return det;
+      const total = totalYears(config);
+      const raw = await ai.askYearsAI(question, config, yearsAIPrompt(question, config, total), _yearsCvKey(config, total), (det.sector ? 'sector ' : 'item ') + String(det.skill).toLowerCase());
+      const n = parseInt(String(raw == null ? '' : raw), 10);
+      if (!isFinite(n) || n < 0) return det;
+      let y = total > 0 ? Math.min(n, total) : n;
+      // Floor: an item the CV literally lists (skills / summary / a role) is at least 1 year — live 27/10 the model
+      // answered 0 for SQL and Salesforce, both in Théo's skills (same "≥ 1 if in the CV" rule as the no-AI path).
+      let floored = false;
+      if (y < 1) { const ev = _yearsItemEvidence(question, config); if (ev && (ev.inSkills || ev.roles.length)) { y = 1; floored = true; } }
+      return { ...det, years: y, ai: true, deterministic: det.years, basis: `AI (premium) from your CV: "${det.skill}" → ${y}${total > 0 && n > total ? ` (capped at your ${total} years)` : ''}${floored ? ' (≥ 1: in your CV)' : ''}` };
+    } catch (_) { return det; }
+  }
   function _yearsForQuestionRaw(question, config) {
     const total = totalYears(config);
     // v2.5.115: a sector / industry question is answered from the CV roles in that sector (before the skill toggle).
@@ -910,9 +1013,13 @@
           const cur = String(input.value).trim();
           if (/^\d{1,2}$/.test(cur) && lab.match(/experience|years|expérience|années|años|jahre|anni|esperienza/)) {
             const fq = getFieldQuestion(input, modal);
-            const y = yearsForQuestion(fq, config);
+            const y = await yearsForQuestionAsync(fq, config);
             const isExp = /experien|exp[ée]rience|erfahrung|esperienza/i.test(lab + ' ' + fq);
-            if (y && y.years > 0 && Number(cur) < y.years && (Number(cur) === 0 || isExp || y.skill)) {
+            // 2.5.130 (Théo 2026-10-27): premium → the AI's CV-grounded figure replaces a saved one in both directions
+            // (the 27/10 run saved "3" for C++ / Python… on LinkedIn; never lowering would keep them forever).
+            if (y && y.ai) {
+              if (Number(cur) !== y.years) { u().fill(input, String(y.years)); u().log(`Years exp: pre-filled ${cur} → ${y.years} (${y.basis})`); }
+            } else if (y && y.years > 0 && Number(cur) < y.years && (Number(cur) === 0 || isExp || y.skill)) {
               u().fill(input, String(y.years));
               u().log(`Years exp: raised pre-filled ${cur} → ${y.years} (${y.basis})`);
             }
@@ -936,7 +1043,7 @@
       if (inputType === 'number') {
         // Only honor very specific numeric intents below.
         if (label.match(/experience|years|expérience|années|años|jahre|anni|esperienza/)) {
-          const y = yearsForQuestion(getFieldQuestion(input, modal), config);
+          const y = await yearsForQuestionAsync(getFieldQuestion(input, modal), config);
           const v = (y.basis === 'total' && !y.years) ? String(totalYears(config) || config.yearsOfExperience || '2') : String(y.years);
           u().fill(input, v);
           u().log(`Years exp: ${v} (${y.basis})`);
@@ -1021,7 +1128,7 @@
       if (haystack.match(/experience|years|expérience|années|años|jahre|anni|esperienza|\b(year|yr)s?\s+of\s+exp\b|\btotal\s+exp\b|\bexp\s*\(?\s*(in\s+)?(years?|yrs?)\b/)) {
         // v2.5.89: years for the skill the question names, not the global total
         // (0 when the skill is nowhere in the CV — never a made-up number).
-        const y = yearsForQuestion(getFieldQuestion(input, modal), config);
+        const y = await yearsForQuestionAsync(getFieldQuestion(input, modal), config);
         const v = (y.basis === 'total' && !y.years) ? String(totalYears(config) || config.yearsOfExperience || '2') : String(y.years);
         u().fill(input, v);
         u().log(`Years exp: ${v} (${y.basis})`);
@@ -1212,7 +1319,7 @@
               // years → the CV-backed value; any other count (team size, budget, projects) the data
               // doesn't state → 0, the smallest truthful answer (never a mid-range guess).
               const isYears = /\b(years?|yrs?|années?|ans|años|jahre?n?|anni)\b/i.test(_q);
-              const y = isYears ? yearsForQuestion(_q, config) : null;
+              const y = isYears ? await yearsForQuestionAsync(_q, config) : null;
               const v = y && isFinite(y.years) ? y.years : 0;
               u().fill(input, String(v));
               u().log(`Numeric fallback (AI empty): "${label.substring(0, 50)}" → ${v} (${y ? y.basis : 'default'})`);
@@ -1251,7 +1358,7 @@
       // réalisations majeures ?" got a bare "1" — WINAMAX, live 2026-10-04): the AI writes it.
       const asksMore = /r[ée]alisations?|achievements?|accomplishments?|describe|d[ée]cri(vez|re)|quelles? sont|what (are|were)|tell us|expliquez|explain|examples?|exemples?/i.test(tql);
       if (!asksMore && /how many years|combien d.ann[ée]es|nombre d.ann[ée]es|years of .{0,60}experience|ann[ée]es d.exp[ée]rience/i.test(tql)) {
-        const y = yearsForQuestion(tq, config);
+        const y = await yearsForQuestionAsync(tq, config);
         const v = (y.basis === 'total' && !y.years) ? String(totalYears(config) || config.yearsOfExperience || '0') : String(y.years);
         u().fill(ta, v); u().log(`Years exp (textarea): ${v} (${y.basis})`); continue;
       }
@@ -2510,7 +2617,10 @@
       if (/\b(years? of|ans?\s+d[\'e]|années?|jahre|anni|años)\b.*(experience|exp[ée]rience|erfahrung|esperienza|experiencia)|how many years|combien.*ann[ée]e/i.test(questionText)
           || /\b(experience|exp[ée]rience)\b.*\b(years?|ans?|années?)\b/i.test(questionText)) {
         // v2.5.89: skill-specific years (0 when the skill is not in the CV), not the global total.
-        const y = yearsForQuestion(questionLabel ? questionLabel.textContent : questionText, config);
+        // 2.5.130: the premium AI is asked only when the radios ARE year ranges (not for a yes/no "at least N years?").
+        const _rangeRadios = Array.from(radioInputs).filter(rd => { const l = _radioLabel(fieldset, rd); return parseYearsRange(l ? l.textContent : (rd.value || '')); }).length >= 2;
+        const _yq = questionLabel ? questionLabel.textContent : questionText;
+        const y = _rangeRadios ? await yearsForQuestionAsync(_yq, config) : yearsForQuestion(_yq, config);
         const known = y.basis !== 'total' || y.years > 0;
         if (known && fillYearsRangeRadio(fieldset, radioInputs, y.years)) { u().log(`Radio years basis: ${y.basis}`); continue; }
       }
@@ -3346,7 +3456,7 @@
                  && options.filter(o => parseYearsRange(o.text)).length >= 2) {
         // v2.5.89: years-range dropdown ("0-1 / 2-4 / 5+") — pick the bucket for the
         // skill actually asked. Used to fall through to the blind options[1].
-        const y = yearsForQuestion(getFieldQuestion(select, modal) || labelText, config);
+        const y = await yearsForQuestionAsync(getFieldQuestion(select, modal) || labelText, config);
         let best = null, bestScore = -Infinity;
         for (const o of options) {
           const r = parseYearsRange(o.text); if (!r) continue;
@@ -4154,6 +4264,9 @@
     ownLinkedInUrl,
     yearsQuestionSkill,
     yearsForQuestion,
+    yearsForQuestionAsync, // 2.5.130: premium → AI (CV-grounded), else yearsForQuestion
+    yearsAIPrompt,
+    yearsItemEvidence: _yearsItemEvidence,
     totalYears,
     cvSpanYears,
     salaryAnswer,

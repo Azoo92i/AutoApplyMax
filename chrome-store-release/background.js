@@ -116,7 +116,7 @@ function queueFailedJob(job) {
 // receives undefined, and every open-ended question stays blank — which is
 // exactly the "fields left empty / AI never fires" bug that cost us a
 // $29.99 refund from our first unlimited-plan user.
-async function handleAIFormAnswer(prompt) {
+async function handleAIFormAnswer(prompt, temperature) {
   try {
     let { eam_session } = await chrome.storage.local.get('eam_session');
     if (!eam_session?.access_token) {
@@ -134,7 +134,7 @@ async function handleAIFormAnswer(prompt) {
         body: JSON.stringify({
           prompt,
           task: 'form-answer',
-          temperature: 0.2,
+          temperature: (typeof temperature === 'number' && temperature >= 0 && temperature <= 1) ? temperature : 0.2, // 2.5.130: years answers ask 0
           maxTokens: 300
         })
       });
@@ -739,7 +739,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // AI form-answer proxy — must be FIRST so we can `return true` to keep
   // the response channel open for the async fetch.
   if (message.type === 'ai-form-answer') {
-    handleAIFormAnswer(message.prompt).then(sendResponse);
+    handleAIFormAnswer(message.prompt, message.temperature).then(sendResponse);
     return true; // keep channel open
   }
   // Diagnostic event from a content-script (LinkedIn only, server-enforced).
