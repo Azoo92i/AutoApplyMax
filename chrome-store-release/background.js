@@ -134,7 +134,7 @@ async function handleAIFormAnswer(prompt, temperature) {
         body: JSON.stringify({
           prompt,
           task: 'form-answer',
-          temperature: (typeof temperature === 'number' && temperature >= 0 && temperature <= 1) ? temperature : 0.2, // 2.5.130: years answers ask 0
+          temperature: (typeof temperature === 'number' && temperature >= 0 && temperature <= 1) ? temperature : 0.2, // 2.5.130: the years specific / broad check asks 0
           maxTokens: 300
         })
       });

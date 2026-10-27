@@ -1,14 +1,17 @@
 /**
- * ext v2.5.130 — PREMIUM "how many years of X / in sector Y" answered by the AI from the CV (Théo 2026-10-27:
- * "Laisse 3 comme base pour les non-premium. Avec l'IA (premium), il faut adapter la réponse à mon profil.").
+ * ext v2.5.130 — premium "how many years of X" (Théo 2026-10-27, final: "Mets le nombre d'années de base, il faut quand
+ * même booster. Si déjà enregistré sur LinkedIn, garde la réponse de base. Réponds avec les années totales sauf pour les
+ * choses vraiment spécifiques").
  * Live run 2026-10-27 (C:/AAM/scratchpad/g126/run_daily/20261027/hold_*.txt): every "Depuis combien d'années
- * utilisez-vous X ?" got the total 3 for a consultant / project manager — C++, Python, HTML, Titrisation, Summit…
- *   1. FREE / no AI: unchanged — item absent → total years, no AI call.
- *   2. PREMIUM: skill / tool / sector years → one AI call (years prompt with every dated role), number clamped to
- *      [0, total]; AI error / no number → the deterministic answer. Generic "years of experience" → total, no AI call.
- *   3. PREMIUM pre-filled (LinkedIn saved answer): replaced by the AI figure in both directions; FREE never lowered.
- *   4. Cache: same question + same CV → no 2nd call; CV changed → asked again.
- *   5. Universal autofill path (askAI years guard) and years-range selects follow the same rule.
+ * utilisez-vous X ?" got the total 3 for a consultant / project manager — C++, Python, Titrisation, Summit, SAP…
+ *   1. FREE / no AI: unchanged (total years with the default toggle).
+ *   2. PREMIUM: total years (the boost), EXCEPT a really specific item (language / software / ERP / platform /
+ *      regulation / niche) absent from the CV → 1 (never 0). Broad skills, functions, sectors → total. In the CV → the
+ *      default answer (the specific term alone counts: "Base de données SQL" with SQL in the CV).
+ *   3. Specific vs broad = lists; the AI is asked SPECIFIC / BROAD only for an unknown item, once (cached).
+ *   4. LinkedIn-saved values are kept (never lowered; a saved 0 for a specific absent item → 1).
+ *   5. Toggle "answer with my total years" OFF → per-skill CV years (both plans), the specific rule still applies.
+ *   6. Universal autofill (askAI years guard), years-range radios and selects follow the same rule.
  * Usage: EXT_DIR=C:/CleanExt-hotfix126/chrome-store-release NODE_PATH=C:/AAM/node_modules node tests/ext-25130-premium-years-ai.test.js
  */
 const fs = require('fs');
@@ -25,22 +28,30 @@ const THEO = { firstName: 'Theo', lastName: 'Test', city: 'Paris', yearsOfExperi
     { title: 'Co-Fondateur & Directeur Événementiel', company: 'SHINE', duration: 'Sep 2023 – Jul 2024', bullets: ['Organised 30 events for international students in Shanghai'] },
     { title: 'Stagiaire Stratégie & Opérations', company: 'Google', duration: 'Apr 2023 – Aug 2023', bullets: ['Built Excel / Tableau dashboards for the sales team'] },
   ],
-  skills: ['Excel Avancé', 'SQL', 'Tableau', 'Power BI', 'Agile/Scrum', 'Conduite du Changement', 'Analyse Financière', 'Gestion de projet'],
+  skills: ['Excel Avancé', 'SQL', 'Tableau', 'Power BI', 'Salesforce', 'Agile/Scrum', 'Conduite du Changement', 'Analyse Financière', 'Gestion de projet'],
   education: [{ degree: 'Triple Diplôme Master – Management, Finance & Business International', school: 'ICN Business School' }] } };
 
-// Questions of the 27/10 run (hold_*.txt), all answered 3 by the deterministic rule.
-const HOLD_QS = [
-  'Depuis combien d’années utilisez-vous Crédit corporate ?', 'Depuis combien d’années utilisez-vous SQL ?', 'Depuis combien d’années utilisez-vous Order to Cash ?',
-  'Depuis combien d’années utilisez-vous Produits SAP ?', 'Depuis combien d’années utilisez-vous Monétique ?', 'Depuis combien d’années utilisez-vous Summit ?',
-  'Depuis combien d’années utilisez-vous Gestion actif-passif ?', 'How many years of work experience do you have with Microsoft Azure?',
-  'How many years of work experience do you have with Salesforce.com?', 'How many years of experience in IoT Service?', 'How many years of experience in Business analyst?',
-  'Depuis combien d’années utilisez-vous Transformation financière ?', 'Depuis combien d’années utilisez-vous Solvabilité II ?', 'Depuis combien d’années utilisez-vous Canva ?',
-  'Depuis combien d’années utilisez-vous Titrisation ?', 'Combien d’années d’expérience professionnelle avez-vous en Product Ownership ou gestion de produits IA ?',
-  'Depuis combien d’années utilisez-vous ou have with Jav ?', 'Depuis combien d’années utilisez-vous ERP Microsoft Dynamics ?', 'Depuis combien d’années utilisez-vous Gestion de projet ?',
-  'Combien d’années d’expérience avez-vous dans ce secteur (Services et conseil aux entreprises) ?', 'Depuis combien d’années utilisez-vous Microsoft Excel ?', 'Depuis combien d’années utilisez-vous JIRA ?',
-  'Combien d’années d’expérience avez-vous en tant que Conseil ?', 'Depuis combien d’années utilisez-vous HTML ?', 'Depuis combien d’années utilisez-vous C++ ?',
-  'Depuis combien d’années utilisez-vous Python (langage de programmation) ?', 'Combien d’années d’expérience avez-vous dans ce secteur (Banques d’investissement) ?',
-  'How many years of work experience do you have with Databases?', 'Depuis combien d’années utilisez-vous Suite Atlassian ?',
+// [question of the 27/10 run, expected premium answer] (total 3)
+const HOLD = [
+  ['Depuis combien d’années utilisez-vous C++ ?', 1], ['Depuis combien d’années utilisez-vous Python (langage de programmation) ?', 1], ['Depuis combien d’années utilisez-vous HTML ?', 1],
+  ['Depuis combien d’années utilisez-vous Titrisation ?', 1], ['Depuis combien d’années utilisez-vous Solvabilité II ?', 1], ['Depuis combien d’années utilisez-vous Summit ?', 1],
+  ['Depuis combien d’années utilisez-vous Produits SAP ?', 1], ['How many years of work experience do you have with SAP Products?', 1], ['Depuis combien d’années utilisez-vous NetSuite ?', 1],
+  ['Depuis combien d’années utilisez-vous ERP Microsoft Dynamics ?', 1], ['How many years of work experience do you have with Microsoft Azure?', 1], ['Depuis combien d’années utilisez-vous Adobe Photoshop ?', 1],
+  ['Depuis combien d’années utilisez-vous Canva ?', 1], ['Depuis combien d’années utilisez-vous JIRA ?', 1], ['Depuis combien d’années utilisez-vous Suite Atlassian ?', 1],
+  ['Depuis combien d’années utilisez-vous Monétique ?', 1], ['Depuis combien d’années utilisez-vous Gestion actif-passif ?', 1], ['How many years of experience in IoT Service?', 1],
+  ['Depuis combien d’années utilisez-vous ou have with Jav ?', 1], ['Depuis combien d’années utilisez-vous ou have with Linu ?', 1],
+  // in the CV (the specific term alone counts) → default total
+  ['Depuis combien d’années utilisez-vous SQL ?', 3], ['Depuis combien d’années utilisez-vous Base de données SQL ?', 3], ['Depuis combien d’années utilisez-vous ou have with SQ ?', 3],
+  ['How many years of work experience do you have with Salesforce Sales Cloud?', 3], ['How many years of work experience do you have with Salesforce.com?', 3],
+  // broad → total
+  ['Depuis combien d’années utilisez-vous Gestion de projet ?', 3], ['Combien d’années d’expérience avez-vous en tant que Conseil ?', 3], ['Combien d’années d’expérience avez-vous en tant que Finance ?', 3],
+  ['How many years of experience in Business analyst?', 3], ['Depuis combien d’années utilisez-vous Gestion budgétaire ?', 3], ['Depuis combien d’années utilisez-vous Microsoft Excel ?', 3],
+  ['Depuis combien d’années utilisez-vous Microsoft Office ?', 3], ['Depuis combien d’années utilisez-vous Comptabilité ?', 3], ['Depuis combien d’années utilisez-vous Crédit corporate ?', 3],
+  ['Depuis combien d’années utilisez-vous Order to Cash ?', 3], ['Depuis combien d’années utilisez-vous Transformation financière ?', 3], ['Depuis combien d’années utilisez-vous Consolidation comptable ?', 3],
+  ['Depuis combien d’années utilisez-vous Marchés financiers ?', 3], ['Depuis combien d’années utilisez-vous Formation utilisateur ?', 3], ['Depuis combien d’années utilisez-vous Déploiement logiciel ?', 3],
+  ['How many years of work experience do you have with Databases?', 3], ['Depuis combien d’années travaillez vous sur des sujets digitaux achats ?', 3],
+  ['Combien d’années d’expérience avez-vous dans ce secteur (Assurances) ?', 3], ['Combien d’années d’expérience avez-vous dans ce secteur (Banques d’investissement) ?', 3],
+  ['Combien d’années d’expérience professionnelle avez-vous en Product Ownership ou gestion de produits IA ?', 3],
 ];
 
 (async () => {
@@ -50,97 +61,98 @@ const HOLD_QS = [
   const page = await b.newPage();
   await page.setContent('<!doctype html><html lang="fr"><body><div id="root"></div></body></html>');
   await page.evaluate(() => {
-    window.__plan = 'free'; window.__prompts = []; window.__reply = () => ({ answer: '0' }); window.__store = {};
+    window.__plan = 'free'; window.__prompts = []; window.__reply = () => ({ answer: 'BROAD' }); window.__store = {};
     window.chrome = { runtime: { getManifest: () => ({ version: 't' }), lastError: null, getURL: (x) => x, onMessage: { addListener() {} },
-        sendMessage: (m, cb) => { if (m && m.type === 'ai-form-answer') { window.__prompts.push(m.prompt); const r = window.__reply(m.prompt); setTimeout(() => cb && cb(r), 0); } else cb && cb({}); } },
+        sendMessage: (m, cb) => { if (m && m.type === 'ai-form-answer') { window.__prompts.push(m); const r = window.__reply(m.prompt); setTimeout(() => cb && cb(r), 0); } else cb && cb({}); } },
       storage: { local: { get: (k, cb) => { const r = { plan: window.__plan, isPremium: window.__plan !== 'free', ...window.__store }; cb && cb(r); return Promise.resolve(r); }, set: (o) => { Object.assign(window.__store, o); return Promise.resolve(); }, remove: () => Promise.resolve() }, sync: { get: (k, cb) => { cb && cb({}); return Promise.resolve({}); } }, onChanged: { addListener() {} } }, i18n: { getUILanguage: () => 'fr' } };
   });
   for (const f of FILES) await page.addScriptTag({ content: fs.readFileSync(ROOT + f, 'utf8') });
   await page.evaluate(() => { window.EAM.utils.isRunning = true; window.EAM.utils.userExplicitlyClickedStart = true; });
 
-  // reply: { question-substring: answer } (default '0'); returns { value, calls, prompt }
-  const field = (q, config, { plan = 'free', reply = {}, pre = '', type = 'text', fresh = true, err = null } = {}) => page.evaluate(async ({ q, config, plan, reply, pre, type, fresh, err }) => {
+  const field = (q, config, { plan = 'free', reply = 'BROAD', pre = '', type = 'text', fresh = true, err = null } = {}) => page.evaluate(async ({ q, config, plan, reply, pre, type, fresh, err }) => {
     window.__plan = plan; window.__prompts = [];
     if (fresh) { window.__store = {}; await window.EAM.aiForm.clearCache(); }
-    window.__reply = (p) => { if (err) return { error: err }; const qq = (p.match(/\nQuestion: "([^"]*)"/) || [])[1] || ''; const k = Object.keys(reply).find(k => qq.includes(k)); return { answer: k ? reply[k] : '0' }; };
+    window.__reply = () => (err ? { error: err } : { answer: reply });
     const root = document.getElementById('root');
     root.innerHTML = `<div class="m"><div><label for="i">${q}</label><input type="${type}" id="i" value="${pre}"></div></div>`;
     await window.EAM.FormFiller.fillTextInputs(root.querySelector('.m'), config);
-    return { value: root.querySelector('#i').value, calls: window.__prompts.length, prompt: window.__prompts[0] || '' };
+    return { value: root.querySelector('#i').value, calls: window.__prompts.length, prompt: (window.__prompts[0] || {}).prompt || '', temp: (window.__prompts[0] || {}).temperature };
   }, { q, config, plan, reply, pre, type, fresh, err });
+  const FF = (fn, ...args) => page.evaluate(([fn, args]) => window.EAM.FormFiller[fn](...args), [fn, args]);
+
+  // classifier
+  for (const it of ['C++', 'Python (langage de programmation)', 'Produits SAP', 'Summit', 'Salesforce Sales Cloud', 'NetSuite', 'Adobe Photoshop', 'Titrisation', 'Solvabilité II', 'Gestion actif-passif', 'Monétique', 'Jav', 'ERP Microsoft Dynamics'])
+    T(`kind "${it}" = specific`, (await FF('yearsItemKind', it)) === 'specific');
+  for (const it of ['Gestion de projet', 'Conseil', 'Finance', 'Business analyst', 'Gestion budgétaire', 'Microsoft Excel', 'Microsoft Office', 'Comptabilité', 'Marchés financiers', 'Order to Cash', 'Gestion d’actifs', 'Databases'])
+    T(`kind "${it}" = broad`, (await FF('yearsItemKind', it)) === 'broad');
+  T('kind "R&D" is not specific (no bare "R" language match)', (await FF('yearsItemKind', 'R&D')) !== 'specific');
+  T('kind "Dimension" = unknown (→ AI)', (await FF('yearsItemKind', 'Dimension')) === '');
 
   let r;
-  // 1. FREE: unchanged (total years)
-  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO); T('free: C++ → total 3, no AI call', r.value === '3' && r.calls === 0, r);
-  r = await field('Depuis combien d’années utilisez-vous SQL ?', THEO, { type: 'number' }); T('free (number input): SQL → 3, no AI call', r.value === '3' && r.calls === 0, r);
+  // 1. FREE unchanged
   const freeBad = [];
-  for (const q of HOLD_QS) { const x = await field(q, THEO); const det = await page.evaluate(([q, c]) => String(window.EAM.FormFiller.yearsForQuestion(q, c).years), [q, THEO]); if (x.value !== det || x.calls) freeBad.push({ q, ...x, det }); }
-  T(`free: all ${HOLD_QS.length} questions of the 27/10 run = the deterministic rule, no AI call`, !freeBad.length, freeBad.slice(0, 3));
-  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO, { pre: '3' }); T('free: pre-filled 3 kept (never lowered)', r.value === '3' && r.calls === 0, r);
+  for (const [q] of HOLD) { const x = await field(q, THEO); if (x.value !== '3' || x.calls) freeBad.push({ q, ...x }); }
+  T(`free: all ${HOLD.length} questions of the 27/10 run → 3, no AI call`, !freeBad.length, freeBad.slice(0, 3));
 
   // 2. PREMIUM
-  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO, { plan: 'premium', reply: { 'C++': '0' } });
-  T('premium: C++ → AI 0 → 0 (one AI call)', r.value === '0' && r.calls === 1, r);
-  T('premium prompt: total, every role with months, bullets, skills, honest rules, ends with Question/Answer', /\nYears of experience: 3 \(total/.test(r.prompt) && /Consultant @ Freelance \(09\/2024 – Present\) — \d+ months/.test(r.prompt) && /Stagiaire Stratégie & Opérations @ Google \(Apr 2023 – Aug 2023\) — 5 months/.test(r.prompt)
-    && /• Organised 30 events/.test(r.prompt) && /Top skills: .*Gestion de projet/.test(r.prompt) && /clearly absent and unrelated/.test(r.prompt) && /Reply with ONLY a single number/.test(r.prompt) && /\nQuestion: "Depuis combien d’années utilisez-vous C\+\+ \?"\nAnswer:$/.test(r.prompt), r.prompt.slice(-400));
-  r = await field('Depuis combien d’années utilisez-vous Microsoft Excel ?', THEO, { plan: 'premium', reply: { Excel: '3' } }); T('premium: Excel → AI 3 → 3', r.value === '3' && r.calls === 1, r);
-  r = await field('Depuis combien d’années utilisez-vous Gestion de projet ?', THEO, { plan: 'premium', reply: { Gestion: '7' } }); T('premium: AI 7 > total → capped at 3', r.value === '3', r);
-  r = await field('Depuis combien d’années utilisez-vous HTML ?', THEO, { plan: 'premium', reply: { HTML: 'Environ 1 an' } }); T('premium: "Environ 1 an" → 1', r.value === '1', r);
-  r = await field('Depuis combien d’années utilisez-vous HTML ?', THEO, { plan: 'premium', reply: { HTML: 'skip' } }); T('premium: AI with no number → deterministic 3', r.value === '3', r);
-  r = await field('How many years of work experience do you have?', THEO, { plan: 'premium' }); T('premium: generic years question → total 3, no AI call', r.value === '3' && r.calls === 0, r);
-  r = await field('Combien d’années d’expérience avez-vous dans ce secteur (Banques d’investissement) ?', THEO, { plan: 'premium', reply: { Banques: '0' } }); T('premium: sector (Banques d’investissement) → AI 0', r.value === '0' && r.calls === 1, r);
-  r = await field('Depuis combien d’années utilisez-vous SQL ?', THEO, { plan: 'premium', reply: { SQL: '2' }, type: 'number' }); T('premium (number input): SQL → AI 2', r.value === '2' && r.calls === 1, r);
-  r = await field('Depuis combien d’années utilisez-vous C++ ?', { ...THEO, cvProfile: { ...THEO.cvProfile, experience: [] } }, { plan: 'premium' }); T('premium without CV roles → deterministic (no AI call)', r.value === '3' && r.calls === 0, r);
-  r = await field('Depuis combien d’années utilisez-vous SQL ?', THEO, { plan: 'premium', reply: { SQL: '0' } });
-  T('premium: SQL (in the CV skills) AI 0 → floored at 1', r.value === '1' && r.calls === 1, r);
-  T('premium prompt: text check says SQL is listed in the skills, no role names it', /Text check for "SQL": listed in Top skills/.test(r.prompt) && /roles naming it literally: none/.test(r.prompt), (r.prompt.match(/Text check[^\n]*/) || [''])[0]);
-  r = await field('Depuis combien d’années utilisez-vous Microsoft Excel ?', THEO, { plan: 'premium', reply: { Excel: '2' } });
-  T('premium prompt: Excel named in roles → text check lists them', /roles naming it literally: Consultant ; Stagiaire Stratégie & Opérations/.test(r.prompt), (r.prompt.match(/Text check[^\n]*/) || [''])[0]);
-  r = await page.evaluate(() => { const c = { yearsOfExperience: '3', cvProfile: { experience: [{ title: 'Stagiaire', company: 'GOOGLE', duration: 'Avril – Août 2023' }, { title: 'Stagiaire', company: 'BEALIVR', duration: 'Janvier – Juin 2022' }] } }; return window.EAM.FormFiller.yearsAIPrompt('Depuis combien d’années utilisez-vous SQL ?', c, 3); });
-  T('prompt: "Avril – Août 2023" / "Janvier – Juin 2022" get their months (Théo CV, were "dates unknown")', /Août 2023\) — 5 months/.test(r) && /Juin 2022\) — 6 months/.test(r), (r.match(/- Stagiaire[^\n]*/g) || []));
+  const premBad = [];
+  for (const [q, want] of HOLD) { const x = await field(q, THEO, { plan: 'premium' }); if (x.value !== String(want)) premBad.push({ q, want, ...x }); }
+  T(`premium: the ${HOLD.length} questions → 1 for specific items absent from the CV, 3 otherwise`, !premBad.length, premBad.slice(0, 4));
+  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO, { plan: 'premium' }); T('premium: C++ decided by the lists (no AI call)', r.value === '1' && r.calls === 0, r);
+  r = await field('Depuis combien d’années utilisez-vous SQL ?', THEO, { plan: 'premium', type: 'number' }); T('premium (number input): SQL in the CV → 3', r.value === '3' && r.calls === 0, r);
+  r = await field('How many years of work experience do you have?', THEO, { plan: 'premium' }); T('premium: generic years question → total 3', r.value === '3' && r.calls === 0, r);
+  r = await field('Depuis combien d’années utilisez-vous C++ ?', { ...THEO, yearsOfExperience: '0', accountYears: 0, cvProfile: { ...THEO.cvProfile, experience: [{ title: 'Stagiaire', company: 'X', duration: 'Jan 2026 – Mar 2026' }] } }, { plan: 'premium' });
+  T('premium: total 0 → specific absent still 1 (never 0)', r.value === '1', r);
+  r = await field('Depuis combien d’années utilisez-vous C++ ?', { ...THEO, cvProfile: { ...THEO.cvProfile, experience: [] } }, { plan: 'premium' }); T('premium without CV roles → default 3', r.value === '3' && r.calls === 0, r);
+  const DEV = { ...THEO, cvProfile: { ...THEO.cvProfile, experience: [{ title: 'Développeur C++', company: 'Thales', duration: '01/2024 – Present', bullets: ['Moteur temps réel en C++'] }, ...THEO.cvProfile.experience] } };
+  r = await field('Depuis combien d’années utilisez-vous C++ ?', DEV, { plan: 'premium' }); T('premium: C++ in a role → default 3', r.value === '3', r);
 
-  // 3. PREMIUM pre-filled
-  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO, { plan: 'premium', pre: '3', reply: { 'C++': '0' } }); T('premium: saved 3 for C++ → AI 0 (lowered)', r.value === '0' && r.calls === 1, r);
-  r = await field('Depuis combien d’années utilisez-vous Microsoft Excel ?', THEO, { plan: 'premium', pre: '1', reply: { Excel: '3' } }); T('premium: saved 1 for Excel → AI 3 (raised)', r.value === '3', r);
-  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO, { plan: 'premium', pre: '3', err: 'timeout' }); T('premium: AI failure keeps the saved value', r.value === '3', r);
+  // 3. AI only for unknown items, cached, temperature 0
+  r = await field('Depuis combien d’années utilisez-vous Dimension ?', THEO, { plan: 'premium', reply: 'SPECIFIC' });
+  T('premium: unknown "Dimension" → AI SPECIFIC → 1 (temperature 0, classification prompt)', r.value === '1' && r.calls === 1 && r.temp === 0 && /SPECIFIC or BROAD/.test(r.prompt) && /\nQuestion: "Dimension"\nAnswer:$/.test(r.prompt), { ...r, prompt: r.prompt.slice(-120) });
+  r = await field('How many years have you used Dimension?', THEO, { plan: 'premium', reply: 'BROAD', fresh: false }); T('AI kind cached per item (no 2nd call)', r.value === '1' && r.calls === 0, r);
+  r = await field('Depuis combien d’années utilisez-vous Dimension ?', THEO, { plan: 'premium', reply: 'BROAD' }); T('premium: unknown item → AI BROAD → 3', r.value === '3' && r.calls === 1, r);
+  r = await field('Depuis combien d’années utilisez-vous Dimension ?', THEO, { plan: 'premium', reply: 'hmm' }); T('premium: unknown item, unusable AI answer → 3 (boost)', r.value === '3', r);
 
-  // 4. Cache
-  await field('Depuis combien d’années utilisez-vous Summit ?', THEO, { plan: 'premium', reply: { Summit: '0' } });
-  r = await field('Depuis combien d’années utilisez-vous Summit ?', THEO, { plan: 'premium', reply: { Summit: '2' }, fresh: false }); T('cache: same question + same CV → cached 0, no 2nd call', r.value === '0' && r.calls === 0, r);
-  const THEO2 = { ...THEO, cvProfile: { ...THEO.cvProfile, experience: [{ title: 'Business Analyst Summit', company: 'Natixis', duration: '01/2022 – Present', bullets: ['Summit front-to-back'] }, ...THEO.cvProfile.experience] } };
-  r = await field('Depuis combien d’années utilisez-vous Summit ?', THEO2, { plan: 'premium', reply: { Summit: '2' }, fresh: false }); T('cache: CV changed → asked again', r.value === '2' && r.calls === 1, r);
-  const st = await page.evaluate(() => Object.keys(window.__store.eam_ai_cache || {}).filter(k => /^yearsaiv1/.test(k)).length);
-  T('years answers live in their own cache namespace', st >= 2, st);
+  // 4. pre-filled LinkedIn values kept
+  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO, { plan: 'premium', pre: '3' }); T('premium: saved 3 for C++ kept (never lowered)', r.value === '3', r);
+  r = await field('Depuis combien d’années utilisez-vous Adobe Photoshop ?', THEO, { plan: 'premium', pre: '4' }); T('premium: saved 4 for Photoshop kept', r.value === '4', r);
+  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO, { plan: 'premium', pre: '0' }); T('premium: saved 0 for C++ → raised to 1', r.value === '1', r);
+  r = await field('Depuis combien d’années utilisez-vous Gestion de projet ?', THEO, { plan: 'premium', pre: '1' }); T('premium: saved 1 for a broad item → raised to 3 (as before)', r.value === '3', r);
 
-  // 5. askAI years guard (universal autofill) + years-range select
-  const ask = (q, plan, reply) => page.evaluate(async ({ q, plan, reply }) => { window.__plan = plan; window.__prompts = []; window.__store = {}; await window.EAM.aiForm.clearCache(); window.__reply = () => ({ answer: reply }); const a = await window.EAM.aiForm.askAI(q, window.__cfg, 'text'); return { a, calls: window.__prompts.length }; }, { q, plan, reply });
+  // 5. toggle OFF (per-skill CV years) on both plans
+  const OFF = { ...THEO, skillYearsAsTotal: false };
+  r = await field('Depuis combien d’années utilisez-vous C++ ?', OFF, { plan: 'free' }); T('toggle OFF free: C++ absent → total 3 (2.5.116)', r.value === '3', r);
+  r = await field('Depuis combien d’années utilisez-vous C++ ?', OFF, { plan: 'premium' }); T('toggle OFF premium: C++ absent → 1', r.value === '1', r);
+  r = await field('Depuis combien d’années utilisez-vous Tableau ?', OFF, { plan: 'premium' }); T('toggle OFF premium: Tableau (Google role, 5 months) → 1 (role years, ≥ 1)', r.value === '1', r);
+
+  // 6. universal autofill + radios + selects
   await page.evaluate((c) => { window.__cfg = c; }, THEO);
-  r = await ask('How many years of experience do you have with Python?', 'premium', '0'); T('askAI (universal autofill) premium: Python → AI 0', r.a === '0' && r.calls === 1, r);
-  r = await ask('How many years of experience do you have with Python?', 'free', '0'); T('askAI free: Python → total 3, no AI', r.a === '3' && r.calls === 0, r);
-  const sel = (plan, reply) => page.evaluate(async ({ plan, reply }) => {
-    window.__plan = plan; window.__prompts = []; window.__store = {}; await window.EAM.aiForm.clearCache(); window.__reply = () => ({ answer: reply });
+  const ask = (q, plan) => page.evaluate(async ({ q, plan }) => { window.__plan = plan; window.__prompts = []; window.__store = {}; await window.EAM.aiForm.clearCache(); const a = await window.EAM.aiForm.askAI(q, window.__cfg, 'text'); return { a, calls: window.__prompts.length }; }, { q, plan });
+  r = await ask('How many years of experience do you have with Python?', 'premium'); T('askAI (universal autofill) premium: Python → 1', r.a === '1' && r.calls === 0, r);
+  r = await ask('How many years of experience do you have with Python?', 'free'); T('askAI free: Python → 3', r.a === '3' && r.calls === 0, r);
+  const sel = (plan) => page.evaluate(async ({ plan }) => {
+    window.__plan = plan; window.__prompts = []; window.__store = {}; await window.EAM.aiForm.clearCache();
     const root = document.getElementById('root');
     root.innerHTML = `<div class="m"><div><label for="s">How many years of experience do you have with Python?</label><select id="s"><option value="">Select an option</option><option>0-1 years</option><option>2-4 years</option><option>5+ years</option></select></div></div>`;
     await window.EAM.FormFiller.fillSelectDropdowns(root.querySelector('.m'), window.__cfg);
-    const s = root.querySelector('#s'); return { v: s.options[s.selectedIndex].text, calls: window.__prompts.length };
-  }, { plan, reply });
-  r = await sel('premium', '0'); T('years-range select premium: Python AI 0 → "0-1 years"', r.v === '0-1 years' && r.calls === 1, r);
-  r = await sel('free', '0'); T('years-range select free: Python → total 3 → "2-4 years"', r.v === '2-4 years' && r.calls === 0, r);
-
-  const rad = (q, opts, plan, reply) => page.evaluate(async ({ q, opts, plan, reply }) => {
+    const s = root.querySelector('#s'); return { v: s.options[s.selectedIndex].text };
+  }, { plan });
+  r = await sel('premium'); T('years-range select premium: Python → "0-1 years"', r.v === '0-1 years', r);
+  r = await sel('free'); T('years-range select free: Python → "2-4 years"', r.v === '2-4 years', r);
+  const rad = (q, opts, plan, reply = 'No') => page.evaluate(async ({ q, opts, plan, reply }) => {
     window.__plan = plan; window.__prompts = []; window.__store = {}; await window.EAM.aiForm.clearCache(); window.__reply = () => ({ answer: reply });
     const root = document.getElementById('root');
     root.innerHTML = '<div class="m"><fieldset><legend><span>' + q + '</span></legend>' + opts.map((o, i) => '<div><input type="radio" id="r' + i + '" name="g" value="' + o + '"><label for="r' + i + '">' + o + '</label></div>').join('') + '</fieldset></div>';
     await window.EAM.FormFiller.fillRadioButtons(root.querySelector('.m'), window.__cfg);
-    const c = root.querySelector('input:checked'); return { v: c ? c.value : '', calls: window.__prompts.length, years: window.__prompts.filter(p => /YEARS RULES/.test(p)).length };
+    const c = root.querySelector('input:checked'); return { v: c ? c.value : '', kindCalls: window.__prompts.filter(p => /SPECIFIC or BROAD/.test(p.prompt)).length };
   }, { q, opts, plan, reply });
-  r = await rad('How many years of experience do you have with Python?', ['0-1 years', '2-4 years', '5+ years'], 'premium', '0'); T('years-range radios premium: Python AI 0 → "0-1 years"', r.v === '0-1 years' && r.years === 1, r);
-  r = await rad('How many years of experience do you have with Python?', ['0-1 years', '2-4 years', '5+ years'], 'free', '0'); T('years-range radios free: Python → "2-4 years"', r.v === '2-4 years' && r.calls === 0, r);
-  r = await rad('Do you have at least 5 years of experience with SAP?', ['Yes', 'No'], 'premium', 'No'); T('yes/no "at least 5 years" premium: no years-AI call (only the yes/no AI)', r.years === 0, r);
+  r = await rad('How many years of experience do you have with Python?', ['0-1 years', '2-4 years', '5+ years'], 'premium'); T('years-range radios premium: Python → "0-1 years"', r.v === '0-1 years', r);
+  r = await rad('How many years of experience do you have with Python?', ['0-1 years', '2-4 years', '5+ years'], 'free'); T('years-range radios free: Python → "2-4 years"', r.v === '2-4 years', r);
+  r = await rad('Do you have at least 5 years of experience with Dimension?', ['Yes', 'No'], 'premium'); T('yes/no "at least 5 years" premium: no specific/broad call', r.kindCalls === 0, r);
 
-  // last: a 403 blocks the AI for the rest of the session
-  r = await field('Depuis combien d’années utilisez-vous HTML ?', THEO, { plan: 'premium', err: 'premium_required' }); T('premium: server 403 → deterministic 3', r.value === '3', r);
-  r = await field('Depuis combien d’années utilisez-vous C++ ?', THEO, { plan: 'premium', reply: { 'C++': '0' } }); T('premium after a 403 this session → deterministic, no more calls', r.value === '3' && r.calls === 0, r);
+  // last: a 403 blocks the AI for the rest of the session → unknown items stay broad (3)
+  r = await field('Depuis combien d’années utilisez-vous Dimension ?', THEO, { plan: 'premium', err: 'premium_required' }); T('premium: server 403 on the kind check → 3', r.value === '3', r);
 
   await b.close();
   console.log(`\n${pass} passed, ${fail} failed`);

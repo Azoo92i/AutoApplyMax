@@ -463,46 +463,59 @@
     return r;
   }
 
-  // ─── 2.5.130: PREMIUM years = the AI, grounded in the CV (Théo 2026-10-27) ───────────────────────────────────────
-  // "Laisse 3 comme base pour les non-premium. Avec l'IA (premium), il faut adapter la réponse à mon profil."
-  // Live 2026-10-27: every "Depuis combien d'années utilisez-vous X ?" got the total (3) for a consultant / project
-  // manager — C++, Python, HTML, Titrisation, Summit, SAP… Premium: a skill / tool / sector years question goes to the
-  // AI with the dated roles, bullets and skills; it answers an honest whole number (used in roles → their span; related
-  // → an estimate; clearly absent → 0 or 1), clamped here to [0, total]. Generic "years of experience" questions,
-  // free users, no CV roles, or any AI failure → the deterministic yearsForQuestion (unchanged). On premium the AI also
-  // wins over the popup toggle "answer with my total years" (that toggle is the no-AI rule).
+  // ─── 2.5.130: PREMIUM years — total years (the boost) EXCEPT really specific items absent from the CV ─────────────
+  // Théo 2026-10-27 (live run: "Depuis combien d'années utilisez-vous C++ / Titrisation / Summit ?" → 3 for a consultant):
+  // "Mets le nombre d'années de base, il faut quand même booster. Si déjà enregistré sur LinkedIn, garde la réponse de
+  // base. Réponds avec les années totales sauf pour les choses vraiment spécifiques."
+  //  - default = yearsForQuestion (unchanged, free and premium): total years with the toggle "answer with my total
+  //    years" ON (default); per-skill CV years with it OFF; sector questions from the CV roles.
+  //  - premium only: a REALLY specific item (programming language, named software / ERP / platform, regulation or
+  //    technical niche) that the CV never mentions → 1 (never 0 — a 0 is an auto-reject). Present in the CV → default.
+  //  - specific vs broad is decided by lists (stable); only an item the lists don't classify goes to the AI, which
+  //    answers SPECIFIC / BROAD once per item (cached). No answer → broad (= total, the boost).
+  //  - LinkedIn-saved values are kept (only ever raised, as before) — fillTextInputs.
+  const _SPECIFIC_ITEM_RE = new RegExp('(?:^|[^a-z0-9+#])(?:' + [
+    // programming / markup / query languages (LinkedIn cuts names: "Jav", "Linu", "SQ", "XM")
+    'c\\+\\+', 'c#', 'f#', '\\.net', 'java?', 'javascript', 'typescript', 'python', 'ruby', 'golang', 'rust', 'php', 'perl', 'scala', 'kotlin', 'swift', 'objective-c', 'cobol', 'fortran', 'vba', 'matlab',
+    'html5?', 'css3?', 'xml?', 'json', 'yaml', 'sql?', 'pl\\/sql', 't-sql', 'nosql', 'graphql', 'bash', 'powershell', 'linux?', 'unix', 'react', 'angular', 'vue(?:\\.js)?', 'node(?:\\.js)?', 'django', 'flask', 'spring', 'laravel',
+    // named software / ERP / platforms / cloud
+    'sap', 's\\/4\\s?hana', 'hana', 'oracle', 'netsuite', 'dynamics', 'navision', 'sage', 'cegid', 'odoo', 'workday', 'servicenow', 'salesforce', 'sales cloud', 'service cloud', 'hubspot', 'marketo', 'zendesk', 'pega',
+    'summit', 'murex', 'calypso', 'orchestrade', 'kondor', 'sophis', 'bloomberg', 'reuters', 'eikon', 'factset', 'anaplan', 'hyperion', 'tagetik', 'cognos', 'coupa', 'ariba', 'kyriba',
+    'jira', 'confluence', 'atlassian', 'trello', 'asana', 'ms project', 'primavera',
+    'photoshop', 'illustrator', 'indesign', 'premiere pro', 'after effects', 'lightroom', 'figma', 'sketch', 'canva', 'autocad', 'revit', 'solidworks', 'catia', 'sas', 'spss', 'stata', 'tableau', 'power ?bi', 'qlik\\w*', 'looker', 'alteryx', 'dataiku', 'knime',
+    'azure', 'aws', 'gcp', 'google cloud', 'kubernetes', 'docker', 'terraform', 'ansible', 'jenkins', 'git(?:hub|lab)?', 'hadoop', 'spark', 'kafka', 'snowflake', 'databricks', 'dbt', 'airflow', 'mongodb', 'postgres\\w*', 'mysql',
+    'shopify', 'magento', 'wordpress', 'prestashop', 'google analytics', 'google ads', 'sap ariba', 'iot',
+    // regulations / technical niches
+    'solvabilit[ée]', 'solvency', 'b[âa]le', 'basel', 'ifrs(?:\\s?\\d+)?', 'us gaap', 'mifid\\w*', 'emir', 'frtb', 'sfdr', 'dora', 'titrisation', 'securiti[sz]ation', 'mon[ée]tique', 'emv', 'cb2a', 'swift', 'sepa',
+    'actif[- ]passif', 'alm', 'lcb[- ]?ft', 'aml', 'gdpr', 'rgpd', 'sox', 'iso ?\\d{4,5}', 'pci[- ]?dss', 'itil', 'togaf', 'prince2', 'six sigma', 'lean six sigma',
+  ].join('|') + ')(?=$|[^a-z0-9+#])', 'i');
+  // Broad skills / functions / domains (always total). Excel / Office are everyday tools → broad (Théo).
+  const _BROAD_ITEM_RE = /\b(gestion|management|manag\w*|pilotage|conduite|coordination|conseil|consult\w*|strat[ée]gi\w*|strateg\w*|finance\w*|financ\w*|financial|comptab\w*|account\w*|audit|contr[ôo]le de gestion|budg\w*|tr[ée]sorerie|cr[ée]dit|credit|march[ée]s?|markets?|analyse|analys\w*|analyst|business|commercial|vente|sales|marketing|communication|achats?|procurement|purchasing|supply|logisti\w*|op[ée]rations?|projets?|projects?|programmes?|programs?|product|produits?|ownership|owner|transformation|changement|change|formation|training|recrutement|recruit\w*|ressources humaines|human resources|rh|hr|service client|customer|relation\w*|n[ée]gociation|negotiat\w*|leadership|d[ée]ploiement|deployment|reporting|donn[ée]es|data|databases?|bases? de donn[ée]es|digital\w*|num[ée]rique|innovation|qualit[ée]|quality|risques?|risks?|conformit[ée]|compliance|juridique|legal|banc\w*|bank\w*|assurances?|insurance|gestion d.actifs|asset management|order to cash|procure to pay|o2c|p2p|excel|microsoft office|office|word|powerpoint|outlook|google workspace|agile|scrum|kanban)\b/i;
+  function yearsItemKind(item) {
+    const s = String(item || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    const deacc = _deaccent(s).toLowerCase();
+    if (/^(?:ms |microsoft )?(?:excel|office|word|powerpoint|outlook)(?: \w+)?$/.test(deacc) || /^microsoft office$/.test(deacc)) return 'broad';
+    if (_SPECIFIC_ITEM_RE.test(s) || _SPECIFIC_ITEM_RE.test(deacc)) return 'specific';
+    if (_BROAD_ITEM_RE.test(s) || _BROAD_ITEM_RE.test(deacc)) return 'broad';
+    return '';
+  }
+  // The specific term(s) of an item ("Base de données SQL" → "SQL", "Python (langage de programmation)" → "Python").
+  function _specificTerms(item) {
+    const re = new RegExp(_SPECIFIC_ITEM_RE.source, 'gi'); const out = []; let m;
+    while ((m = re.exec(String(item || '')))) { const t = m[0].replace(/^[^a-z0-9+#.]+/i, '').trim(); if (t) out.push(t); if (re.lastIndex === m.index) re.lastIndex++; }
+    return out;
+  }
+  // Truncated names LinkedIn produces → the CV spelling to look for.
+  const _TERM_FULL = { jav: 'java', linu: 'linux', sq: 'sql', xm: 'xml' };
   function _yearsBullets(e) {
     const b = Array.isArray(e.bullets) ? e.bullets : Array.isArray(e.achievements) ? e.achievements : Array.isArray(e.description) ? e.description : [];
     const lines = b.map(x => String(typeof x === 'string' ? x : (x && x.text) || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
     if (!lines.length && typeof e.description === 'string' && e.description.trim()) lines.push(...e.description.split(/\n+|•/).map(s => s.trim()).filter(Boolean));
-    return lines.slice(0, 5).map(l => l.replace(/^[•\-*]\s*/, '').slice(0, 200));
+    return lines;
   }
-  // "Avril – Août 2023" / "Janvier – Juin 2022" (Théo's CV, live 27/10): the start month has no year → the end's year.
-  function _yearsRoleRange(e) {
-    try { const r = _entryRangeClean(e); if (r) return r; } catch (_) {}
-    const raw = String(e.duration || e.dates || e.period || '').split(/\s*\|\s*/)[0];
-    const m = raw.match(/^\s*([A-Za-zÀ-ÿ.]{3,12})\s*(?:–|—|-|à|to|au)\s*([A-Za-zÀ-ÿ.]{3,12})\s+(\d{4})\s*$/);
-    if (!m) return null;
-    const a = _parseYM(m[1].replace(/\.$/, '') + ' ' + m[3], false), b = _parseYM(m[2].replace(/\.$/, '') + ' ' + m[3], true);
-    return a != null && b != null && b >= a ? [a, b] : null;
-  }
-  function _yearsRoleLines(cv) {
-    return ((cv && cv.experience) || []).filter(Boolean).slice(0, 10).map(e => {
-      let months = null;
-      const r = _yearsRoleRange(e); if (r) months = r[1] - r[0] + 1;
-      const dates = String(e.duration || e.dates || e.period || [e.startDate || e.start || '', e.endDate || e.end || ''].filter(Boolean).join(' – ') || '').split(/\s*\|\s*/)[0];
-      const head = `- ${String(e.title || '').trim()} @ ${String(e.company || '').trim()}${dates ? ' (' + dates + ')' : ''}${months != null ? ` — ${months} months` : ' — dates unknown'}`;
-      const b = _yearsBullets(e).map(x => `    • ${x}`).join('\n');
-      return head + (b ? '\n' + b : '');
-    }).join('\n');
-  }
-  function _yearsCvKey(config, total) {
-    const cv = (config && config.cvProfile) || {};
-    const s = JSON.stringify([total, (cv.experience || []).map(e => e && [e.title, e.company, e.duration || e.dates || e.startDate, _yearsBullets(e).length]), (cv.skills || []).length]);
-    let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
-    return h.toString(36);
-  }
-  // Literal CV evidence for a skill / tool item (not sectors): in the skills / summary, and the roles naming it.
+  // Literal CV evidence for an item: in the skills / summary / raw text, and the roles naming it. The specific term
+  // alone also counts ("Base de données SQL" with SQL in the CV, "Salesforce Sales Cloud" with Salesforce).
   function _yearsItemEvidence(question, config) {
     try {
       const cv = (config && config.cvProfile) || {};
@@ -510,59 +523,33 @@
       const item = raw && raw.skill;
       if (!item || raw.sector) return null;
       const skills = (cv.skills || []).map(s => typeof s === 'string' ? s : (s && s.name) || '').join(', ');
-      const inSkills = _mentions(skills + ' ' + String((config && config.summary) || cv.summary || ''), item);
-      const roles = (cv.experience || []).filter(e => e && _mentions([e.title, e.company, ..._yearsBullets(e)].join(' '), item)).map(e => String(e.title || '').trim()).filter(Boolean);
+      const flat = skills + ' \n ' + String((config && config.summary) || cv.summary || '') + ' \n ' + String(cv.rawText || '').slice(0, 20000);
+      const terms = [item, ..._specificTerms(item).map(t => _TERM_FULL[t.toLowerCase()] || t)];
+      const hit = (txt) => terms.some(t => _mentions(txt, t));
+      const inSkills = hit(flat);
+      const roles = (cv.experience || []).filter(e => e && hit([e.title, e.company, ..._yearsBullets(e)].join(' '))).map(e => String(e.title || '').trim()).filter(Boolean);
       return { item, inSkills, roles };
     } catch (_) { return null; }
-  }
-  function yearsAIPrompt(question, config, total) {
-    const cv = (config && config.cvProfile) || {};
-    const skills = (cv.skills || []).map(s => typeof s === 'string' ? s : (s && s.name) || '').filter(Boolean).slice(0, 40).join(', ');
-    const _cs = (window.EAM && window.EAM.utils && window.EAM.utils.cleanProfileSummary) || ((x) => x || '');
-    const summary = String(_cs(config && config.summary) || _cs(cv.summary) || '').slice(0, 500);
-    const edu = (cv.education || []).slice(0, 4).map(e => `- ${e.degree || ''}${e.school ? ', ' + e.school : ''}${e.year ? ' (' + e.year + ')' : ''}`).filter(s => s.length > 4).join('\n');
-    const q = String(question || '').replace(/\s+/g, ' ').trim();
-    // Text check (an anchor so the same CV gets the same kind of answer): where the extension's matcher finds the item.
-    // The AI still judges related / adjacent work — the check only lists literal (stem / synonym) matches.
-    const ev = _yearsItemEvidence(q, config);
-    const check = ev ? `Text check for "${ev.item}": ${ev.inSkills ? 'listed in Top skills / summary (→ at least 1)' : 'not in Top skills / summary'}; roles naming it literally: ${ev.roles.length ? ev.roles.join(' ; ') : 'none (related work in a role can still count)'}.\n` : '';
-    return `You are filling a job application form for the candidate below. The field asks how many years the candidate has used / worked with a tool, skill, method, domain or sector. IMPORTANT: Reply with ONLY a single number. No text, no units, no punctuation. Just the number.
-
-CANDIDATE:
-Years of experience: ${total} (total professional experience — the maximum possible answer)
-${summary ? `Professional summary: ${summary}\n` : ''}${skills ? `Top skills: ${skills}\n` : ''}
-Recent experience (every role, with its duration):
-${_yearsRoleLines(cv) || '- (no roles)'}
-${edu ? `\nEducation:\n${edu}\n` : ''}${check ? '\n' + check : ''}
-YEARS RULES (honest, grounded in the data above — never invented):
-- The item is named in, or clearly part of, one or more roles above (title, company activity, bullets) → the total duration of those roles in whole years (months / 12, rounded down), at least 1.
-- The item is only in "Top skills" / the summary, or the roles show closely related / adjacent work (same family of tool, task or sector, e.g. Excel for "Microsoft Office", project management for "Gestion de projet", a consulting firm for "services et conseil") → a reasonable estimate between 1 and the duration of the roles where it was plausibly used.
-- The item is clearly absent and unrelated to every role above (e.g. C++ or Python for a consultant who never coded, a sector none of the employers works in) → 0 (or 1 when there is a faint link).
-- Studies do not count as professional years. Never answer more than ${total}.
-- A truncated or mixed-language item ("Jav", "SQ", "Linu", "ou have with XM") means the obvious item (Java, SQL, Linux, XML).
-
-Question: "${q.replace(/"/g, "'")}"
-Answer:`;
   }
   async function yearsForQuestionAsync(question, config) {
     const det = yearsForQuestion(question, config);
     try {
-      if (!det || !det.skill) return det; // generic "years of experience" → total, no AI needed
-      const ai = window.EAM && window.EAM.aiForm;
-      if (!ai || !ai.askYearsAI) return det;
+      if (!det || !det.skill || det.sector) return det; // generic / sector questions: unchanged
       const cv = config && config.cvProfile;
-      if (!cv || !Array.isArray(cv.experience) || !cv.experience.length) return det; // nothing to ground the AI on
-      if (!(await _premiumAIAvailable())) return det;
-      const total = totalYears(config);
-      const raw = await ai.askYearsAI(question, config, yearsAIPrompt(question, config, total), _yearsCvKey(config, total), (det.sector ? 'sector ' : 'item ') + String(det.skill).toLowerCase());
-      const n = parseInt(String(raw == null ? '' : raw), 10);
-      if (!isFinite(n) || n < 0) return det;
-      let y = total > 0 ? Math.min(n, total) : n;
-      // Floor: an item the CV literally lists (skills / summary / a role) is at least 1 year — live 27/10 the model
-      // answered 0 for SQL and Salesforce, both in Théo's skills (same "≥ 1 if in the CV" rule as the no-AI path).
-      let floored = false;
-      if (y < 1) { const ev = _yearsItemEvidence(question, config); if (ev && (ev.inSkills || ev.roles.length)) { y = 1; floored = true; } }
-      return { ...det, years: y, ai: true, deterministic: det.years, basis: `AI (premium) from your CV: "${det.skill}" → ${y}${total > 0 && n > total ? ` (capped at your ${total} years)` : ''}${floored ? ' (≥ 1: in your CV)' : ''}` };
+      if (!cv || !Array.isArray(cv.experience) || !cv.experience.length) return det; // no CV → cannot say "absent"
+      if (!(await _premiumAIAvailable())) return det; // free / no AI: unchanged
+      const ev = _yearsItemEvidence(question, config);
+      if (!ev || ev.inSkills || ev.roles.length) return det; // in the CV → the default answer
+      let kind = yearsItemKind(ev.item), how = 'list';
+      if (!kind) {
+        const ai = window.EAM && window.EAM.aiForm;
+        const k = ai && ai.askYearsItemKind ? await ai.askYearsItemKind(ev.item) : null;
+        kind = k === 'specific' ? 'specific' : 'broad'; how = k ? 'AI' : 'default';
+      }
+      if (kind !== 'specific') return { ...det, basis: `${det.basis} — "${ev.item}" broad (${how}) → kept` };
+      const y = 1; // never 0 (an auto-reject), never more for an item the CV does not show
+      if (det.years === y) return det;
+      return { ...det, years: y, specific: true, basis: `"${ev.item}" is a specific item (${how}) absent from your CV → ${y} (premium; never 0)` };
     } catch (_) { return det; }
   }
   function _yearsForQuestionRaw(question, config) {
@@ -1013,13 +1000,11 @@ Answer:`;
           const cur = String(input.value).trim();
           if (/^\d{1,2}$/.test(cur) && lab.match(/experience|years|expérience|années|años|jahre|anni|esperienza/)) {
             const fq = getFieldQuestion(input, modal);
+            // 2.5.130 (Théo 2026-10-27: "si déjà enregistré sur LinkedIn, garde la réponse"): a saved figure is never
+            // lowered — only a lower one is raised (a saved 0 for a specific absent item → 1 on premium).
             const y = await yearsForQuestionAsync(fq, config);
             const isExp = /experien|exp[ée]rience|erfahrung|esperienza/i.test(lab + ' ' + fq);
-            // 2.5.130 (Théo 2026-10-27): premium → the AI's CV-grounded figure replaces a saved one in both directions
-            // (the 27/10 run saved "3" for C++ / Python… on LinkedIn; never lowering would keep them forever).
-            if (y && y.ai) {
-              if (Number(cur) !== y.years) { u().fill(input, String(y.years)); u().log(`Years exp: pre-filled ${cur} → ${y.years} (${y.basis})`); }
-            } else if (y && y.years > 0 && Number(cur) < y.years && (Number(cur) === 0 || isExp || y.skill)) {
+            if (y && y.years > 0 && Number(cur) < y.years && (Number(cur) === 0 || isExp || y.skill)) {
               u().fill(input, String(y.years));
               u().log(`Years exp: raised pre-filled ${cur} → ${y.years} (${y.basis})`);
             }
@@ -2617,7 +2602,7 @@ Answer:`;
       if (/\b(years? of|ans?\s+d[\'e]|années?|jahre|anni|años)\b.*(experience|exp[ée]rience|erfahrung|esperienza|experiencia)|how many years|combien.*ann[ée]e/i.test(questionText)
           || /\b(experience|exp[ée]rience)\b.*\b(years?|ans?|années?)\b/i.test(questionText)) {
         // v2.5.89: skill-specific years (0 when the skill is not in the CV), not the global total.
-        // 2.5.130: the premium AI is asked only when the radios ARE year ranges (not for a yes/no "at least N years?").
+        // 2.5.130: the premium rule (may ask the AI specific / broad) runs only when the radios ARE year ranges.
         const _rangeRadios = Array.from(radioInputs).filter(rd => { const l = _radioLabel(fieldset, rd); return parseYearsRange(l ? l.textContent : (rd.value || '')); }).length >= 2;
         const _yq = questionLabel ? questionLabel.textContent : questionText;
         const y = _rangeRadios ? await yearsForQuestionAsync(_yq, config) : yearsForQuestion(_yq, config);
@@ -4264,8 +4249,8 @@ Answer:`;
     ownLinkedInUrl,
     yearsQuestionSkill,
     yearsForQuestion,
-    yearsForQuestionAsync, // 2.5.130: premium → AI (CV-grounded), else yearsForQuestion
-    yearsAIPrompt,
+    yearsForQuestionAsync, // 2.5.130: premium → specific item absent from the CV → 1, else yearsForQuestion
+    yearsItemKind,
     yearsItemEvidence: _yearsItemEvidence,
     totalYears,
     cvSpanYears,
