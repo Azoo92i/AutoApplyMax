@@ -1204,6 +1204,29 @@
       return '';
     }
 
+    // v2.5.98: the focused job's short type pills ("Internship", "Stage", "Full-time"…) from the
+    // details header. Live 2026-10-03: a VINCI ad tagged "Internship" was applied to. Exact short
+    // leaf texts only (never the description), visible, outside the job list, filter bar, dialogs.
+    getFocusedJobTags() {
+      const out = [];
+      try {
+        const TAG = /^(internship|stage|alternance|apprenticeship|apprentissage|contrat d.apprentissage|contrat de professionnalisation|work[- ]study|pr[aá]cticas|praktikum|tirocinio|full[- ]time|part[- ]time|temps plein|temps partiel|contract|cdi|cdd|temporary|int[ée]rim|freelance|volunteer|b[ée]n[ée]volat)$/i;
+        const EXCLUDE = '[data-occludable-job-id], [data-job-id], .job-card-container, .jobs-search-results-list, .scaffold-layout__list, [componentkey*="job-card" i], .search-reusables__filters-bar, [role="search"], header, form, fieldset, label, dialog, [role="dialog"], [role="listbox"], [role="menu"], nav, [class*="filter" i], #interop-outlet, #job-details, .jobs-description, .jobs-box__html-content';
+        const seen = new Set();
+        for (const el of document.querySelectorAll('span, button, li, div, p, a, strong')) {
+          if (el.childElementCount > 3) continue;
+          const t = (el.textContent || '').replace(/[✓✔]/g, '').replace(/\s+/g, ' ').trim();
+          if (!t || t.length > 34 || !TAG.test(t)) continue;
+          if (el.closest(EXCLUDE)) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) continue;
+          const k = t.toLowerCase();
+          if (!seen.has(k)) { seen.add(k); out.push(t); }
+        }
+      } catch (_) {}
+      return out;
+    }
+
     getFormModal() {
       // ── /jobs/search-results/ (Apr 2026 redesign) ────────────────────
       // STRICT path: the Easy Apply modal only ever renders as a

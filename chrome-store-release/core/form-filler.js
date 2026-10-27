@@ -166,6 +166,13 @@
     ['vente', 'sales'], ['analyse de donnees', 'data analysis'], ['gestion de programme', 'program management'], ['service client', 'customer service'],
     ['gestion de projets', 'project management'], ['gestion del proyecto', 'project management'], ['gestion de proyectos', 'project management'],
     ['conseil', 'consulting'], ['consultant', 'consulting'],
+    // v2.5.101 (live 2026-10-05): "Combien d'années d'expérience en Management de projet ?" → 0 for a PMO /
+    // chef de projet profile. FR variants of project management + the role titles that imply the skill.
+    ['management de projets', 'project management'], ['management de projet', 'project management'],
+    ['pilotage de projets', 'project management'], ['pilotage de projet', 'project management'],
+    ['conduite de projets', 'project management'], ['conduite de projet', 'project management'],
+    ['project management', 'project manager'], ['project management', 'chef de projet'], ['project management', 'pmo'],
+    ['gestion de projet', 'pmo'], ['management de projet', 'chef de projet'], ['management de projet', 'pmo'],
   ];
   function _norm(s) { return ' ' + _deaccent(s).toLowerCase().replace(/[^a-z0-9+#.]+/g, ' ').trim() + ' '; }
   function _tokens(s) {
@@ -173,6 +180,8 @@
   }
   // Word match on a shared prefix (manager ~ management ~ managing, projet ~ projets) — min 5 chars, else exact.
   function _hasWord(t, w) {
+    // v2.5.98: plural / FR adjective forms ("Méthodes agiles" → CV "Agile/Scrum" was answered 0).
+    if (w.length >= 5 && /(?:s|x)$/.test(w)) w = w.slice(0, -1);
     if (w.length < 5) return t.includes(' ' + w + ' ');
     const stem = w.slice(0, Math.max(5, Math.min(w.length, 6)));
     return t.includes(' ' + stem);
@@ -204,6 +213,25 @@
     const total = parseInt(String((config && config.yearsOfExperience) || '').match(/\d+/)?.[0] || '0', 10) || 0;
     const skill = yearsQuestionSkill(question);
     if (!skill) return { years: total, basis: 'total' };
+    // v2.5.98: soft skills ("Sens de l'écoute", "Sens de l'organisation", "Leadership"…) follow the
+    // total experience — "0 years of listening skills" (live 2026-10-04, discarded) is not credible.
+    if (/^(sens\s+(de\s+l.|du\s+|des\s+)?\S+|esprit\s+(d.|de\s+)\S+|capacit[ée]\s+d.\S+|communication|leadership|teamwork|team\s*work|travail\s+en\s+[ée]quipe|organisation|organization|rigueur|autonomie|autonomy|adaptabilit[ée]|adaptability|curiosit[ée]|cr[ée]ativit[ée]|creativity|problem[- ]solving|r[ée]solution\s+de\s+probl[èe]mes|[ée]coute(\s+active)?|active\s+listening|listening|gestion\s+du\s+temps|time\s+management|relationnel|interpersonal\s+skills|soft\s+skills|savoir[- ]être|empathie|empathy|proactivit[ée]|initiative|esprit\s+critique|critical\s+thinking)$/i.test(skill.trim())) {
+      return { years: total, basis: `soft skill "${skill}" → total experience`, skill };
+    }
+    // v2.5.98: "Méthodologies Agile et Waterfall" → 0 although the CV lists Agile/Scrum (live
+    // 2026-10-04, discarded): a compound skill is answered with its best-supported part.
+    const parts = skill.split(/\s+(?:et|and|ou|or|und)\s+|\s*[\/,&+]\s*/i).map(s => s.trim()).filter(s => s.length >= 2);
+    if (parts.length > 1) {
+      let best = null;
+      for (const p of parts) {
+        const r = _yearsForSkill(p, config, total);
+        if (!best || r.years > best.years) best = r;
+      }
+      return best;
+    }
+    return _yearsForSkill(skill, config, total);
+  }
+  function _yearsForSkill(skill, config, total) {
     const cv = config && config.cvProfile;
     if (!cv || !Array.isArray(cv.experience)) return { years: total, basis: 'total (no CV profile synced)', skill };
     const ranges = [];
@@ -227,6 +255,87 @@
       || _mentions(cv.summary || '', skill);
     if (listed) return { years: Math.min(total || 1, 1), basis: `"${skill}" listed in the CV without dated experience`, skill };
     return { years: 0, basis: `"${skill}" not in the CV`, skill };
+  }
+
+  // ─── v2.5.98: yes/no "do you have experience in X" decided from the CV ──
+  // Live 2026-10-04: "Do you have professional experience in the Airline/Aviation industry?" got the
+  // blind Yes default. 'yes' only when X is in the CV (experience, skills, summary); 'no' otherwise;
+  // null when the subject is generic ("this role") or there is no CV profile → caller's normal flow.
+  const _GENERIC_SUBJECT = /^(this|that|the|a|an|such|similar|same|related|relevant|these|those|ce|cet|cette|ces|un|une|le|la|les|similar|similaire)\b.{0,25}\b(role|position|job|field|area|domain|capacity|environment|work|poste|domaine|fonction|emploi|r[ôo]le|type)s?\b|^(it|them|this|that|ça|cela)$/i;
+  function experienceQuestionAnswer(questionText, config) {
+    const q = String(questionText || '').replace(/\s+/g, ' ').trim();
+    const pats = [
+      /\b(?:do|did)\s+you\s+have\s+(?:any\s+)?(?:prior\s+|previous\s+|professional\s+|relevant\s+|hands[- ]on\s+|direct\s+|working\s+|practical\s+)*(?:work\s+)?experience\s+(?:in|with|within|of|on|at|working\s+(?:in|with|for))\s+(.+)$/i,
+      /\bhave\s+you\s+(?:ever\s+|previously\s+|already\s+)?(?:worked|been\s+working)\s+(?:in|with|within|for|at|on)\s+(.+)$/i,
+      /\b(?:avez|poss[ée]dez)[- ]vous\s+(?:d[ée]j[àa]\s+)?(?:une\s+|de\s+l'|d'|des\s+)?(?:premi[èe]re\s+)?(?:exp[ée]riences?)\s+(?:professionnelles?\s+)?(?:significatives?\s+)?(?:en|dans|avec|sur|de|du|des|au|aux|d')\s*(.+)$/i,
+      /\bavez[- ]vous\s+(?:d[ée]j[àa]\s+)?travaill[ée]\s+(?:en|dans|avec|sur|pour|chez|au|aux)\s+(.+)$/i,
+    ];
+    let subj = '';
+    for (const re of pats) { const m = q.match(re); if (m) { subj = m[1]; break; } }
+    if (!subj) return null;
+    subj = subj.split(/[?.;:]/)[0]
+      .replace(/\b(industry|industries|sector|sectors|field|space|domain|environment|secteur|domaine|industrie|environnement|milieu)\b/gi, ' ')
+      .replace(/^(the|a|an|le|la|les|l'|un|une|des|du)\s+/i, '').replace(/\s+/g, ' ').trim();
+    if (!subj || subj.length < 2 || subj.length > 70 || _GENERIC_SUBJECT.test(subj)) return null;
+    const cv = config && config.cvProfile;
+    if (!cv || !Array.isArray(cv.experience) || !cv.experience.length) return null;
+    const text = [
+      ...cv.experience.map(e => [e.title, e.role, e.position, e.company, e.description, ...(Array.isArray(e.bullets) ? e.bullets : []), ...(Array.isArray(e.achievements) ? e.achievements : [])].filter(Boolean).join(' ')),
+      ...(Array.isArray(cv.skills) ? cv.skills.map(s => typeof s === 'string' ? s : (s && s.name) || '') : []),
+      (window.EAM && window.EAM.utils && window.EAM.utils.cleanProfileSummary ? window.EAM.utils.cleanProfileSummary(cv.summary) : '') || '',
+    ].join(' \n ');
+    const alts = subj.split(/\s*(?:\/|,|\bor\b|\bou\b|\band\/or\b|&)\s*/i).map(s => s.trim()).filter(s => s.length >= 2);
+    return alts.some(a => _mentions(text, a)) ? 'yes' : 'no';
+  }
+
+  // ─── v2.5.98: yes/no "at least N years of (X) experience?" ──────────────
+  // X named and in the CV → its dated years vs N; X absent → no; no X → total years vs N;
+  // X only described by reference ("the tool mentioned in the ad") → no (cannot be verified).
+  function minYearsQuestionAnswer(questionText, config) {
+    const q = String(questionText || '').replace(/\s+/g, ' ').trim();
+    const m = q.match(/\b(?:at least|minimum(?: of)?|more than|over|plus de|au moins|au minimum|minimum de|m[aá]s de|al menos|mindestens)\s+(\d{1,2})\s*\+?\s*(?:years?|yrs?|ans?|ann[ée]es?|a[nñ]os|jahre)\b/i)
+      || q.match(/\b(\d{1,2})\s*\+\s*(?:years?|yrs?|ans?|ann[ée]es?)\b/i);
+    if (!m) return null;
+    if (!/experience|exp[ée]rience|experiencia|erfahrung|worked|travaill|utilis|using|used|pratique/i.test(q)) return null;
+    const need = parseInt(m[1], 10);
+    if (/\b(mentioned|listed|described|required|indicated|specified)\b.{0,30}\b(in the|in this)\b.{0,10}\b(ad|job|posting|description|offer)\b|\b(mentionn[ée]e?s?|cit[ée]e?s?|indiqu[ée]e?s?|pr[ée]cis[ée]e?s?|demand[ée]e?s?)\b.{0,20}\b(dans|par)\s+l.(annonce|offre)/i.test(q)) return 'no';
+    const total = parseInt(String((config && config.yearsOfExperience) || '').match(/\d+/)?.[0] || '0', 10) || 0;
+    const y = yearsForQuestion(q, config);
+    if (y.skill) return y.years >= need ? 'yes' : 'no';
+    return total >= need ? 'yes' : 'no';
+  }
+
+  // ─── v2.5.98: "are you willing to work in <place>?" / "are you based in <place>?" ──
+  // 'yes' when the place is the candidate's own city / region / country, else the relocation setting
+  // ('no' when unset). null when no concrete place is named ("on site", "the office", "hybrid").
+  const _HOME_BY_COUNTRY = {
+    fr: ['france', 'paris', 'ile-de-france', 'ile de france', 'idf', 'la defense', 'greater paris', 'region parisienne', 'region paris'],
+    in: ['india'], us: ['united states', 'usa', 'us'], gb: ['united kingdom', 'uk', 'england'], uk: ['united kingdom', 'uk', 'england'],
+    de: ['germany', 'deutschland'], es: ['spain', 'espana'], it: ['italy', 'italia'], ca: ['canada'], be: ['belgium', 'belgique'], ch: ['switzerland', 'suisse'],
+  };
+  function workLocationAnswer(questionText, config) {
+    const q = _deaccent(String(questionText || '')).toLowerCase().replace(/\s+/g, ' ');
+    const m = q.match(/\b(?:willing|able|open|prepared|ready|happy|comfortable|available)\s+to\s+(?:work|be\s+based|live|relocate|commute|move|travel)\s+(?:on[- ]?site\s+)?(?:in|to|at|from|near)\s+([^?.,;]+)/)
+      || q.match(/\b(?:are\s+you|you\s+are)\s+(?:currently\s+)?(?:based|located|living|residing)\s+(?:in|near|within)\s+([^?.,;]+)/)
+      || q.match(/\b(?:pret|prete|dispose|disposee|d'accord|accepteriez[- ]vous|acceptez[- ]vous|souhaitez[- ]vous)[^?]{0,25}?\b(?:travailler|vous\s+installer|demenager|vous\s+deplacer|vivre)\s+(?:a|en|au|aux|sur|dans)\s+([^?.,;]+)/)
+      || q.match(/\b(?:residez|habitez|etes)[- ]vous\s+(?:actuellement\s+)?(?:base\s+|basee\s+|situe\s+|situee\s+)?(?:a|en|au|aux|dans)\s+([^?.,;]+)/);
+    if (!m) return null;
+    const place = m[1].replace(/\b(the|la|le|les|l')\b/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!place || /\b(office|site|hybrid|hybride|remote|team|environment|shift|shifts|weekend|night|nuit|bureau|bureaux|locaux|poste|teletravail|client|clients|fast[- ]paced|startup|this|that|location|area|region|city|ville|country|pays)\b/.test(place) && !/[A-Z]/.test(m[1])) {
+      // "the office", "on site", "this location": not a named place → not ours to decide
+      if (!/\b(paris|france|india|dubai|saudi|riyadh|london|uae|qatar|doha|singapore|germany|spain|italy|usa|canada)\b/.test(place)) return null;
+    }
+    const home = new Set();
+    const city = _deaccent(String((config && config.city) || '')).toLowerCase().trim();
+    if (city) home.add(city);
+    const cc = _deaccent(String((config && config.country) || '')).toLowerCase().trim();
+    if (cc) { home.add(cc); (_HOME_BY_COUNTRY[cc] || []).forEach(x => home.add(x)); for (const [k, v] of Object.entries(_HOME_BY_COUNTRY)) if (v.includes(cc)) v.concat(k).forEach(x => home.add(x)); }
+    if (city === 'paris') _HOME_BY_COUNTRY.fr.forEach(x => home.add(x));
+    const P = ' ' + place.replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
+    for (const h of home) { if (h.length >= 2 && P.includes(' ' + h.replace(/[^a-z0-9]+/g, ' ').trim() + ' ')) return 'yes'; }
+    if (/\b(based|located|living|residing|residez|habitez|etes)\b/.test(q)) return 'no';
+    const rel = String((config && config.willingToRelocate) || '').toLowerCase();
+    return rel === 'yes' ? 'yes' : 'no';
   }
 
   // ─── v2.5.89: salary answer shaped by the question ──────────────────────
@@ -265,6 +374,22 @@
     if (/\b(dd|jj)\s*[\/.-]\s*mm\b/i.test(hint)) return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
     const fr = /[àâçéèêëîïôûù]|\b(date|quand|partir|début|vous|poste)\b/i.test(String(question)) && !/\b(what|when|your|the)\b/i.test(String(question));
     return fr ? `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}` : `${p(d.getMonth() + 1)}/${p(d.getDate())}/${d.getFullYear()}`;
+  }
+
+  // v2.5.98: notice period as words, in the question's language ("1 month" / "1 mois"); a bare
+  // number setting means months (popup hint). Numeric fields keep the bare number (caller).
+  function noticePeriodText(question, config) {
+    const rawValue = String((config && config.noticePeriod) || '1').trim();
+    const fr = /[àâçéèêîôûù]|\b(préavis|preavis|disponib|quand|mois|vous|votre)\b/i.test(String(question || ''));
+    if (/^\d+([.,]\d+)?$/.test(rawValue)) {
+      const one = parseFloat(rawValue.replace(',', '.')) <= 1;
+      return fr ? `${rawValue} mois` : `${rawValue} ${one ? 'month' : 'months'}`;
+    }
+    if (!fr) return rawValue;
+    let v = rawValue.replace(/\bmonths?\b/i, 'mois').replace(/\bweeks?\b/i, 'semaines').replace(/\bdays?\b/i, 'jours').replace(/\bimmediately\b/i, 'immédiatement');
+    if (/^1 semaines$/.test(v)) v = '1 semaine';
+    if (/^1 jours$/.test(v)) v = '1 jour';
+    return v;
   }
 
   function salaryAnswer(question, config, input) {
@@ -382,14 +507,17 @@
           u().fill(input, sd);
           u().log(`Start date filled: ${sd}`);
         } else {
+        // v2.5.98: a bare number only when the FIELD wants one (numeric input, LinkedIn
+        // "-numeric" id, "(months)" unit in the label, "how many months / combien de mois").
+        // Free text "What is your notice period?" got "1" for a "1 month" setting (live 2026-10-03).
         const labelExpectsNumber =
           input.type === 'number' ||
           input.getAttribute('inputmode') === 'numeric' ||
-          /\(\s*(mois|months?|meses|monate|mesi)\s*\)/i.test(haystack) ||
-          /^\d+$/.test(rawValue.replace(/\s*(mois|months?|meses|monate|mesi)\s*$/i, ''));
-        const noticePeriod = labelExpectsNumber
-          ? rawValue.replace(/\s*(mois|months?|meses|monate|mesi)\s*$/i, '').trim() || '1'
-          : rawValue;
+          /numeric/i.test(input.id || '') ||
+          /\(\s*(en\s+|in\s+)?(mois|months?|meses|monate|mesi)\s*\)/i.test(haystack) ||
+          /how many (months|weeks)|number of (months|weeks)|combien de (mois|semaines)|nombre de (mois|semaines)|in (months|weeks)\b|en (mois|semaines)\b|cu[aá]ntos meses|wie viele monate|quanti mesi/i.test(haystack);
+        const unitless = rawValue.replace(/\s*(mois|months?|meses|monate|mesi)\s*$/i, '').trim();
+        const noticePeriod = labelExpectsNumber ? (unitless || '1') : noticePeriodText(haystack, config);
         u().fill(input, noticePeriod);
         u().log(`Notice period filled: ${noticePeriod}`);
         }
@@ -503,7 +631,24 @@
         u().log(`Textarea skipped (AI unavailable): "${label.substring(0, 50)}"`);
         continue;
       }
-      const answer = await window.EAM.aiForm.askAI(getFieldQuestion(ta, modal), config, 'textarea');
+      // v2.5.98: deterministic answers before the AI (live 2026-10-04, multi-line LinkedIn fields):
+      // "How many years of Service Delivery Management experience…" → AI "3" (not in the CV);
+      // "What is your notice period…" → a 3-sentence AI paragraph.
+      const tq = getFieldQuestion(ta, modal);
+      const tql = String(tq || '').toLowerCase();
+      // v2.5.100: not when the same field also asks for a description ("… et quelles sont vos
+      // réalisations majeures ?" got a bare "1" — WINAMAX, live 2026-10-04): the AI writes it.
+      const asksMore = /r[ée]alisations?|achievements?|accomplishments?|describe|d[ée]cri(vez|re)|quelles? sont|what (are|were)|tell us|expliquez|explain|examples?|exemples?/i.test(tql);
+      if (!asksMore && /how many years|combien d.ann[ée]es|nombre d.ann[ée]es|years of .{0,60}experience|ann[ée]es d.exp[ée]rience/i.test(tql)) {
+        const y = yearsForQuestion(tq, config);
+        const v = (y.basis === 'total' && !y.years) ? String(config.yearsOfExperience || '0') : String(y.years);
+        u().fill(ta, v); u().log(`Years exp (textarea): ${v} (${y.basis})`); continue;
+      }
+      if (/notice period|pr[ée]avis|preaviso|preavviso|k[üu]ndigungsfrist/i.test(tql) && config.noticePeriod && !START_DATE_RE.test(tql)) {
+        const v = noticePeriodText(tq, config);
+        u().fill(ta, v); u().log(`Notice period (textarea): ${v}`); continue;
+      }
+      const answer = await window.EAM.aiForm.askAI(tq, config, 'textarea');
       if (answer) {
         u().fill(ta, answer);
         u().log(`AI textarea: "${label.substring(0, 40)}" → "${answer.substring(0, 50)}"`);
@@ -557,9 +702,27 @@
   }
 
   // ─── File/Resume inputs ───────────────────────────────────────────────
+  // v2.5.100: the stored résumé is uploaded at most ONCE per job (Théo 2026-10-04: a CV
+  // re-uploaded on every step / retry piles duplicate résumés into the user's LinkedIn
+  // documents). Key = LinkedIn job id when the URL has one, else title|company.
+  function resumeJobKey() {
+    try {
+      const m = location.href.match(/currentJobId=(\d+)|\/jobs\/view\/(\d+)/);
+      if (m) return 'id:' + (m[1] || m[2]);
+      const j = u().currentJobInfo;
+      if (j && (j.title || j.company)) return 'job:' + j.title + '|' + j.company;
+    } catch (_) {}
+    return 'url:' + location.pathname;
+  }
   async function fillResumeInputs(modal) {
     const state = u();
     let resumeAlreadySelected = false;
+    const jobKey = resumeJobKey();
+    // Already uploaded for this job, or our stored file already shown in the form (an earlier
+    // step) → the résumé is never uploaded again; a cover-letter field is still handled.
+    const resumeDone = () => window.__eamResumeUploadedFor === jobKey
+      || !!(state.resumeFileName && (modal.textContent || '').includes(state.resumeFileName));
+    if (resumeDone()) state.log('Résumé already in this application — not uploading it again');
 
     // EARLY EXIT for LinkedIn: if the Easy Apply modal already shows an
     // attached resume (LinkedIn auto-attaches the user's default), do not
@@ -693,22 +856,23 @@
         }
 
         if (isResume) {
+          if (resumeDone()) continue;
           state.log(`Resume field: uploading resume — ${labelText.substring(0, 60)}`);
           const file = state.base64ToFile(state.resumeFile, state.resumeFileName, state.resumeFileType);
           if (file) {
             const ok = await state.fillFileInput(fileInput, file);
-            if (ok) { state.log('Resume uploaded successfully'); await state.wait(500); }
+            if (ok) { window.__eamResumeUploadedFor = jobKey; state.log('Resume uploaded successfully'); await state.wait(500); }
           }
           continue;
         }
 
-        if (isGenericUpload) {
+        if (isGenericUpload && !resumeDone()) {
           // Ambiguous — prefer resume but log clearly so we can diagnose.
           state.log(`Generic upload field (no clear resume/cover label): uploading resume — ${labelText.substring(0, 60)}`);
           const file = state.base64ToFile(state.resumeFile, state.resumeFileName, state.resumeFileType);
           if (file) {
             const ok = await state.fillFileInput(fileInput, file);
-            if (ok) await state.wait(500);
+            if (ok) { window.__eamResumeUploadedFor = jobKey; await state.wait(500); }
           }
         }
         // Otherwise: unknown file input (e.g. portfolio, transcript) — leave alone.
@@ -1023,9 +1187,23 @@
   // v2.5.97: a radio's label — label[for=id], else the wrapping <label>, else a label in the
   // radio's own wrapper. Native <dialog> forms (live 2026-10-03, DIMATIS) did not match the
   // for= lookup → "Oui/Non" groups read as unlabeled and got the blind first option.
+  // v2.5.100: native-dialog radios (live 2026-10-04, Talink /jobs/search-results/) have an EMPTY
+  // <label for> and the option text ("Yes" / "No") in a sibling <p> → the text comes from the
+  // smallest container holding only this radio; the click still goes to the real label.
+  function _radioOptionText(radio) {
+    let n = radio.parentElement;
+    for (let i = 0; n && i < 4; i++, n = n.parentElement) {
+      if (n.querySelectorAll('input[type="radio"]').length > 1) break;
+      const t = (n.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t) return t;
+    }
+    return '';
+  }
   function _radioLabel(scope, radio) {
     if (!radio) return null;
-    try { if (radio.id) { const l = scope.querySelector('label[for="' + CSS.escape(radio.id) + '"]') || document.querySelector('label[for="' + CSS.escape(radio.id) + '"]'); if (l) return l; } } catch (_) {}
+    try { if (radio.id) { const l = scope.querySelector('label[for="' + CSS.escape(radio.id) + '"]') || document.querySelector('label[for="' + CSS.escape(radio.id) + '"]');
+      if (l && !(l.textContent || '').trim()) { const t = _radioOptionText(radio); if (t) return { textContent: t, click: () => l.click() }; }
+      if (l) return l; } } catch (_) {}
     const wrap = radio.closest && radio.closest('label'); if (wrap) return wrap;
     const p = radio.parentElement; const sib = p && p.querySelector('label');
     if (sib) {
@@ -1135,6 +1313,7 @@
       // semantic context (e.g. consent-text questions).
       let questionLabel = fieldset.querySelector('legend, span[class*="title"], p[class*="title"], h3, h4');
       let questionText = (questionLabel ? questionLabel.textContent : fieldset.textContent || '').toLowerCase();
+      let questionRaw = ""; // v2.5.100: the question as written (for the AI), when found outside a label
       const radioInputs = fieldset.querySelectorAll('input[type="radio"]');
       // v2.5.97: native <dialog> forms (/jobs/search-results/) put the question OUTSIDE the
       // radio group — the group's text was only its options ("ouinon"), so cache / AI / rules
@@ -1143,7 +1322,14 @@
       try {
         const optTxt = Array.from(radioInputs).map(r => { const l = _radioLabel(fieldset, r); return ((l ? l.textContent : r.value) || '').trim(); }).filter(Boolean);
         const strip = (s) => { let t = String(s || ''); for (const o of optTxt) t = t.split(o).join(' '); return t.replace(/\s+/g, ' ').trim(); };
-        if (!questionLabel && strip(fieldset.textContent).length < 4) {
+        // v2.5.100: the same native dialog carries the question in each radio's aria-label
+        // ("Avez-vous déjà travaillé sur des projets monétique … ?") — the group text was
+        // only "Yes No" → blind first option "Yes" (Talink, live 2026-10-04, discarded).
+        const ariaQ = ((radioInputs[0] && radioInputs[0].getAttribute('aria-label')) || '').trim();
+        if (!questionLabel && strip(ariaQ).length >= 8 && Array.from(radioInputs).every(r => (r.getAttribute('aria-label') || '').trim() === ariaQ)) {
+          questionRaw = strip(ariaQ);
+          questionText = (strip(ariaQ) + ' ' + optTxt.join(' ')).toLowerCase();
+        } else if (!questionLabel && strip(fieldset.textContent).length < 4) {
           let q = '';
           const lb = fieldset.getAttribute && fieldset.getAttribute('aria-labelledby');
           if (lb) q = lb.split(/\s+/).map(id => (modal.querySelector(`#${CSS.escape(id)}`) || document.getElementById(id))?.textContent || '').join(' ');
@@ -1152,7 +1338,7 @@
             const t = strip(a.textContent);
             if (t.length >= 4 && t.length < 400) q = t;
           }
-          if (strip(q)) questionText = (strip(q) + ' ' + optTxt.join(' ')).toLowerCase();
+          if (strip(q)) { questionRaw = strip(q); questionText = (strip(q) + ' ' + optTxt.join(' ')).toLowerCase(); }
         }
       } catch (_) {}
       let answered = false;
@@ -1183,7 +1369,11 @@
       // Fallback when profile has no matching language: pick the "safe
       // middle" answer — Professional > Fluent > B2 > Intermediate — so we
       // never send a random A1 for someone who forgot to fill in a level.
-      if (/\b(level|niveau|proficiency|proficien[cç]y|nivel|livello|niveau de langue)\b/i.test(questionText)
+      // v2.5.100: a level word alone is not a language question — "Quel est votre niveau de
+      // compréhension de la tech ?" got the language "safe middle" (Avancé) in the gate. A
+      // language must be named, or the options must be a language scale (A1–C2, natif, courant…).
+      const _langScaleOpts = (() => { try { return Array.from(radioInputs).filter(r => { const l = _radioLabel(fieldset, r); return /^\s*(a1|a2|b1|b2|c1|c2|native|natif|maternelle|bilingu|fluent|courant|interm[ée]diaire|intermediate|beginner|d[ée]butant|basic|notions)/i.test((l ? l.textContent : r.value) || ''); }).length >= 2; } catch (_) { return false; } })();
+      if ((/\b(level|niveau|proficiency|proficien[cç]y|nivel|livello|niveau de langue)\b/i.test(questionText) && (_detectLanguageInQuestion(questionText) || _langScaleOpts))
           || /\b(english|anglais|inglés|inglese|french|fran[çc]ais|francés|francese|spanish|espagnol|español|spagnolo|german|allemand|alemán|tedesco|italian|italien|italiano|chinese|chinois|mandarin|arabic|arabe|árabe|russian|russe|ruso|portuguese|portugu[eê]s|dutch|n[ée]erlandais|nederlands|japanese|japonais|hindi)\b.*\b(level|niveau|proficien|nivel|livello)\b/i.test(questionText)) {
         if (fillLanguageLevelRadio(fieldset, radioInputs, questionText, config.languages || [])) continue;
       }
@@ -1192,6 +1382,18 @@
       // answer, the AI pick, or our previous pass on a re-run of the same step).
       if (Array.from(radioInputs).some(r => r.checked)) continue;
 
+      // v2.5.100: question text that is only the options ("ouinon", "yesno") → never the Yes
+      // default or the first option: left unanswered, the application is skipped.
+      {
+        let rest0 = ' ' + String(questionText || '').toLowerCase() + ' ';
+        for (const r of radioInputs) { const l = _radioLabel(fieldset, r); for (const t of [l && l.textContent, r.value]) { const s = String(t || '').trim().toLowerCase(); if (s) rest0 = rest0.split(s).join(' '); } }
+        rest0 = rest0.replace(/[^a-zà-ÿ]+/gi, '').replace(/(oui|non|yes|no|sí|si|ja|nein)/g, '');
+        if (rest0.length < 4) {
+          u().log(`Radio left unanswered (question text unreadable: "${questionText.substring(0, 30)}")`);
+          u()._unknownFieldFails = (u()._unknownFieldFails || 0) + 3;
+          continue;
+        }
+      }
       let desiredAnswer = 'yes';
       const isOptIn = isMarketingOptInLabel(questionText);
       const isSelfDecl = isSelfDeclarationQuestion(questionText);
@@ -1201,10 +1403,22 @@
         desiredAnswer = 'no';
       } else if (questionText.match(/visa|sponsor|sponsorship/i) && config.visaSponsorship) {
         desiredAnswer = config.visaSponsorship;
-      } else if (questionText.match(/author|legal.*work|permit.*work|eligib.*work|right.*work/i) && config.legallyAuthorized) {
+      } else if (questionText.match(/author|legal.*work|permit.*work|eligib.*work|right.*work|autoris[ée]\(?e?\)?\s+[àa]\s+travailler|permis de travail|droit de travailler/i) && config.legallyAuthorized) {
         desiredAnswer = config.legallyAuthorized;
       } else if (questionText.match(/relocat|move.*locat|willing.*move/i) && config.willingToRelocate) {
         desiredAnswer = config.willingToRelocate;
+      } else if (workLocationAnswer(questionText, config)) {
+        // v2.5.98: "This job is on site, are you willing to work in Saudi Arabia?" got the Yes
+        // default for a Paris candidate with relocate = no (live 2026-10-04, discarded at review).
+        desiredAnswer = workLocationAnswer(questionText, config);
+      } else if (minYearsQuestionAnswer(questionText, config)) {
+        // v2.5.98: "Justifiez-vous d'au moins 3 ans d'expérience dans l'utilisation de l'outil
+        // mentionné dans l'annonce ?" got the Yes default (MERITIS, live 2026-10-04, discarded).
+        desiredAnswer = minYearsQuestionAnswer(questionText, config);
+      } else if (experienceQuestionAnswer(questionText, config)) {
+        // v2.5.98: "Do you have professional experience in the Airline/Aviation industry?" got
+        // the Yes default with nothing in the CV (live 2026-10-04, discarded at review).
+        desiredAnswer = experienceQuestionAnswer(questionText, config);
       } else if (questionText.match(/security.*clearance|clearance/i)) {
         desiredAnswer = 'no';
       } else if (questionText.match(/commencer\s+imm[ée]diatement|disponible\s+imm[ée]diatement|start\s+immediately|available\s+immediately|immediate(ly)?\s+(start|available|availability)|join\s+immediately|empezar\s+inmediatamente|sofort\s+(beginnen|verf[üu]gbar)/i)) {
@@ -1274,7 +1488,7 @@
         try {
           if (window.EAM && window.EAM.aiForm && optionLabels.length >= 2) {
             const cleanQ = (questionLabel ? questionLabel.textContent : '').trim();
-            const q = cleanQ && cleanQ.length > 4 ? cleanQ : fieldset.textContent.trim().split('\n')[0];
+            const q = cleanQ && cleanQ.length > 4 ? cleanQ : (questionRaw || fieldset.textContent.trim().split('\n')[0]);
             const aiPick = await window.EAM.aiForm.askAI(q, config, 'radio', optionLabels);
             const pickNorm = String(aiPick || '').trim().toLowerCase();
             if (pickNorm && pickNorm !== 'skip') {
@@ -1305,7 +1519,21 @@
         // Last-resort default: click the first option (previous behaviour).
         // Only when AI didn't pick — avoids leaving required-radios empty
         // which blocks the Continue button.
-        if (!clicked && !radioInputs[0].checked && !isOptIn) {
+        // v2.5.98: never when the question itself could not be read (live 2026-10-04, MERITIS on
+        // /jobs/search-results/: question text "ouinon" → blind "Oui", the step never advanced and
+        // the form stayed open for 10 steps). Left unanswered → LinkedIn's validation → discarded.
+        let qReadable = true;
+        try {
+          let rest = ' ' + String(questionText || '').toLowerCase() + ' ';
+          for (const r of radioInputs) { const l = _radioLabel(fieldset, r); for (const t of [l && l.textContent, r.value]) { const s = String(t || '').trim().toLowerCase(); if (s) rest = rest.split(s).join(' '); } }
+          rest = rest.replace(/\b(oui|non|yes|no|si|sí|ja|nein)\b/g, ' ').replace(/[^a-zà-ÿ]+/gi, '');
+          // v2.5.100: glued option words ("yesno", "ouinon") are not a question either.
+          qReadable = rest.replace(/(oui|non|yes|no|sí|si|ja|nein)/g, '').length >= 4;
+        } catch (_) {}
+        if (!clicked && !qReadable && !radioInputs[0].checked) {
+          u().log(`Radio left unanswered (question text unreadable: "${questionText.substring(0, 30)}")`);
+          u()._unknownFieldFails = (u()._unknownFieldFails || 0) + 3; // cannot decide safely → skip this application
+        } else if (!clicked && !radioInputs[0].checked && !isOptIn) {
           const firstLabel = _radioLabel(fieldset, radioInputs[0]);
           firstLabel ? firstLabel.click() : radioInputs[0].click();
           u().log(`Radio first option (fallback): ${questionText.substring(0, 30)}`);
@@ -1315,12 +1543,52 @@
   }
 
   // ─── Native <select> dropdowns ────────────────────────────────────────
+  // v2.5.101 (live 2026-10-05): "Quel est votre niveau d'études ?" went out as "Bac" for a Master's
+  // profile (a stale LinkedIn saved answer, pre-filled). Education level = highest CV degree; a
+  // pre-filled LOWER level is corrected, a matching/higher one is left alone.
+  const _EDU_Q = /(niveau\s+d.?[ée]tudes|niveau\s+de\s+(dipl[oô]me|formation)|dipl[oô]me\s+le\s+plus|plus\s+haut\s+dipl[oô]me|highest\s+(level\s+of\s+)?(education|degree|qualification)|education(al)?\s+level|level\s+of\s+education|nivel\s+(de\s+)?estudios|nivel\s+educativo)/i;
+  function eduRank(text) {
+    const t = _deaccent(String(text || '')).toLowerCase();
+    if (/\b(doctorat|doctorate|phd|ph\.d|doctor)\b|bac\s*\+\s*8/.test(t)) return 8;
+    if (/bac\s*\+\s*5|\bmaster|\bmba\b|\bmsc\b|\bm\.?s\.?c?\b|\bm2\b|ingenieur|engineer(ing)?\s+degree|grande\s+ecole|\bdea\b|\bdess\b|maestr[ií]a/.test(t)) return 5;
+    if (/bac\s*\+\s*4|\bmaitrise\b|\bm1\b/.test(t)) return 4;
+    if (/bac\s*\+\s*3|\blicence\b|\bbachelor|\bbsc\b|\bb\.?a\.?\b|\bba\b|\bbs\b|licenciatura|grado/.test(t)) return 3;
+    if (/bac\s*\+\s*2|\bbts\b|\bdut\b|\bdeug\b|associate|\bhnd\b/.test(t)) return 2;
+    if (/\bbac\b|baccalaureat|high\s*school|lycee|secondary|a[- ]levels?|bachillerato/.test(t)) return 1;
+    return null;
+  }
+  function cvEduRank(config) {
+    const edu = config && config.cvProfile && Array.isArray(config.cvProfile.education) ? config.cvProfile.education : [];
+    let best = null;
+    for (const e of edu) {
+      const r = eduRank([e.degree, e.field, e.title].filter(Boolean).join(' '));
+      if (r != null && (best == null || r > best)) best = r;
+    }
+    return best;
+  }
+  function fixEducationSelect(select, labelText, config) {
+    if (!_EDU_Q.test(labelText)) return false;
+    const target = cvEduRank(config);
+    if (target == null) return false;
+    const options = Array.from(select.options).filter(o => o.index > 0);
+    let best = null, bestR = -1;
+    for (const o of options) { const r = eduRank(o.text); if (r != null && r <= target && r > bestR) { best = o; bestR = r; } }
+    if (!best) return false;
+    const cur = select.selectedIndex > 0 ? eduRank(select.options[select.selectedIndex].text) : null;
+    if (cur != null && cur === bestR) return true;   // pre-filled answer already at the CV level (higher or lower is corrected: never claim a degree the CV doesn't show)
+    select.value = best.value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    u().log(`Education level → "${best.text.trim()}" (CV level ${target}${cur != null ? ', corrected pre-filled level ' + cur : ''})`);
+    return true;
+  }
+
   async function fillSelectDropdowns(modal, config) {
     const selects = modal.querySelectorAll('select');
     for (const select of selects) {
+      const labelText = getFieldLabel(select, modal).toLowerCase();
+      if (fixEducationSelect(select, labelText, config)) continue;
       if (select.selectedIndex > 0) continue;
 
-      const labelText = getFieldLabel(select, modal).toLowerCase();
       const options = Array.from(select.options);
       let selectedOption = null;
 

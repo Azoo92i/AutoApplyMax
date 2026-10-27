@@ -72,7 +72,9 @@
   const QUESTION_RE = /\?|^\s*(are|do|does|did|will|would|have|has|is|can|could|should|were|was|why|what|how|when|where|which|please|describe|tell us|êtes|avez|pouvez|seriez|quel|quelle|pourquoi|comment)\b/i;
   // EEO / voluntary self-identification: never answered by autofill (the
   // candidate decides; guessing "No" to "Are you Hispanic/Latino?" is invented data).
-  const EEO_RE = /\b(gender|genre|sexe|sex|race|racial|ethnic\w*|ethnicit\w*|hispanic|latin[oax]|veteran|disabilit\w*|handicap\w*|sexual orientation|transgender|pronouns?|self[- ]identif\w*)\b/i;
+  // v2.5.100: accessibility / accommodation requests are the candidate's call too (gate 2026-10-04:
+  // the AI answered "No" to Greenhouse's "…accessible and inclusive interview… any adjustments?").
+  const EEO_RE = /\b(gender|genre|sexe|sex|race|racial|ethnic\w*|ethnicit\w*|hispanic|latin[oax]|veteran|disabilit\w*|handicap\w*|sexual orientation|transgender|pronouns?|self[- ]identif\w*|accommodat\w*|accessib\w*|reasonable adjustments?|adjustments? (we|to)\b|am[ée]nagements?)\b/i;
   const MARKETING_RE = /(marketing|newsletter|promot|job alert|alerts|offers|updates|sms|whatsapp|text message|talent (community|network|pool)|future (opportunit|roles|openings|positions)|other (opportunit|openings|roles)|contact me about|keep me informed|stay in touch)/i;
   const NOT_AUTO_CONSENT_RE = /(arbitration|waive|non[- ]?compete|background check|credit check|drug test)/i;
 
@@ -259,7 +261,7 @@
     if (det) return { kind: 'yesno', value: det };
     if (/\b(country|pays)\b/i.test(s) && config.country
         && (!/\?/.test(s) || /\b(country|pays)\b.{0,40}\b(reside|live|based|located|currently|résid|habit)|\b(reside|live|based|located|résid|habit).{0,40}\b(country|pays)\b/i.test(s))) return { kind: 'country', value: config.country };
-    if (/\b(current location|location|city|ville|localisation|where are you (based|located)|lieu)\b/i.test(s) && !/(relocat|sponsor|remote|onsite|on-site|willing)/i.test(s) && config.city) return { kind: 'city', value: config.city };
+    if (/\b(current location|location|city|ville|localisation|where are you (currently )?(based|located)|lieu|stad|stadt|ciudad|citt[aà]|cidade|woonplaats|wohnort)\b/i.test(s) && !/(relocat|sponsor|remote|onsite|on-site|willing)/i.test(s) && config.city) return { kind: 'city', value: config.city };
     return null;
   }
   const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -318,6 +320,162 @@
   function isReactSelect(input) {
     return /\bselect__input\b/.test(input.className || '') || !!input.closest('[class*="select__control" i]');
   }
+  // v2.5.100: open questions left empty because AI answers are Premium (free plan) —
+  // counted so the popup / page can say so instead of a silent partial fill.
+  let openLeft = 0;
+  const aiBlocked = () => !!(window.EAM && window.EAM.aiForm && window.EAM.aiForm.isPremiumBlocked && window.EAM.aiForm.isPremiumBlocked());
+
+  // ─── v2.5.100: résumé upload ────────────────────────────────────────
+  // The CV saved in the popup (chrome.storage.local resumeFile, same source as
+  // the LinkedIn engine) goes into ONE file input that is clearly the résumé
+  // field. Never a cover-letter / photo / transcript input, and never an ATS
+  // "autofill from résumé" dropzone (Ashby, SmartRecruiters): those re-parse
+  // the file and overwrite the fields.
+  const FILE_AUTOFILL_RE = /autofill|auto-fill|automatisch|automatically|automatiquement|remplir automatiquement|eenvoudig solliciteren|apply with (indeed|linkedin|seek)|quick apply|parse your/i;
+  const FILE_NOT_RESUME_RE = /cover|lettre|motivation|anschreiben|carta de presentaci|motivatiebrief|photo|picture|avatar|portrait|foto|headshot|transcript|relev[ée] de notes|portfolio|work sample|certificat|diploma|passport|id card|identity/i;
+  const FILE_RESUME_RE = /r[ée]sum[ée]|curriculum|vitae|lebenslauf|curr[íi]culo|hoja de vida|(^|[^a-z])cv(?![a-z])/i;
+  // Text nodes joined with spaces: textContent glues a heading to the next text
+  // ("Cv" + "Kies een bestand" → "CvKies…", "CV.pdf" + "Remove" → "CV.pdfRemove").
+  function spacedText(n) {
+    const out = [];
+    try {
+      const w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT);
+      for (let t = w.nextNode(); t && out.length < 60; t = w.nextNode()) { const s = t.nodeValue.trim(); if (s) out.push(s); }
+    } catch (_) { return (n.textContent || '').replace(/\s+/g, ' ').trim(); }
+    return out.join(' ').replace(/\s+/g, ' ');
+  }
+  function fileFieldKind(input) {
+    const own = [input.id, input.name, input.getAttribute('aria-label'), input.getAttribute('data-qa'), input.getAttribute('data-testid')].filter(Boolean).join(' ');
+    const lbl = labelFor(input);
+    const texts = [own, lbl ? lbl.textContent : ''];
+    let n = input;
+    for (let i = 0; i < 7; i++) {
+      n = upOne(n);
+      if (!n || n === document.body || n === document.documentElement) break;
+      if (deepAll('input[type="file"]', n).length > 1) break;   // container shared with another upload → stop
+      texts.push(spacedText(n).slice(0, 200));
+    }
+    // nearest text first: the first decisive signal wins
+    // A file name already shown in a résumé field ("Sophie_CV.pdf  Remove") = the form
+    // already has a CV for this candidate → 'present', keep it (Théo 2026-10-04).
+    const shown = texts.slice(2, 8).some(t => t && FILE_SHOWN_RE.test(t));
+    for (const t of texts) {
+      if (!t) continue;
+      if (FILE_AUTOFILL_RE.test(t)) return 'autofill';
+      if (FILE_NOT_RESUME_RE.test(t)) return 'other';
+      if (FILE_RESUME_RE.test(t)) return shown ? 'present' : 'resume';
+    }
+    return 'unknown';
+  }
+  // A file name (with extension) displayed in the field's own container. "Accepted file
+  // types: pdf, doc, docx" hints have no dot before the extension, so they don't match.
+  const FILE_SHOWN_RE = /[\w)\]-]\.(pdf|docx?|rtf|odt|pages)\b/i;
+  // Once per page: a second Autofill click, a re-render or the next step of a multi-step
+  // form must never attach the résumé again (duplicate uploads, Théo 2026-10-04).
+  let resumeAttachedOnPage = null;
+  async function attachResume() {
+    if (resumeAttachedOnPage) { console.log('[EAM Autofill] résumé already attached on this page — not again'); return null; }
+    let st = null;
+    try { st = await chrome.storage.local.get(['resumeFile', 'resumeFileName', 'resumeFileType']); } catch (_) { return null; }
+    if (!st || !st.resumeFile || !st.resumeFileName) return null;
+    const fileInputs = deepAll('input[type="file"]');
+    // The form already holds a CV (a résumé input with a file, or a file name shown in a
+    // résumé field) → keep it, upload nothing.
+    for (const input of fileInputs) {
+      const kind = fileFieldKind(input);
+      if (kind === 'present' || (kind === 'resume' && input.files && input.files.length)) {
+        console.log('[EAM Autofill] the form already has a résumé — kept, nothing uploaded');
+        return null;
+      }
+    }
+    for (const input of fileInputs) {
+      if (input.disabled || (input.files && input.files.length)) continue;
+      const kind = fileFieldKind(input);
+      if (kind !== 'resume') { console.log(`[EAM Autofill] file input ${input.id || input.name || ''} → ${kind}, left alone`); continue; }
+      try {
+        const b64 = String(st.resumeFile).includes(',') ? String(st.resumeFile).split(',')[1] : String(st.resumeFile);
+        const bin = atob(b64); const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const file = new File([bytes], st.resumeFileName, { type: st.resumeFileType || 'application/pdf' });
+        const dt = new DataTransfer(); dt.items.add(file);
+        input.files = dt.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        // The file is handed over once the change event fired: SmartRecruiters reads it and
+        // clears the input (its own chip shows the file) — still ONE upload, never repeated.
+        resumeAttachedOnPage = file.name;
+        if (input.files && input.files.length) input.dataset.eamFilled = 'true';
+        console.log(`[EAM Autofill] résumé attached: ${file.name}`);
+        return file.name;
+      } catch (e) { console.log('[EAM Autofill] résumé attach failed', e && e.message); }
+    }
+    return null;
+  }
+
+  // ─── v2.5.100: "Language skills (check all that apply)" ─────────────
+  // Ticked ONLY from the languages in the profile (basic / A1-A2 levels excluded).
+  const LANG_WORDS = {
+    english: ['english', 'anglais', 'inglés', 'ingles', 'englisch', 'inglese', 'eng'], french: ['french', 'français', 'francais', 'francés', 'französisch', 'fra'],
+    spanish: ['spanish', 'espagnol', 'español', 'espanol', 'spanisch', 'spa'], german: ['german', 'allemand', 'deutsch', 'alemán', 'deu', 'ger'],
+    italian: ['italian', 'italien', 'italiano', 'ita'], portuguese: ['portuguese', 'portugais', 'português', 'portugues', 'por'],
+    dutch: ['dutch', 'néerlandais', 'neerlandais', 'nederlands', 'nld'], arabic: ['arabic', 'arabe', 'árabe', 'ara'],
+    hindi: ['hindi', 'hin'], mandarin: ['mandarin', 'chinese', 'chinois', 'man', 'zho'], cantonese: ['cantonese', 'cant'],
+    japanese: ['japanese', 'japonais', 'jpn'], russian: ['russian', 'russe', 'rus'], polish: ['polish', 'polonais'],
+    turkish: ['turkish', 'turc', 'tur'], korean: ['korean', 'coréen', 'kor'], urdu: ['urdu', 'urd'], bengali: ['bengali', 'bne', 'ben'],
+    tamil: ['tamil'], telugu: ['telugu', 'tel'], marathi: ['marathi', 'mar'], gujarati: ['gujarati', 'guj'],
+  };
+  function profileLanguageKeys(config) {
+    const langs = (config.cvProfile && Array.isArray(config.cvProfile.languages)) ? config.cvProfile.languages : [];
+    const keys = new Set();
+    for (const l of langs) {
+      const name = String(typeof l === 'string' ? l : (l && (l.name || l.language)) || '').toLowerCase();
+      const level = String(typeof l === 'string' ? l : (l && l.level) || '').toLowerCase();
+      if (/\b(basic|beginner|elementary|notions?|d[ée]butant|a1|a2)\b/.test(level)) continue;
+      for (const [k, words] of Object.entries(LANG_WORDS)) if (words.some(w => w.length > 3 && name.includes(w))) keys.add(k);
+    }
+    return keys;
+  }
+  function languageOfLabel(text) {
+    const t = String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    for (const [k, words] of Object.entries(LANG_WORDS)) {
+      if (words.some(w => new RegExp('(^|[^a-zà-ÿ])' + w + '([^a-zà-ÿ]|$)').test(t))) return k;
+    }
+    return null;
+  }
+  function fillLanguageCheckboxes(config) {
+    let n = 0;
+    const mine = profileLanguageKeys(config);
+    if (!mine.size) return 0;
+    const groups = new Map();
+    deepAll('input[type="checkbox"]').forEach(cb => { if (cb.name) { if (!groups.has(cb.name)) groups.set(cb.name, []); groups.get(cb.name).push(cb); } });
+    const optLabel = (cb) => (cb.labels && cb.labels[0] ? cb.labels[0].textContent : (cb.closest('label') ? cb.closest('label').textContent : cb.value)) || '';
+    for (const boxes of groups.values()) {
+      if (boxes.length < 2) continue;
+      // The group's question: text around the options with the option labels removed
+      // (questionText() returns the first option's label on Lever, and an option such as
+      // "American Sign Language" must not make any checkbox list look like a language question).
+      let anc = boxes[0].parentElement;
+      while (anc && !boxes.every(b => anc.contains(b))) anc = anc.parentElement;
+      let q = '';
+      for (let i = 0; anc && i < 3 && !q; i++, anc = anc.parentElement) {
+        let t = spacedText(anc);
+        for (const b of boxes) { const l = optLabel(b).replace(/\s+/g, ' ').trim(); if (l) t = t.split(l).join(' '); }
+        if (/\b(languages?|langues?|idiomas?|sprachen?|lingue)\b/i.test(t)) q = t;
+      }
+      if (!q) continue;
+      for (const cb of boxes) {
+        if (cb.checked || cb.disabled || cb.offsetParent === null) continue;
+        const lbl = optLabel(cb);
+        const k = languageOfLabel(lbl);
+        if (!k || !mine.has(k)) continue;
+        cb.click();
+        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+        if (cb.checked) { cb.dataset.eamFilled = 'true'; n++; }
+      }
+    }
+    return n;
+  }
+
   async function fillComboboxes(config) {
     let n = 0;
     const boxes = deepAll('input[role="combobox"], input[aria-autocomplete], input#location-input, input.location-input, input[data-qa="location-input"]');
@@ -343,8 +501,11 @@
           // CHOICE MODE: the AI must reply with one exact label (free plan → premium_required → null)
           let ans = null;
           try { ans = await ai.askAI(q, config, 'select', labels); } catch (e) { ans = null; }
-          const hit = ans && ans !== 'skip' ? labels.find(l => norm(l) === norm(ans)) : null;
+          // v2.5.99: "3. Located Elsewhere" — the AI often drops the list number (gate 2026-10-04, Greenhouse).
+          const unnum = (t) => norm(t).replace(/^\(?\d{1,2}[.)]\s*/, '');
+          const hit = ans && ans !== 'skip' ? (labels.find(l => norm(l) === norm(ans)) || labels.find(l => unnum(l) === unnum(ans))) : null;
           if (hit) pick = { text: hit };
+          else if (ans === null && aiBlocked()) openLeft++;
         }
         let ok = false;
         if (pick) { const r = await rsBridge(marker, 'select', pick.text); ok = !!(r && r.ok); }
@@ -390,6 +551,13 @@
     if (!config) return { filled: 0 };
 
     let filled = 0;
+    openLeft = 0;
+
+    // v2.5.100: the saved résumé into the résumé field (never cover letter / photo), FIRST:
+    // Lever / Ashby parse the uploaded CV and rewrite fields (live 2026-10-04: Lever's parse
+    // emptied "Current location" after we had filled it) — fields are filled once it settles.
+    let resumeName = null;
+    try { resumeName = await attachResume(); if (resumeName) { filled++; await new Promise(r => setTimeout(r, 3500)); } } catch (_) {}
 
     // Build value map from config
     const values = {};
@@ -468,8 +636,13 @@
 
       const isTextarea = input.tagName === 'TEXTAREA';
       const fType = isTextarea ? 'textarea' : (input.type || 'text');
+      // v2.5.100: a field the AI already declined ("" / skip) on this page is not asked again
+      // on the next Autofill click (gate: Ashby "Additional Information" asked twice).
+      if (input.dataset.eamAsked === '1') continue;
       try {
         let answer = await window.EAM.aiForm.askAI(label, config, fType);
+        if (answer !== null) input.dataset.eamAsked = '1';
+        if (answer === null && aiBlocked()) { openLeft++; continue; }
         if (!answer) continue;
         const labelLower = label.toLowerCase();
         const isNumeric = input.type === 'number'
@@ -548,38 +721,11 @@
     // nothing looks filled that isn't.
     try { filled += await fillComboboxes(config); } catch (e) { /* never block the rest of the fill */ }
 
-    // Check consent/CGU checkboxes
-    const checkboxes = deepAll('input[type="checkbox"]');
-    for (const cb of checkboxes) {
-      if (cb.checked) continue;
-      if (cb.offsetParent === null || cb.disabled) continue;
-      if (cb.dataset.eamFilled === 'true') continue;
+    // v2.5.100: consent / privacy / terms checkboxes are NOT ticked any more — accepting a
+    // legal text is the candidate's decision (marketing opt-ins and waivers already stayed
+    // unticked). Only "language skills" checkbox groups are filled, from the profile.
+    try { filled += fillLanguageCheckboxes(config); } catch (_) {}
 
-      const hints = [];
-      hints.push(cb.getAttribute('name') || '');
-      const cbId = cb.getAttribute('id');
-      if (cbId) {
-        const lbl = labelFor(cb);
-        if (lbl) hints.push(lbl.textContent);
-      }
-      const parentLabel = cb.closest('label');
-      if (parentLabel) hints.push(parentLabel.textContent);
-
-      const combined = hints.join(' ').toLowerCase();
-      // v2.5.90: marketing / newsletter / talent-community opt-ins stay
-      // unticked (policy 2026-09-25: default No), and legal waivers
-      // (arbitration, background checks) are left for the candidate.
-      if (MARKETING_RE.test(combined) || NOT_AUTO_CONSENT_RE.test(combined)) continue;
-      if (combined.match(/consent|agree|terms|conditions|policy|privacy|accept|j'accepte|j'autorise|consentement|cgu/)) {
-        // click() so React-controlled checkboxes (Ashby, Greenhouse) register it
-        cb.click();
-        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
-        if (!cb.checked) continue;
-        cb.style.outline = '2px solid #10b981';
-        cb.dataset.eamFilled = 'true';
-        filled++;
-      }
-    }
 
     // v2.5.92: yes/no RADIO groups for the deterministic screening questions
     // (sponsorship, work authorization, relocation, driving licence) —
@@ -633,16 +779,47 @@
     // Extension audit 2026-08-14 caught this on SmartRecruiters-style forms.
     // Child frames still fill fields — their own badge would draw INSIDE
     // the iframe (invisible on most portals) so we skip it entirely.
+    const premiumHint = openLeft > 0 && aiBlocked();
+    // v2.5.100: a second click on an already-filled form said "No fields detected" — misleading.
+    const alreadyFilled = filled === 0 ? deepAll('[data-eam-filled="true"]').length : 0;
     if (window === window.top) {
-      showBadge(filled);
+      if (premiumHint) showPremiumHint(filled, openLeft); else showBadge(filled, alreadyFilled);
     }
 
-    return { filled };
+    return { filled, openLeft: premiumHint ? openLeft : 0, premiumHint, resume: resumeName, alreadyFilled };
+  }
+
+  // ─── v2.5.100: free plan — open questions left to the candidate ─────
+  const UPSELL_URL = 'https://www.autoapplymax.com/dashboard?promo=WELCOMEBACK20&src=ext_autofill_free#upgrade';
+  const HINT_FONT = 'Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+  const HINT_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>';
+  const HINT_CLOSE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+  function showPremiumHint(count, open) {
+    try {
+      document.getElementById('eam-autofill-badge')?.remove();
+      const n = document.createElement('div');
+      n.id = 'eam-autofill-badge';
+      n.setAttribute('role', 'status');
+      n.setAttribute('data-eam-autofill-hint', '1');
+      const q = open === 1 ? '1 open question' : open + ' open questions';
+      n.innerHTML = '<span style="display:inline-flex;flex-shrink:0;color:#0a66c2">' + HINT_ICON + '</span>'
+        + '<span><strong style="font-weight:700">AutoApplyMax — ' + (count > 0 ? count + ' field' + (count === 1 ? '' : 's') + ' filled' : 'form already filled') + '</strong><br>'
+        + q + ' left for you — Premium answers them with AI.<br>'
+        + '<a data-eam-hint-link href="' + UPSELL_URL + '" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;color:#0a66c2;font-weight:700;text-decoration:none">See Premium →</a></span>'
+        + '<button data-eam-hint-close type="button" aria-label="Dismiss" style="all:unset;cursor:pointer;padding:0 2px;line-height:1;opacity:0.6;display:inline-flex">' + HINT_CLOSE + '</button>';
+      n.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483646;display:flex;align-items:flex-start;gap:8px;padding:10px 14px;background:#eff6ff;border:1px solid #93c5fd;color:#1e3a8a;border-radius:12px;font:500 13px/1.45 ' + HINT_FONT + ';box-shadow:0 4px 12px rgba(15,23,42,0.12);max-width:360px;box-sizing:border-box;';
+      document.body.appendChild(n);
+      n.querySelector('[data-eam-hint-close]')?.addEventListener('click', () => n.remove());
+      n.querySelector('[data-eam-hint-link]')?.addEventListener('click', () => {
+        try { chrome.runtime.sendMessage({ type: 'track-autofill-upsell-click', where: 'page', hostname: location.hostname }); } catch (_) {}
+      });
+      setTimeout(() => { try { n.remove(); } catch (_) {} }, 30000);
+    } catch (_) {}
   }
 
   // ─── Floating badge ─────────────────────────────────────────────────
 
-  function showBadge(count) {
+  function showBadge(count, alreadyFilled) {
     // Remove previous badge if any
     const existing = document.getElementById('eam-autofill-badge');
     if (existing) existing.remove();
@@ -651,12 +828,14 @@
     badge.id = 'eam-autofill-badge';
     badge.textContent = count > 0
       ? `AutoApplyMax: ${count} field${count > 1 ? 's' : ''} filled`
-      : 'AutoApplyMax: No fields detected in the top frame — if the form is in an iframe (SmartRecruiters, Workday), check inside it';
+      : alreadyFilled > 0
+        ? 'AutoApplyMax: this form is already filled — nothing new to fill'
+        : 'AutoApplyMax: No fields detected in the top frame — if the form is in an iframe (SmartRecruiters, Workday), check inside it';
     badge.style.cssText = `
       position: fixed;
       bottom: 20px;
       right: 20px;
-      background: ${count > 0 ? 'linear-gradient(135deg, #10b981, #059669)' : '#6b7280'};
+      background: ${(count > 0 || alreadyFilled > 0) ? '#047857' : '#475569'};
       color: white;
       padding: 12px 20px;
       border-radius: 12px;
@@ -701,6 +880,9 @@
               chrome.runtime.sendMessage({
                 type: 'track-autofill',
                 filled: result?.filled || 0,
+                openLeft: result?.openLeft || 0,
+                premiumHint: !!result?.premiumHint,
+                resume: !!result?.resume,
                 hostname: location.hostname,
                 path: (location.pathname || '').slice(0, 100),
               });

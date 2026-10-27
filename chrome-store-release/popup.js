@@ -729,6 +729,26 @@ document.getElementById('stop-btn').addEventListener('click', async () => {
   }
 });
 
+// ─── v2.5.100: free plan — open questions left after Autofill ─────────
+const AUTOFILL_UPSELL_URL = 'https://www.autoapplymax.com/dashboard?promo=WELCOMEBACK20&src=ext_autofill_free#upgrade';
+function showAutofillPremiumHint(count, open) {
+  try {
+    document.getElementById('autofill-premium-hint')?.remove();
+    const q = open === 1 ? '1 open question' : open + ' open questions';
+    const box = buildAlert({
+      id: 'autofill-premium-hint',
+      tone: 'info',
+      title: (count > 0 ? count + ' field' + (count === 1 ? '' : 's') + ' filled' : 'Form already filled') + ' · ' + q + ' left for you',
+      body: 'Premium answers them with AI. You still review and submit.',
+      link: { text: 'See Premium', url: AUTOFILL_UPSELL_URL },
+    });
+    box.querySelector('a')?.addEventListener('click', () => {
+      try { chrome.runtime.sendMessage({ type: 'track-autofill-upsell-click', where: 'popup' }); } catch (_) {}
+    });
+    document.getElementById('alert-slot')?.prepend(box);
+  } catch (_) {}
+}
+
 // ─── Autofill handler ────────────────────────────────────────────────
 document.getElementById('autofill-btn').addEventListener('click', async () => {
   const btn = document.getElementById('autofill-btn');
@@ -846,27 +866,33 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
     const perFrame = await Promise.all(
       (frameIds.length ? frameIds : [0]).map(async fid => {
         try {
-          const r = await chrome.tabs.sendMessage(tab.id, { action: 'eam-autofill', config }, { frameId: fid });
-          return r?.filled || 0;
-        } catch (_) { return 0; }
+          return (await chrome.tabs.sendMessage(tab.id, { action: 'eam-autofill', config }, { frameId: fid })) || {};
+        } catch (_) { return {}; }
       })
     );
-    count = perFrame.reduce((a, b) => a + b, 0);
-    // v2.5.90: keep the result readable (the disabled style faded it out).
-    btn.disabled = false; btn.style.opacity = '1';
-    if (count > 0) {
-      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> ${count} field${count > 1 ? 's' : ''} filled!`;
-      btn.style.background = '#059669'; btn.style.color = '#fff'; btn.style.borderColor = '#059669';
+    count = perFrame.reduce((a, r) => a + (r.filled || 0), 0);
+    // v2.5.100: open questions left empty because AI answers are Premium (a frame reports
+    // them only when the AI was refused for the plan → never shown to Premium users).
+    const openLeft = perFrame.reduce((a, r) => a + (r.premiumHint ? (r.openLeft || 0) : 0), 0);
+    // v2.5.100: result state through a class with solid colours (white on #047857 / #475569).
+    btn.disabled = false;
+    btn.classList.remove('af-result-ok', 'af-result-none');
+    const alreadyFilled = perFrame.reduce((a, r) => a + (r.alreadyFilled || 0), 0);
+    btn.classList.add((count > 0 || alreadyFilled > 0) ? 'af-result-ok' : 'af-result-none');
+    if (count === 0 && alreadyFilled > 0) {
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> Already filled`;
+    } else if (count > 0) {
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> ${count} field${count > 1 ? 's' : ''} filled`;
     } else {
       btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/></svg> No fields found`;
-      btn.style.background = '#64748b'; btn.style.color = '#fff'; btn.style.borderColor = '#64748b';
     }
+    if (openLeft > 0) showAutofillPremiumHint(count, openLeft);
 
     setTimeout(() => {
       btn.innerHTML = originalHTML;
-      btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = '';
+      btn.classList.remove('af-result-ok', 'af-result-none');
       btn.disabled = false;
-    }, 3000);
+    }, 4000);
 
   } catch (error) {
     console.error('Autofill error:', error);

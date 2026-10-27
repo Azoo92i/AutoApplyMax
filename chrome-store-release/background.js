@@ -642,6 +642,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Autofill click so we get admin observability even on pattern-matched-
   // only sessions where no AI call happens. Insert into tool_usage
   // (name='autofill') via authenticated REST call from the service worker.
+  // v2.5.100: click on the free-plan "See Premium" hint after Autofill (popup or page).
+  if (message.type === 'track-autofill-upsell-click') {
+    (async () => {
+      try {
+        const { eam_session } = await chrome.storage.local.get('eam_session');
+        if (!eam_session?.access_token) return;
+        let userId = eam_session.user?.id || eam_session.user_id || null;
+        if (!userId) { try { userId = JSON.parse(atob(eam_session.access_token.split('.')[1]))?.sub || null; } catch (_) {} }
+        if (!userId) return;
+        await fetch(`${SUPABASE_URL}/rest/v1/tool_usage`, {
+          method: 'POST',
+          headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${eam_session.access_token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ tool_name: 'autofill_upsell_click', user_id: userId, metadata: { where: message.where || '', hostname: message.hostname || (sender && sender.tab && sender.tab.url ? new URL(sender.tab.url).hostname : '') } }),
+        });
+      } catch (_) { /* fire-and-forget */ }
+    })();
+    return;
+  }
   if (message.type === 'track-autofill') {
     (async () => {
       try {
@@ -662,7 +680,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const body = {
           tool_name: 'autofill',
           user_id: userId,
-          metadata: { filled: message.filled || 0, hostname: message.hostname || '', path: message.path || '' },
+          metadata: { filled: message.filled || 0, hostname: message.hostname || '', path: message.path || '',
+            // v2.5.100: free-plan hint shown (open questions left for the user) + résumé attached
+            open_left: message.openLeft || 0, upsell_shown: !!message.premiumHint, resume: !!message.resume },
         };
         await fetch(`${SUPABASE_URL}/rest/v1/tool_usage`, {
           method: 'POST',

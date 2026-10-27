@@ -557,6 +557,20 @@
             } catch (e) {}
           }
 
+          // v2.5.98: the user's blacklist also applies to the focused job's type pills
+          // ("Internship" / "Stage" / "Alternance"): live 2026-10-03, a VINCI internship ad whose
+          // title had no internship word was applied to with "stage, internship" blacklisted.
+          try {
+            if (adapter.getFocusedJobTags && state.config.blacklistKeywords) {
+              const tags = adapter.getFocusedJobTags();
+              if (tags.length && state.shouldSkipByBlacklist(tags.join(' · '), '', '', state.config.blacklistKeywords)) {
+                state.log(`Skip: job type tag "${tags.join(', ')}" is in your blacklist`);
+                state.noteSkip('blacklist');
+                continue;
+              }
+            }
+          } catch (_) {}
+
           // v2.5.89: "Max years required" setting, read from the job DESCRIPTION.
           // shouldSkipByExperience() above only sees card titles, where LinkedIn
           // never states the requirement → the setting was effectively ignored.
@@ -1096,6 +1110,19 @@
               state.log('Application completed, next job');
               await state.wait(500);
               break;
+            }
+          }
+          // v2.5.98: 10 steps without reaching Submit (a step that never advances, e.g. an
+          // unanswered required radio on /jobs/search-results/) left the form OPEN: the next
+          // cards were "processed" inside it ("Modal from previous job still open", cleanup
+          // failed 2/2, live 2026-10-04 MERITIS). Close it and count the skip.
+          if (step >= 10 && state.isRunning) {
+            const left = adapter.getFormModal && adapter.getFormModal();
+            if (left && state.isShown(left)) {
+              state.log('10 form steps without reaching Submit — discarding this application');
+              await adapter.discardApplication();
+              if (adapter.getFormModal() && adapter.clearAllModals) await adapter.clearAllModals(3);
+              state.noteSkip('step_limit');
             }
           }
         }

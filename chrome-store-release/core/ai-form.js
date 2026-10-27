@@ -65,6 +65,9 @@
     return String(key).split(KEY_SEP)[0];
   }
 
+  const JOB_SPECIFIC_RE = /^\s*(headline|titre du profil|summary|r[ée]sum[ée] du profil|cover letter|lettre de motivation|message (to|for) the (hiring|recruit)\w*|motivation)\b|\bwhy (do you want|are you interested|would you like|this (role|position|job|company))|\bwhat (interests|attracts) you\b|\bpourquoi\b.{0,60}\b(poste|entreprise|soci[ée]t[ée]|candidat|rejoindre|int[ée]ress)|\bmotivations?\b|\bcover letter\b|\blettre de motivation\b/i;
+  function isJobSpecificQuestion(question) { return JOB_SPECIFIC_RE.test(String(question || '')); }
+
   function findCached(question, fieldType, options) {
     const hit = cache[cacheKey(question, fieldType, options)];
     return typeof hit === 'string' && hit ? hit : null;
@@ -116,9 +119,35 @@
     return s.slice(0, 120);
   }
 
+  // v2.5.99: AI answers are Premium. Same handling whether the server said 403 or the
+  // cached plan already says free: no more AI calls this session + the popup notice
+  // "some applications were skipped — Premium AI answers them" (once per session: a
+  // notice seen more than 12 h ago is re-armed; the engine counts the skips).
+  function markPremiumBlocked() {
+    premiumBlocked = true;
+    try {
+      chrome.storage.local.get(['eam_ai_premium_notice'], (r) => {
+        const n = r && r.eam_ai_premium_notice;
+        const stale = n && n.seen && (Date.now() - (n.at || 0)) > 12 * 3600 * 1000;
+        if (!n || stale) chrome.storage.local.set({ eam_ai_premium_notice: { at: Date.now(), seen: false, skipped: 0 } });
+      });
+    } catch (_) {}
+  }
+  // v2.5.99: FREE plan → no form-answer request at all (gate 2026-10-04: universal autofill
+  // sent one request per click that the server refused with 403). The popup writes `plan`
+  // from user_profiles each time it opens, and autofill / auto-apply both start from the
+  // popup, so the value is fresh. Unknown plan → ask the server (it stays the authority).
+  async function cachedPlanIsFree() {
+    try {
+      const r = await chrome.storage.local.get(['plan', 'isPremium']);
+      return r.plan === 'free' && !r.isPremium;
+    } catch (_) { return false; }
+  }
+
   async function askAI(question, config, fieldType, options) {
     // Skip all AI calls if premium_required was already received this session
-    if (premiumBlocked) return null;
+    // v2.5.99: the premium block only stops the AI call (checked below, before the prompt) —
+    // deterministic guards and exact cached answers keep working on the free plan.
     // 2026-09-18 (task #880): `options` is an array of choice labels for
     // radio/checkbox/select questions. When present, the AI is instructed
     // to reply with the EXACT text of the best-matching option (or "skip"
@@ -162,8 +191,12 @@
 
     await loadCache();
 
+    // v2.5.98: job-specific free text (headline, summary, cover letter, motivation) is never served
+    // from / written to the cross-job cache — live 2026-10-04 the "Summary" written for a Saudi
+    // Service-Delivery job would have been reused verbatim on every later application.
+    const jobSpecific = isJobSpecificQuestion(question);
     // Check cache first
-    const cached = findCached(question, fieldType, options);
+    const cached = jobSpecific ? null : findCached(question, fieldType, options);
     if (cached) {
       log()(`AI [cache]: "${question.substring(0, 40)}" → "${cached.substring(0, 40)}"`);
       return cached;
@@ -190,6 +223,27 @@
         && urlEmpty(cvUrl.github)) {
       log()('AI [short-circuit]: github URL empty → returning ""');
       return '';
+    }
+    // v2.5.99: social profile fields (SmartRecruiters "Facebook", "X (formerly Twitter)") — the
+    // profile never holds these; the AI was asked and replied "" on every form.
+    if (/^\s*(facebook|twitter|x \(|instagram|tiktok|snapchat|youtube)\b/i.test(String(question || '')) && fieldType !== 'textarea'
+        && !(Array.isArray(options) && options.length)) {
+      log()('AI [short-circuit]: social profile field → returning ""');
+      return '';
+    }
+    // v2.5.100: bare "Website" field (SmartRecruiters) with no website in the profile.
+    if (/^\s*(website|personal website|site web|site internet|webseite|sitio web)\b/i.test(String(question || '')) && fieldType !== 'textarea'
+        && !(Array.isArray(options) && options.length) && urlEmpty(config.portfolioUrl) && urlEmpty(cvUrl.website)) {
+      log()('AI [short-circuit]: website field, none in the profile → returning ""');
+      return '';
+    }
+
+    // Skip all AI calls if premium_required was already received this session
+    if (premiumBlocked) return null;
+    if (await cachedPlanIsFree()) {
+      log()('AI [premium]: free plan — AI answers are Premium, no AI call');
+      markPremiumBlocked();
+      return null;
     }
 
     // v2.5.87: never guess an education answer without education data — a blind
@@ -225,9 +279,17 @@
     // real data is available in extension storage.
     const cv = config.cvProfile || {};
     const topSkills = (cv.skills || []).slice(0, 12).join(', ');
+    // v2.5.99: real achievements (≤2 bullets per role) so open answers cite them instead of
+    // inventing one — gate 2026-10-04 (Lever "proudest accomplishment"): "increased user
+    // engagement by 15%" was written for a profile whose bullets never say that.
+    const bulletsOf = (e) => {
+      const b = Array.isArray(e.bullets) ? e.bullets : Array.isArray(e.description) ? e.description : [];
+      return b.map(x => String(typeof x === 'string' ? x : (x && x.text) || '').replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 2)
+        .map(x => `    • ${x.slice(0, 180)}`).join('\n');
+    };
     const recentRoles = (cv.experience || []).slice(0, 3)
-      .map(e => `- ${e.title || ''} @ ${e.company || ''} (${e.duration || e.dates || ''})`)
-      .filter(s => s.length > 5).join('\n');
+      .map(e => { const head = `- ${e.title || ''} @ ${e.company || ''} (${e.duration || e.dates || ''})`; const b = bulletsOf(e); return head.length > 5 ? head + (b ? '\n' + b : '') : ''; })
+      .filter(Boolean).join('\n');
     const education = (cv.education || []).slice(0, 4)
       .map(e => `- ${e.degree || ''}${e.school ? ', ' + e.school : ''}${e.year ? ' (' + e.year + ')' : ''}`)
       .filter(s => s.length > 5).join('\n');
@@ -256,7 +318,7 @@ Legally authorized to work: ${config.legallyAuthorized || 'yes'}
 Willing to relocate: ${config.willingToRelocate || ''}
 Driver's license: ${config.driversLicense || ''}
 Notice period: ${config.noticePeriod || ''}
-${_job && _job.title ? `Job being applied for: ${cleanJobTitle(_job.title)}${_job.company ? ' at ' + _job.company : ''} (the position the candidate is seeking = this job)` : ''}
+${_job && _job.title ? `Job being applied for (TARGET job — NOT a title the candidate holds or held): ${cleanJobTitle(_job.title)}${_job.company ? ' at ' + _job.company : ''}` : ''}
 ${summary ? `\nProfessional summary: ${summary.substring(0, 400)}` : ''}
 ${topSkills ? `Top skills: ${topSkills}` : ''}
 ${languages ? `Languages: ${languages}` : ''}
@@ -270,6 +332,11 @@ RULES:
 - If the question asks for a specific candidate datapoint (LinkedIn URL, portfolio, gender, etc.) and the value is EMPTY above, reply with an appropriate empty marker: "" for open text, "N/A" for identity questions, "0" for numeric. NEVER fabricate a URL, email, phone, or biographical fact that is not listed above.
 - Marketing / contact opt-ins (newsletters, job alerts, "email me about other openings", talent community, SMS / WhatsApp consent) → always "No" (or the equivalent option). Only a consent REQUIRED to submit the application (privacy policy / data processing) is "Yes".
 - Degree / education-level questions: answer ONLY from "Education" above. A higher degree (Master, MBA, PhD, "Bac+5") means the lower levels (Bachelor, Licence, Associate, high school) are completed too.
+- Never present the candidate as already holding the target job's title, and never claim an industry, employer, tool, certification or experience that is not in the candidate data above (v2.5.98: "I am a bilingual Service Delivery Manager…" was written for an events/strategy profile). Headline / summary / cover letter: describe the candidate's REAL background, then why it fits the target job.
+- "Do you have experience in / with X?" or "Are you willing to work in <place>?": "Yes" only when the candidate data above supports it (X appears in the experience/skills; the place is the candidate's location or "Willing to relocate" is yes), otherwise "No".
+- Numeric "how many years of X" with X absent from the candidate data → "0".
+- Never write a number, percentage, amount or metric (e.g. "increased engagement by 15%") that is not written in the candidate data above — quote the real achievements from "Recent experience" or stay qualitative.
+- Questions about the size / scope / number of something the candidate did (team size, engineers coordinated, budget managed, number of projects) that the data above does not state → the smallest / "none" option, or "skip" — never a mid-range guess (v2.5.98: "10-19 engineers" was invented).
 - Match the language of the question.
 - For salary/money/hours/quantity fields reply ONLY the number.
 
@@ -299,17 +366,7 @@ Answer:`;
         if (response?.error) {
           if (response.error === 'premium_required') {
             log()('AI [premium]: AI form answers require Premium plan — skipping all AI calls this session');
-            premiumBlocked = true;
-            // v2.5.92: popup notice "some applications were skipped — Premium AI
-            // answers them", once per session: a notice seen more than 12 h ago
-            // is re-armed for this new session; the engine counts the skips.
-            try {
-              chrome.storage.local.get(['eam_ai_premium_notice'], (r) => {
-                const n = r && r.eam_ai_premium_notice;
-                const stale = n && n.seen && (Date.now() - (n.at || 0)) > 12 * 3600 * 1000;
-                if (!n || stale) chrome.storage.local.set({ eam_ai_premium_notice: { at: Date.now(), seen: false, skipped: 0 } });
-              });
-            } catch (_) {}
+            markPremiumBlocked();
           } else if (response.error === 'session_expired' || response.error === 'unauthorized' ||
                      response.error === 'no_session' || response.error === 'not_logged_in') {
             // Treat any auth-related error like premium_required: stop calling AI
@@ -335,9 +392,11 @@ Answer:`;
       // Clean up: remove quotes if wrapped
       answer = answer.replace(/^["']|["']$/g, '').trim();
 
-      // Cache it
-      cache[cacheKey(question, fieldType, options)] = answer;
-      await saveCache();
+      // Cache it (not job-specific free text — see isJobSpecificQuestion)
+      if (!jobSpecific) {
+        cache[cacheKey(question, fieldType, options)] = answer;
+        await saveCache();
+      }
 
       log()(`AI [answer]: "${question.substring(0, 35)}" → "${answer.substring(0, 50)}"`);
       return answer;
