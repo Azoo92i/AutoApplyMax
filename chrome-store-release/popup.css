@@ -855,3 +855,7 @@ small { font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; }
 .help-links a:hover { text-decoration: underline; }
 .help-nav { display: flex; gap: 8px; }
 .help-nav .btn { flex: 1; height: 40px; }
+
+/* v2.5.100: Autofill result — solid, readable (white on green / slate), no fade. */
+#autofill-btn.af-result-ok, #autofill-btn.af-result-ok:disabled { background: #047857 !important; color: #fff !important; border-color: #047857 !important; opacity: 1 !important; box-shadow: none !important; transition: none !important; }
+#autofill-btn.af-result-none, #autofill-btn.af-result-none:disabled { background: #475569 !important; color: #fff !important; border-color: #475569 !important; opacity: 1 !important; box-shadow: none !important; transition: none !important; }

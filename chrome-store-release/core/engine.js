@@ -10,6 +10,8 @@
 
   window.EAM = window.EAM || {};
   const u = () => window.EAM.utils;
+  // v2.5.115: consecutive result pages without one Easy Apply job before the run stops.
+  const PAGES_WITHOUT_EASY_APPLY_STOP = 3;
 
   // v2.5.87: session start/stop telemetry → ext_diag_events (types already
   // allow-listed by ext-diag-ingest). LinkedIn only, fire-and-forget.
@@ -19,6 +21,30 @@
       chrome.runtime.sendMessage({ type: 'eam-diag', event: { site: 'linkedin', event_type: eventType, url_path: location.pathname, meta: meta || {} } });
     } catch (_) {}
   }
+
+  // v2.5.117: every run ends with exactly ONE session_end carrying a reason (telemetry 2026-10-16, 7 days: 196 of
+  // 683 runs had none — a second Start superseded the loop, the adapter's daily-limit break, the tab closed /
+  // reloaded). `run` ties session_start and session_end together.
+  let _run = null; // { id, ended }
+  function _runMeta(reason, extra) {
+    const state = u() || {};
+    let sess = null; try { sess = state.getSkipSession ? state.getSkipSession() : null; } catch (_) {}
+    return Object.assign({ reason: String(reason || '').slice(0, 120), run: _run ? _run.id : null, applied: state.appliedCount || 0, skipped: state.skippedCount || 0 },
+      sess ? { sess_applied: sess.applied, sess_skipped: sess.skipped, skip_reasons: sess.reasons } : {}, extra || {});
+  }
+  function _endSession(reason, extra) {
+    if (!_run || _run.ended) return false;
+    const meta = _runMeta(reason, extra);
+    _run.ended = true;
+    _diag('session_end', meta);
+    return true;
+  }
+  // Search identity (same search = same list of jobs) — used to resume after a Stop without re-opening jobs.
+  const _SEARCH_KEYS = ['keywords', 'location', 'geoId', 'f_AL', 'f_WT', 'f_E', 'f_JT', 'f_TPR', 'f_C', 'f_I', 'f_F', 'f_SB2', 'f_PP', 'sortBy', 'distance'];
+  function _searchKey() {
+    try { const q = new URLSearchParams(location.search); return location.pathname + '?' + _SEARCH_KEYS.filter(k => q.has(k)).map(k => k + '=' + q.get(k)).join('&'); } catch (_) { return location.pathname; }
+  }
+  const RESUME_MAX_MS = 2 * 3600 * 1000;
 
   // v2.5.92: an application dropped because a screening question needed AI
   // on the free plan — the popup explains it once after the run and offers
@@ -32,6 +58,89 @@
         chrome.storage.local.set({ eam_ai_premium_notice: { ...n, skipped: (n.skipped || 0) + 1 } });
       });
     } catch (_) {}
+  }
+
+  // v2.5.105: one repair pass per application on LinkedIn validation errors (see
+  // FormFiller.repairValidationErrors). true = something was fixed → retry the step.
+  async function _tryRepair(modal) {
+    const st = u(); const FF = window.EAM && window.EAM.FormFiller;
+    if (!FF || !FF.repairValidationErrors || (st._repairTried || 0) >= 1) return false;
+    st._repairTried = (st._repairTried || 0) + 1;
+    try {
+      const r = await FF.repairValidationErrors(modal, st.config);
+      st.log(`Validation errors — repair pass fixed ${r.fixed} field(s)`);
+      if (r.fixed > 0) { await st.wait(800); return true; }
+    } catch (e) { st.log('repair failed: ' + (e && e.message)); }
+    return false;
+  }
+  // Which question / message made us discard — labels + LinkedIn messages only (no answers).
+  function _skipDetail(reason, modal) {
+    try {
+      const FF = window.EAM && window.EAM.FormFiller;
+      const errs = FF && FF.validationErrorDetails && modal ? FF.validationErrorDetails(modal) : [];
+      const fails = (u()._unknownFieldLabels || []).slice(-3).map(s => String(s).slice(0, 100));
+      // v2.5.106: 10 steps without Submit (MERITIS, live 2026-10-10) showed no LinkedIn error — list the
+      // REQUIRED fields still empty on the stuck step (labels only, never values).
+      const empty = [];
+      try {
+        const lab = (el) => {
+          const id = el.id && modal.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+          const fs = el.closest('fieldset'); const lg = fs && fs.querySelector('legend');
+          // v2.5.109: native-dialog fields have an empty <label for> → the visible question (getFieldQuestion).
+          let q = ''; try { q = FF && FF.getFieldQuestion ? FF.getFieldQuestion(el, modal) : ''; } catch (_) {}
+          return String((id && id.textContent.trim()) || (lg && lg.textContent) || q || el.getAttribute('aria-label') || el.name || el.tagName).replace(/\s+/g, ' ').trim().slice(0, 100);
+        };
+        for (const el of modal ? modal.querySelectorAll('input, select, textarea') : []) {
+          if (empty.length >= 4) break;
+          if (!(el.required || el.getAttribute('aria-required') === 'true') || el.type === 'hidden' || el.disabled) continue;
+          if (el.type === 'radio' || el.type === 'checkbox') {
+            const grp = el.name ? modal.querySelectorAll(`input[name="${CSS.escape(el.name)}"]`) : [el];
+            if ([...grp].some(r => r.checked)) continue;
+          } else if (String(el.value || '').trim() && !/^select an option$|^s[ée]lectionnez/i.test(String(el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent : el.value).trim())) continue;
+          const l = lab(el); if (l && !empty.includes(l)) empty.push(l);
+        }
+      } catch (_) {}
+      // v2.5.109: where the form was stuck (native-dialog step_limit skips showed no error and no empty
+      // field — ops alert 2026-10-12): progress ("3/4 pages" / "75 percent"), footer button labels,
+      // aria-invalid count. Labels only, never answers.
+      let where = {};
+      try {
+        const t = String(modal && modal.textContent || '');
+        const pg = t.match(/(\d+)\s*\/\s*(\d+)\s*pages?/i) || t.match(/(\d{1,3})\s*(%|percent)/i);
+        const btns = modal ? Array.from(modal.querySelectorAll('button')).filter(b => b.offsetParent !== null).map(b => String(b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 24)).filter(Boolean).slice(-4) : [];
+        where = { prog: pg ? pg[0].slice(0, 20) : '', btns, inv: modal ? modal.querySelectorAll('[aria-invalid="true"]').length : 0, files: modal ? modal.querySelectorAll('input[type="file"]').length : 0 };
+      } catch (_) {}
+      // ext-diag-ingest replaces any meta > 800 bytes with {_truncated:true}: shorten the lists, and
+      // the "where" fields only ride along when they still fit.
+      const base = { reason, errs: errs.slice(0, 3), unknown: fails, empty, repaired: u()._repairTried || 0 };
+      // v2.5.112: settings whose absence caused the skip (expectedSalary / currentSalary / postalCode) → popup hint.
+      const miss = (u()._missingSettings || []).slice(0, 3);
+      if (miss.length) { base.miss = miss; try { u().noteMissingSettings && u().noteMissingSettings(miss); } catch (_) {} try { _missingSettingNotice(miss); } catch (_) {} }
+      const fit = (o) => JSON.stringify(o).length <= 780;
+      if (!fit(base)) { base.unknown = base.unknown.map(s => s.slice(0, 50)); base.empty = base.empty.map(s => s.slice(0, 60)); base.errs = base.errs.map(e => ({ msg: String(e.msg || '').slice(0, 60), label: String(e.label || '').slice(0, 60) })); }
+      _diag('form_skip_detail', fit({ ...base, ...where }) ? { ...base, ...where } : base);
+    } catch (_) {}
+  }
+
+  // v2.5.119: a job skipped because a setting is empty (current CTC, expected salary, postal code, birth date, gender) —
+  // until now only the popup said so. The page now shows it too, next to Easy Apply, so the user fills it in.
+  const _MISS_COPY = { expectedSalary: 'your expected salary', currentSalary: 'your current salary / CTC', postalCode: 'your postal code', dateOfBirth: 'your date of birth', gender: 'your gender' };
+  function _missingSettingNotice(keys) {
+    const st = u();
+    st._missNoticeKeys = st._missNoticeKeys || {};
+    let fresh = false;
+    for (const k of keys || []) { if (_MISS_COPY[k]) { if (!st._missNoticeKeys[k]) fresh = true; st._missNoticeKeys[k] = (st._missNoticeKeys[k] || 0) + 1; } }
+    if (!fresh && st._missNotice) return;
+    const ks = Object.keys(st._missNoticeKeys);
+    if (!ks.length || !st._showBotNotice) return;
+    const what = ks.map(k => _MISS_COPY[k]);
+    const list = what.length > 1 ? what.slice(0, -1).join(', ') + ' and ' + what[what.length - 1] : what[0];
+    const n = ks.reduce((a, k) => a + st._missNoticeKeys[k], 0);
+    st._missNotice = {
+      title: 'Add ' + list + ' to apply to more jobs',
+      body: (n === 1 ? 'A job asked for ' : n + ' jobs asked for ') + list + ' and it is empty in your settings, so they were skipped (never guessed). Open the AutoApplyMax extension → Preferences and fill it in; auto-apply keeps going meanwhile.',
+    };
+    st._showBotNotice(st._missNotice.title, st._missNotice.body, 'warn');
   }
 
   let activeAdapter = null;
@@ -60,7 +169,14 @@
   const RATE_LIMIT_STRIKE_LIMIT = 4;
   // Minutes to wait per strike (1-indexed). Last entry repeats if strikes
   // exceed the list length before hitting the bail-out.
-  const RATE_LIMIT_PAUSE_MINUTES = [5, 8, 12];
+  // v2.5.103 (Théo 2026-10-07): LinkedIn's throttle usually clears after a
+  // couple of minutes, and a DIFFERENT offer whose Easy Apply opens is the
+  // signal it's over. Telemetry (14 d): after the old 5-min pause the bot
+  // re-hit the throttle at once by retrying the SAME job, then sat 8 + 12 min;
+  // a user who stopped and restarted after ~1 min applied 4 jobs straight
+  // away. Short pauses + resume on the next offer (the throttled one is
+  // retried at the end of the list) + strikes reset after each real submit.
+  const RATE_LIMIT_PAUSE_MINUTES = [2, 4, 8];
 
   async function handleRateLimit(adapter, state, source) {
     state.rateLimitStrikes = (state.rateLimitStrikes || 0) + 1;
@@ -95,7 +211,7 @@
     }
 
     const baseMin = RATE_LIMIT_PAUSE_MINUTES[strikes - 1] || RATE_LIMIT_PAUSE_MINUTES[RATE_LIMIT_PAUSE_MINUTES.length - 1];
-    const pauseMinutes = baseMin + Math.random();
+    const pauseMinutes = baseMin + Math.random() * 0.5;
     const pauseMs = Math.round(pauseMinutes * 60 * 1000);
     _diag('rate_limit_throttle', { phase: 'pause', strike: strikes, pause_min: Math.round(pauseMinutes * 10) / 10, source });
     state.log('⏳ Waiting ~' + Math.round(pauseMinutes) + ' min to avoid LinkedIn rate limit — this keeps your account safe. Will resume automatically.');
@@ -167,6 +283,20 @@
     return true; // signal: keep looping
   }
 
+  // v2.5.119 (live telemetry 2.5.117, 2026-10-16/17): LinkedIn's "Nous n’avons pas pu envoyer votre candidature.
+  // Veuillez réessayer." / "We couldn't submit your application" = LinkedIn refusing submits for a while (66
+  // form_invalid skips in a row for one user, 55 submit_failed for another — the bot burnt through the list). Treated
+  // like the throttle: in-place pause notice, auto-resume, strike count (4th → stop), rate_limit_throttle telemetry
+  // with source "submit error". null = no such message on screen.
+  async function _submitErrorPause(adapter, state, modal, where) {
+    let t = '';
+    try { t = state.findSubmitErrorToast ? state.findSubmitErrorToast(modal) : ''; } catch (_) { t = ''; }
+    if (!t) return null;
+    state.log(`⏸ LinkedIn did not accept the application ("${t.slice(0, 90)}") — LinkedIn is slowing applications down, pausing like a rate limit`);
+    const keep = await handleRateLimit(adapter, state, 'submit error (' + where + ')');
+    return keep ? 'paused' : 'stop';
+  }
+
   // v2.5.93: one main loop at a time (see the 'start' handler).
   let loopGen = 0;
   let loopPromise = null;
@@ -181,11 +311,12 @@
     state.rateLimitStrikes = 0;
 
     // Triple-layer security
-    if (!state.isRunning) { state.log('SECURITY BLOCK 1/3: isRunning=false'); return; }
+    if (!state.isRunning) { state.log('SECURITY BLOCK 1/3: isRunning=false'); if (!stale()) _endSession('Not running at loop start'); return; }
     if (!state.userExplicitlyClickedStart) {
       state.log('SECURITY BLOCK 2/3: user did NOT click Start');
       state.isRunning = false;
       await chrome.storage.local.set({ isRunning: false });
+      if (!stale()) _endSession('Start not confirmed by the user');
       return;
     }
     if (!state.config || !state.config.email) {
@@ -193,6 +324,7 @@
       state.isRunning = false;
       state.userExplicitlyClickedStart = false;
       await chrome.storage.local.set({ isRunning: false });
+      if (!stale()) _endSession('No settings loaded (email missing)');
       return;
     }
 
@@ -370,6 +502,10 @@
         // jobs 21-25 of every batch.
         let _staleStreak = 0;
         let _jobCards = jobCards;
+        // v2.5.115: per page — cards evaluated for the first time / of those, cards with nothing to apply to
+        // (not Easy Apply, no Apply button, already applied).
+        let _pageNew = 0, _pageNoApply = 0, _pageResumed = 0;
+        if (!state._evaluatedJobIds) state._evaluatedJobIds = new Set();
         let _lastStaleRefreshAt = 0;
         const _STALE_REFRESH_COOLDOWN_MS = 30000;
         // Process each job
@@ -382,7 +518,9 @@
           // "skip" on the next ~24 cards before the loop ran out.
           if (adapter.shouldStopIteration && adapter.shouldStopIteration()) {
             state.log('⚠ Adapter requested a hard stop (e.g. daily limit reached). Stopping iteration.');
-            state.isRunning = false;
+            // v2.5.117: was `isRunning = false; break` — no session_end, no daily notice, no daily_limit_reached
+            // event on this path (only set by the adapter's daily-limit detection).
+            await stopBot('Daily limit reached');
             break;
           }
           // v2.5.87: LinkedIn can drop f_AL mid-list (seen live 2026-09-25 right
@@ -411,6 +549,12 @@
           // Reset per-job counters that the form-filler / step loop use
           // to detect "stuck on unanswerable field" scenarios.
           state._unknownFieldFails = 0;
+          state._unknownFieldLabels = [];
+          state._missingSettings = [];
+          state._repairTried = 0;
+          // v2.5.119: keep the "add your <setting>" hint visible in the page while the run goes on (LinkedIn re-renders
+          // the job pane on every job, which removes it).
+          try { if (state._missNotice && state._showBotNotice && !document.querySelector('[data-eam-bot-notice]')) state._showBotNotice(state._missNotice.title, state._missNotice.body, 'warn'); } catch (_) {}
 
           // Cleanup leftover modal — but only if it actually contains form
           // fields. After a successful submit, LinkedIn briefly leaves a
@@ -455,6 +599,20 @@
             state.log('Stale dialog persists but cleanup gave up — processing card anyway');
           }
 
+          // v2.5.115: a job already evaluated in this run is never re-evaluated (live 2026-10-16: the same
+          // 11 cards were re-opened every ~30 s for an hour after a wrong "next page", skips 615 → 1,562).
+          const _cardJobId = adapter.getCardJobId ? adapter.getCardJobId(jobCard) : null;
+          if (_cardJobId) {
+            if (state._evaluatedJobIds.has(_cardJobId)) {
+              if (state._resumedJobIds && state._resumedJobIds.has(_cardJobId)) { _pageResumed++; console.log('[EAM][mainLoop] job ' + _cardJobId + ' already checked before Stop — skipped without re-opening'); }
+              else console.log('[EAM][mainLoop] job ' + _cardJobId + ' already checked in this run — skipped without re-opening');
+              continue;
+            }
+            state._evaluatedJobIds.add(_cardJobId);
+            state._currentJobId = _cardJobId;
+          }
+          _pageNew++;
+
           // Extract job info
           const jobInfo = adapter.getJobInfo(jobCard);
           // v2.5.97: the AI layer answers "what position are you looking for?" with the job
@@ -494,6 +652,7 @@
             const _applied = adapter.isAlreadyAppliedCard && adapter.isAlreadyAppliedCard(jobCard);
             state.log(_applied ? 'Already applied (card badge) — skip' : 'Not Easy Apply (card badge) — skip');
             state.noteSkip(_applied ? 'already_applied' : 'not_easy_apply');
+            _pageNoApply++;
             continue;
           }
 
@@ -507,6 +666,8 @@
           if (clickOk === false) {
             state.log('Card click did not navigate (stale ref) — skip');
             state.noteSkip('stale_card');
+            if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); // not really evaluated — may be retried after a re-query
+            _pageNew--;
             _staleStreak++;
             // #874 fix: after 3 consecutive stale refs, force LinkedIn to
             // hydrate fresh cards (scroll bottom + re-query). Reset i to
@@ -552,10 +713,37 @@
               if (adapter.isFocusedJobApplied && adapter.isFocusedJobApplied()) {
                 state.log('Silently-applied (right-pane indicator) — skip');
                 state.noteSkip('applied_pane');
+                _pageNoApply++;
                 continue;
               }
             } catch (e) {}
           }
+
+          // v2.5.98: the user's blacklist also applies to the focused job's type pills
+          // ("Internship" / "Stage" / "Alternance"): live 2026-10-03, a VINCI internship ad whose
+          // title had no internship word was applied to with "stage, internship" blacklisted.
+          // v2.5.104: the blacklist also runs on the FOCUSED job's title — the card title can be
+          // empty when the first check runs (live 2026-10-08: "Stage - Assistant Chef de Projet"
+          // reached the form, the bot answered "Oui" to "stage de fin d'études ?").
+          try {
+            if (adapter.getFocusedJobTitle && state.config.blacklistKeywords) {
+              const ft = adapter.getFocusedJobTitle();
+              if (ft && state.shouldSkipByBlacklist(ft, '', '', state.config.blacklistKeywords)) {
+                state.noteSkip('blacklist');
+                continue;
+              }
+            }
+          } catch (_) {}
+          try {
+            if (adapter.getFocusedJobTags && state.config.blacklistKeywords) {
+              const tags = adapter.getFocusedJobTags();
+              if (tags.length && state.shouldSkipByBlacklist(tags.join(' · '), '', '', state.config.blacklistKeywords)) {
+                state.log(`Skip: job type tag "${tags.join(', ')}" is in your blacklist`);
+                state.noteSkip('blacklist');
+                continue;
+              }
+            }
+          } catch (_) {}
 
           // v2.5.89: "Max years required" setting, read from the job DESCRIPTION.
           // shouldSkipByExperience() above only sees card titles, where LinkedIn
@@ -585,6 +773,7 @@
           if (!applyBtn) {
             state.log('No Apply button after waiting, skip');
             state.noteSkip('no_apply_btn');
+            _pageNoApply++;
             continue;
           }
 
@@ -777,7 +966,9 @@
             if (!keepGoing) break;
             // v2.5.89: retry THIS job once after the pause — it was never applied to
             // (every throttle used to silently lose the job that hit it).
-            if (!jobCard.__eamThrottleRetried) { jobCard.__eamThrottleRetried = true; i--; state.log('↻ Retrying the same job after the pause'); }
+            // v2.5.103: resume on the NEXT offer (the one that hit the throttle tends to
+            // re-trigger it); this job is retried once at the end of the list.
+            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
             continue;
           }
 
@@ -819,7 +1010,9 @@
             if (adapter.checkRateLimit()) {
               const keepGoing = await handleRateLimit(adapter, state, 'modal failed');
               if (!keepGoing) break;
-              if (!jobCard.__eamThrottleRetried) { jobCard.__eamThrottleRetried = true; i--; state.log('↻ Retrying the same job after the pause'); }
+              // v2.5.103: resume on the NEXT offer (the one that hit the throttle tends to
+            // re-trigger it); this job is retried once at the end of the list.
+            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
               continue;
             }
             // Modal didn't appear after applyBtn click — most common cause is
@@ -867,6 +1060,7 @@
 
           // ── Multi-step form loop ──────────────────────────────────────
           let step = 0;
+          let _submitErr = null; // v2.5.119: 'paused' | 'stop' after LinkedIn's "couldn't submit" message
           const appStart = Date.now();
           const appTimeout = 180000; // 3 min
           const loadingTimeout = 20000; // 20s
@@ -928,8 +1122,17 @@
 
             // Validation errors
             modal = adapter.getFormModal();
+            // v2.5.119: LinkedIn's "couldn't submit your application" message → pause (throttle), never a form skip.
+            if (modal) {
+              const se = await _submitErrorPause(adapter, state, modal, 'form');
+              if (se) { _submitErr = se; step = 999; break; }
+            }
             if (modal && adapter.hasValidationErrors(modal)) {
+              // v2.5.105: fix what LinkedIn's message asks for (number range, missing
+              // selection, required text via AI, length) once per application, then retry.
+              if (await _tryRepair(modal)) continue;
               state.log('Validation error detected - discarding');
+              _skipDetail('form_invalid', modal);
               await adapter.discardApplication();
               _notePremiumSkip();
               state.noteSkip('form_invalid');
@@ -971,6 +1174,7 @@
             if ((state._unknownFieldFails || 0) >= 3) {
               state.log('Stuck on unanswerable fields (' + state._unknownFieldFails +
                         ' fails) — discarding and moving on');
+              _skipDetail('questions', modal);
               await adapter.discardApplication();
               _notePremiumSkip();
               state.noteSkip('questions');
@@ -1035,8 +1239,14 @@
 
             // Check for validation errors after clicking next
             const stillModal = adapter.getFormModal();
+            if (stillModal || isSubmit) {
+              const se = await _submitErrorPause(adapter, state, stillModal, isSubmit ? 'submit' : 'next');
+              if (se) { _submitErr = se; step = 999; break; }
+            }
             if (stillModal && !isSubmit && adapter.hasValidationErrors(stillModal)) {
+              if (await _tryRepair(stillModal)) continue;
               state.log('Validation error after Next click - discarding');
+              _skipDetail('form_invalid', stillModal);
               await adapter.discardApplication();
               state.noteSkip('form_invalid');
               step = 999;
@@ -1053,6 +1263,9 @@
               let outcome = 'unknown';
               try { if (adapter.verifySubmitted) outcome = await adapter.verifySubmitted(); } catch (_) {}
               if (outcome === 'failed') {
+                const se = await _submitErrorPause(adapter, state, adapter.getFormModal(), 'after submit');
+                if (se) { _submitErr = se; step = 999; break; }
+                _skipDetail('submit_failed', adapter.getFormModal());
                 state.log('⚠ LinkedIn did not accept the application (error or form still open) — not counted, discarding');
                 await adapter.discardApplication();
                 state.noteSkip('submit_failed');
@@ -1060,6 +1273,10 @@
               }
               state.log(outcome === 'confirmed' ? 'Application confirmed by LinkedIn' : 'Submit sent (no confirmation signal seen)');
               state.appliedCount++;
+              // v2.5.103: strikes count CONSECUTIVE throttles — a real submit means
+              // LinkedIn let us through, so the next throttle starts again at 2 min.
+              state.rateLimitStrikes = 0;
+              state._noModalStreak = 0;
               try { state.noteSessionApplied && state.noteSessionApplied(); } catch (_) {}
               state.appliedJobs.push({
                 title: jobInfo.title,
@@ -1098,6 +1315,32 @@
               break;
             }
           }
+          // v2.5.98: 10 steps without reaching Submit (a step that never advances, e.g. an
+          // unanswered required radio on /jobs/search-results/) left the form OPEN: the next
+          // cards were "processed" inside it ("Modal from previous job still open", cleanup
+          // failed 2/2, live 2026-10-04 MERITIS). Close it and count the skip.
+          // v2.5.112: step 999 = already discarded + counted (form_invalid) — telemetry showed every form_invalid
+          // followed by a second "step_limit" for the same job (the window was still closing).
+          // v2.5.119: paused on LinkedIn's "couldn't submit" message → this job is retried at the end of the list
+          // (never counted as a skip), the next offer is tried after the pause.
+          if (_submitErr) {
+            if (_submitErr === 'stop' || !state.isRunning) break;
+            if (!jobCard.__eamThrottleRetried && _jobCards && _jobCards.length != null) { jobCard.__eamThrottleRetried = true; if (_cardJobId) state._evaluatedJobIds.delete(_cardJobId); _jobCards = Array.from(_jobCards).concat([jobCard]); state.log('↷ Moving on to the next job — this one will be retried at the end'); }
+            continue;
+          }
+          if (step === 999 && state.isRunning) {
+            const left = adapter.getFormModal && adapter.getFormModal();
+            if (left && state.isShown(left) && adapter.clearAllModals) { await state.wait(800); if (adapter.getFormModal()) await adapter.clearAllModals(3); }
+          } else if (step >= 10 && state.isRunning) {
+            const left = adapter.getFormModal && adapter.getFormModal();
+            if (left && state.isShown(left)) {
+              state.log('10 form steps without reaching Submit — discarding this application');
+              _skipDetail('step_limit', left);
+              await adapter.discardApplication();
+              if (adapter.getFormModal() && adapter.clearAllModals) await adapter.clearAllModals(3);
+              state.noteSkip('step_limit');
+            }
+          }
         }
 
         // v2.5.96: per-page skip-reason snapshot (one event per ~25 cards).
@@ -1105,6 +1348,27 @@
 
         // Bot stopped during processing?
         if (!state.isRunning) break;
+
+        // v2.5.115: pages in a row without a single Easy Apply job → stop with a clear message instead of
+        // paging through an unfiltered search for hours.
+        const _isLinkedIn = /^linkedin$/i.test(adapter.siteKey || adapter.siteName || '');
+        let _filterOn = false;
+        try { _filterOn = adapter.isEasyApplyFilterOn ? !!adapter.isEasyApplyFilterOn() : /[?&]f_AL=true/i.test(window.location.href); } catch (_) {}
+        const _searchTip = _filterOn
+          ? 'Broaden the search (other keywords, a wider location), then click Start again.'
+          : 'Turn on the "Easy Apply" filter in LinkedIn, or broaden the search (keywords, location), then click Start again.';
+        // v2.5.117: a page whose jobs were all checked before a Stop (resume) says nothing about Easy Apply.
+        state._pagesNoEligible = _pageNoApply < _pageNew ? 0 : (_pageNew === 0 && _pageResumed > 0) ? (state._pagesNoEligible || 0) : (state._pagesNoEligible || 0) + 1;
+        state.log(`Page done: ${_pageNew} new job(s) checked, ${_pageNew - _pageNoApply} Easy Apply`);
+        if (_isLinkedIn && state._pagesNoEligible >= PAGES_WITHOUT_EASY_APPLY_STOP) {
+          state.log(`No Easy Apply job on the last ${state._pagesNoEligible} pages — stopping`);
+          await stopBot('No Easy Apply jobs found', {
+            title: 'No Easy Apply jobs found',
+            body: `The last ${state._pagesNoEligible} pages had no Easy Apply job to apply to. ${_searchTip}`,
+            tone: 'info',
+          });
+          break;
+        }
 
         // Next page — only when the popup's "Auto next page" toggle is on (default on).
         if (state.config && state.config.autoNextPage === false) {
@@ -1127,7 +1391,7 @@
           // isRunning=true in storage and no feedback on the page).
           await stopBot('No more pages in this search', {
             title: 'Finished this search',
-            body: 'No more Easy Apply jobs on the remaining pages. Try other keywords or a wider location.',
+            body: 'No more Easy Apply jobs on the remaining pages. ' + _searchTip,
             tone: 'info',
           });
           break;
@@ -1140,6 +1404,9 @@
     }
 
     state.log('Bot stopped');
+    // v2.5.117: the loop ended without a stopBot() reason (not superseded by a newer Start — that one closed
+    // the run itself). Never leave a run without its session_end.
+    if (!stale()) _endSession(state.isRunning ? 'Loop ended (unknown cause)' : 'Stopped (no reason recorded)');
     await adapter.onStop();
   }
 
@@ -1356,6 +1623,8 @@
       const b = state.formatSkipBreakdown(state.groupSkipReasons(sess.reasons), lang);
       if (b) lines.push({ kind: 'skips', text: T.skipped(sess.skipped, b) });
     }
+    // v2.5.119: settings that caused skips stay visible in the end-of-run notice.
+    try { if (state._missNotice) lines.push({ kind: 'skips', text: state._missNotice.title + ' — Preferences in the extension.' }); } catch (_) {}
     let link = null;
     const daily = /daily limit/i.test(String(reason));
     if (daily) {
@@ -1394,9 +1663,16 @@
     state.log('Bot stopping — ' + reason);
     // applied/skipped = LIFETIME counters (kept for continuity of older rows);
     // sess_* + skip_reasons = this run only (v2.5.96).
-    const _sess = state.getSkipSession ? state.getSkipSession() : null;
-    _diag('session_end', Object.assign({ reason: String(reason || '').slice(0, 120), applied: state.appliedCount || 0, skipped: state.skippedCount || 0 },
-      _sess ? { sess_applied: _sess.applied, sess_skipped: _sess.skipped, skip_reasons: _sess.reasons } : {}));
+    _endSession(reason);
+    // v2.5.117: Stop → Start on the same search resumes where the run was (live 2026-10-16: after a popup Stop the
+    // new run restarted at Job 1/25 and re-opened the forms it had already discarded). The job in progress at the
+    // Stop is not remembered (it is tried again). Any other stop (end of search, daily limit…) forgets the search.
+    try {
+      if (/user clicked stop/i.test(String(reason)) && state._evaluatedJobIds && state._evaluatedJobIds.size) {
+        const ids = [...state._evaluatedJobIds].filter(x => x && x !== state._currentJobId).slice(-500);
+        window.__eamResume = ids.length ? { key: _searchKey(), ids, at: Date.now() } : null;
+      } else window.__eamResume = null;
+    } catch (_) {}
     // The adapter's own daily_limit_reached only fires on one detection path; the real
     // limit on 2026-09-25 00:52 went through the engine path and left no event.
     if (/daily limit/i.test(String(reason))) _diag('daily_limit_reached', { source: 'engine', applied: state.appliedCount || 0 });
@@ -1478,34 +1754,79 @@
               console.warn('[EAM] cross-tab mutex read failed, proceeding:', mutexErr?.message);
             }
 
+            // 2026-10-15: application details edited on the dashboard (Smart Profile) → pulled into
+            // chrome.storage.sync before the settings are read (apply-prefs-sync.js, max 3 s, never blocks Start).
+            try {
+              const ap = await Promise.race([
+                new Promise(res => chrome.runtime.sendMessage({ type: 'syncApplyPrefs' }, r => { void chrome.runtime.lastError; res(r || null); })),
+                new Promise(res => setTimeout(() => res(null), 3000)),
+              ]);
+              if (ap && ap.ok && ap.changed && ap.changed.length) state.log(`Application details updated from your dashboard (${ap.changed.join(', ')})`);
+            } catch (_) {}
             // v2.5.88: + gender (form-filler / AI prompt read it but it was never
             // loaded → always empty during auto-apply) + autoNextPage (popup toggle
             // was saved but never honored — the bot always paginated).
+            state._missNotice = null; state._missNoticeKeys = {}; // v2.5.119: per run
             state.config = await chrome.storage.sync.get([
               'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'gender',
-              'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'city', 'country', 'expectedSalary',
+              'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'city', 'country', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode',
               'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense',
-              'autoNextPage'
+              'autoNextPage', 'skillYearsAsTotal'
             ]);
+            // v2.5.113 (Théo 2026-10-15): "How many years of experience with X?" → the TOTAL years. Popup toggle, default ON.
+            state.config.skillYearsAsTotal = state.config.skillYearsAsTotal !== false;
             // v2.5.87: ground AI screening answers in the real CV (education,
             // experience, skills). Auto-apply never loaded cvProfile, so the AI
             // answered degree questions blind — "No" to "Bachelor's Degree?" for a
             // Master's holder was submitted on a real application (2026-09-25).
             // Same shape as popup.js universal-autofill enrichment.
             try {
-              const { cvProfile } = await chrome.storage.local.get(['cvProfile']);
+              // v2.5.110: refresh the CV copy if the server one changed (max 4 s, never blocks Start).
+              try {
+                const sync = await Promise.race([
+                  new Promise(res => chrome.runtime.sendMessage({ type: 'syncCvProfile' }, r => res(r || null))),
+                  new Promise(res => setTimeout(() => res({ ok: false, reason: 'timeout' }), 4000)),
+                ]);
+                if (sync && sync.changed) state.log('CV profile re-synced from your dashboard (it had changed)');
+              } catch (_) {}
+              const { cvProfile, accountProfile } = await chrome.storage.local.get(['cvProfile', 'accountProfile']);
+              // v2.5.112: dashboard values for settings left empty in the extension (expected salary, country).
+              if (accountProfile) {
+                const es = String(accountProfile.expectedSalary || '').trim();
+                if (!String(state.config.expectedSalary || '').trim() && /^\d[\d\s,.]*$/.test(es)) { state.config.expectedSalary = String(Math.round(parseFloat(es.replace(/[\s,]/g, '')))); state.log('Expected salary taken from your dashboard profile'); }
+                if (!state.config.country && accountProfile.country) state.config.country = String(accountProfile.country);
+                // v2.5.113: dashboard years_of_experience — fallback when the extension setting is empty / 0.
+                if (accountProfile.yearsOfExperience) state.config.accountYears = String(accountProfile.yearsOfExperience);
+                // v2.5.119 (telemetry 2026-10-17: "Mobile phone number*", "Phone country code*", "Country*", "City" left
+                // empty for users whose extension settings were blank): the dashboard phone when the extension has none.
+                const ph = String(accountProfile.phone || '').replace(/[^\d+]/g, '');
+                if (!String(state.config.phone || '').trim() && ph.replace(/\D/g, '').length >= 7) { state.config.phone = ph; state.log('Phone taken from your dashboard profile'); }
+              }
+              // v2.5.119: the user's other REAL cities (dashboard, CV) — used when the extension city is empty or matches no
+              // LinkedIn location suggestion ("Hanumant Colony Tilpat" → "Faridabad, India"). Never a guessed city.
+              {
+                const alts = [];
+                const add = (v) => { v = String(v || '').replace(/\s+/g, ' ').trim(); if (v && v.length <= 80 && !/\d{5,}/.test(v) && !alts.some(a => a.toLowerCase() === v.toLowerCase()) && v.toLowerCase() !== String(state.config.city || '').trim().toLowerCase()) alts.push(v); };
+                if (accountProfile) add(accountProfile.city);
+                if (cvProfile) { add(cvProfile.city); add(cvProfile.location); }
+                if (!String(state.config.city || '').trim() && alts.length) { state.config.city = alts.shift(); state.log(`City taken from your dashboard / CV: ${state.config.city}`); }
+                state.config.cityAlternates = alts;
+                if (cvProfile && !String(state.config.phone || '').trim() && String(cvProfile.phone || '').replace(/\D/g, '').length >= 7) { state.config.phone = String(cvProfile.phone).replace(/[^\d+]/g, ''); state.log('Phone taken from your CV'); }
+              }
               if (cvProfile) {
                 if (cvProfile.linkedin) state.config.linkedinUrl = cvProfile.linkedin;
                 if (cvProfile.website) state.config.portfolioUrl = cvProfile.website;
                 if (cvProfile.github) state.config.githubUrl = cvProfile.github;
-                const latest = (cvProfile.experience || [])[0];
+                // v2.5.115: the most recent role, not the first CV entry.
+                const _FF = window.EAM && window.EAM.FormFiller;
+                const latest = (_FF && _FF.latestCvRole) ? _FF.latestCvRole(cvProfile) : (cvProfile.experience || [])[0];
                 if (latest?.company) state.config.currentCompany = latest.company;
                 if (latest?.title) state.config.currentTitle = latest.title;
                 if (cvProfile.summary) state.config.summary = (window.EAM.utils && window.EAM.utils.cleanProfileSummary) ? window.EAM.utils.cleanProfileSummary(cvProfile.summary) : cvProfile.summary;
                 state.config.cvProfile = {
                   summary: cvProfile.summary, skills: cvProfile.skills, experience: cvProfile.experience,
                   education: cvProfile.education, languages: cvProfile.languages,
-                  linkedin: cvProfile.linkedin, website: cvProfile.website,
+                  linkedin: cvProfile.linkedin, website: cvProfile.website, yearsOfExperience: cvProfile.yearsOfExperience,
                 };
                 // v2.5.89: language-level questions read config.languages, which was
                 // never loaded → every language answered with the default level.
@@ -1513,6 +1834,14 @@
                 state.log(`AI grounding: CV profile loaded (${(cvProfile.education || []).length} education, ${(cvProfile.experience || []).length} experience entries)`);
               } else {
                 state.log('⚠ No CV profile synced — AI will skip education/degree questions instead of guessing');
+              }
+            } catch (_) {}
+            // v2.5.113 (user report: "it puts 0 years of experience for everything"): the "Years of experience" setting
+            // left empty / 0 → dashboard profile, else the CV, else the span of the dated CV roles.
+            try {
+              if (!(parseInt(String(state.config.yearsOfExperience || '').match(/\d+/)?.[0] || '0', 10) > 0)) {
+                const ty = window.EAM && window.EAM.FormFiller && window.EAM.FormFiller.totalYears ? window.EAM.FormFiller.totalYears(state.config) : 0;
+                if (ty > 0) { state.config.yearsOfExperience = String(ty); state.log(`Years of experience: ${ty} (setting empty — taken from your dashboard profile / CV)`); }
               }
             } catch (_) {}
             const local = await chrome.storage.local.get(['appliedCount', 'skippedCount', 'appliedJobs', 'resumeFile', 'resumeFileName', 'resumeFileType']);
@@ -1531,6 +1860,9 @@
             // discarded — fixture STOPSTART 2026-09-27). Let the previous loop exit
             // first (bounded wait), and stamp each loop with a generation id so a
             // stale loop can never continue.
+            // v2.5.117: a Start while a run is still on (double click, popup Start again) supersedes it — close
+            // that run's telemetry here (its loop exits as "stale" without a reason).
+            if (_run && !_run.ended && (loopPromise || state.isRunning)) _endSession('Restarted (Start clicked again)');
             const myGen = ++loopGen;
             if (loopPromise) {
               state.isRunning = false;
@@ -1550,6 +1882,18 @@
             state._filterDropRecoveries = 0;
             state._stuckRecoveries = 0;
             state._emptyScans = 0;
+            // v2.5.115: job ids already evaluated in this run + consecutive pages without any Easy Apply job.
+            state._evaluatedJobIds = new Set();
+            state._resumedJobIds = new Set();
+            state._currentJobId = null;
+            state._pagesNoEligible = 0;
+            try {
+              const r = window.__eamResume; window.__eamResume = null;
+              if (r && r.key === _searchKey() && Date.now() - r.at < RESUME_MAX_MS && Array.isArray(r.ids) && r.ids.length) {
+                state._evaluatedJobIds = new Set(r.ids); state._resumedJobIds = new Set(r.ids);
+                state.log(`Resuming this search: ${r.ids.length} job(s) already checked before Stop are not opened again`);
+              }
+            } catch (_) {}
             try { state.resetSkipSession && state.resetSkipSession(); } catch (_) {}
             try { state._clearBotNotice && state._clearBotNotice(); } catch (_) {}
             await chrome.storage.local.set({ isRunning: true });
@@ -1572,7 +1916,8 @@
             }
             state.log(`Using adapter: ${adapter.siteName}`);
             let _fp = null; try { _fp = adapter.layoutFingerprint ? adapter.layoutFingerprint() : null; } catch (_) {}
-            _diag('session_start', { layout: /search-results/.test(location.pathname) ? 'search-results' : 'search', filter: state._startHadFilter, fp: _fp });
+            _run = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ended: false };
+            _diag('session_start', { layout: /search-results/.test(location.pathname) ? 'search-results' : 'search', filter: state._startHadFilter, fp: _fp, run: _run.id, resumed: state._resumedJobIds ? state._resumedJobIds.size : 0 });
             const p = mainLoop(adapter, myGen);
             loopPromise = p;
             p.finally(() => { if (loopPromise === p) loopPromise = null; });
@@ -1648,6 +1993,22 @@
     })();
 
     setupMessageListener();
+
+    // v2.5.117: the page is going away (tab closed, reload, full navigation) while a run is on — the engine dies
+    // with it. The service worker turns this into the run's session_end ("Tab closed" / "Page reloaded or
+    // navigated away"), resets isRunning and releases the tab claim.
+    if (!window.__eamUnloadHook) {
+      window.__eamUnloadHook = true;
+      window.addEventListener('pagehide', () => {
+        try {
+          const st = u();
+          if (!st || !st.isRunning || !_run || _run.ended || !/linkedin\.com$/i.test(location.hostname)) return;
+          const meta = _runMeta('Page unloaded');
+          _run.ended = true;
+          chrome.runtime.sendMessage({ type: 'eam-run-unload', event: { site: 'linkedin', event_type: 'session_end', url_path: location.pathname, meta } });
+        } catch (_) {}
+      });
+    }
   }
 
   window.EAM.BotEngine = {
@@ -1655,6 +2016,8 @@
     stopBot,
     init,
     setupMessageListener,
+    _endSession, // exposed for unit tests
+    get _run() { return _run; },
     handleRateLimit, // exposed for unit tests
     RATE_LIMIT_STRIKE_LIMIT, // exposed for unit tests
     get activeAdapter() { return activeAdapter; }

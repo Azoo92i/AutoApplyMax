@@ -119,7 +119,15 @@
       console.error('isRunning:', isRunning, '| userExplicitlyClickedStart:', userExplicitlyClickedStart);
       return;
     }
-    input.value = value;
+    // v2.5.113 (live 2026-10-15, LinkedIn "Location (city)" typeahead): React-controlled inputs track `.value`
+    // through an instance setter — a plain assignment updates that tracker, so the input event is ignored and
+    // React restores its own (empty / previous) value on blur → "This field is required" / "Please enter a
+    // valid answer". The prototype setter bypasses the tracker (identical behaviour on non-React inputs).
+    try {
+      const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : input instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      const d = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (d && d.set) d.set.call(input, value); else input.value = value;
+    } catch (_) { input.value = value; }
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
@@ -228,12 +236,18 @@
     skipSession.reasons[key] = (skipSession.reasons[key] || 0) + 1;
     _persistSkipSession();
   }
+  // v2.5.112: jobs skipped because a setting is empty (expectedSalary / currentSalary / postalCode) → popup hint.
+  function noteMissingSettings(keys) {
+    skipSession.missing = skipSession.missing || {};
+    for (const k of keys || []) { const key = String(k).slice(0, 20); skipSession.missing[key] = (skipSession.missing[key] || 0) + 1; }
+    _persistSkipSession();
+  }
   function noteSessionApplied() {
     skipSession.applied++;
     _persistSkipSession();
   }
   function getSkipSession() {
-    return { at: skipSession.at, applied: skipSession.applied, skipped: skipSession.skipped, reasons: { ...skipSession.reasons } };
+    return { at: skipSession.at, applied: skipSession.applied, skipped: skipSession.skipped, reasons: { ...skipSession.reasons }, missing: { ...(skipSession.missing || {}) } };
   }
   // reasons {key:n} → { applied, not_ea, filters, questions, other, total }
   function groupSkipReasons(reasons) {
@@ -732,6 +746,26 @@
     } catch (_) {}
   }
 
+  // v2.5.103: text of a LinkedIn throttle / daily-limit warning (the copy we hide).
+  function _isLimitWarningText(s) {
+    const x = String(s || '').replace(/[‘’ʼ]/g, "'").replace(/\s+/g, ' ').toLowerCase();
+    if (!x.trim()) return false;
+    if (/fast pace|briefly paused|safeguard against automated|automation tools may put|rythme rapide|temporairement mis en pause|outils d'automatisation|limit daily submissions|great effort applying|limitons|nombre de candidatures/.test(x)) return true;
+    return THROTTLE_EA_RE.test(x) && THROTTLE_WORD_RE.test(x) && x.length < 600;
+  }
+  // A stale-hidden node that no longer holds the warning (LinkedIn re-used the
+  // container, e.g. for the next Easy Apply window) must become visible again.
+  function _unstaleReused() {
+    try {
+      document.querySelectorAll('[data-eam-rl-stale="1"]').forEach((n) => {
+        if (_isLimitWarningText(n.textContent || '')) return;
+        n.style.removeProperty('display');
+        n.removeAttribute('data-eam-hidden');
+        n.removeAttribute('data-eam-rl-stale');
+      });
+    } catch (_) {}
+  }
+
   // Called when rate-limit resolves — restore original LinkedIn content so
   // the user can interact with the actual popup again if it re-fires later,
   // and any hidden fallbacks come back too.
@@ -754,9 +788,16 @@
         const injected = n.querySelector('[data-eam-rate-limit-replacement="1"]');
         if (injected) injected.remove();
       });
-      // Second: legacy hidden elements (from the fallback path).
+      // Second: elements hidden when the warning fired. v2.5.103: LinkedIn's
+      // warning itself stays hidden (marked stale) — un-hiding it at the end of
+      // the pause made checkRateLimit see it again at once and count a FAKE new
+      // strike (live 2026-10-07 14:55 + 15:04: 5 → 8 → 12 min while LinkedIn had
+      // already lifted the throttle; restart at 15:06 applied 17 jobs). Anything
+      // else (e.g. a container LinkedIn reuses) comes back; a stale container is
+      // also un-hidden as soon as it no longer holds the warning (_unstaleReused).
       const hidden = document.querySelectorAll('[data-eam-hidden="rate-limit"]');
       hidden.forEach((n) => {
+        if (_isLimitWarningText(n.textContent || '')) { n.setAttribute('data-eam-rl-stale', '1'); return; }
         n.style.removeProperty('display');
         n.removeAttribute('data-eam-hidden');
       });
@@ -941,6 +982,47 @@
     return null;
   }
 
+  // ─── v2.5.119: LinkedIn "couldn't submit your application" error = throttling ───────────────
+  // Live telemetry 2026-10-16/17 (2.5.117): "Nous n’avons pas pu envoyer votre candidature. Veuillez réessayer." —
+  // 66 form_invalid skips in a row for one user, 55 submit_failed for another: LinkedIn refuses every submit for a
+  // while, the bot burnt through the whole list. Same message in LinkedIn's other UI languages.
+  const SUBMIT_ERROR_RE = new RegExp([
+    'n.avons pas pu (envoyer|soumettre) votre candidature', 'votre candidature n.a pas pu [eê]tre envoy[ée]e',
+    'we (couldn.?t|could not|were unable to|weren.?t able to|were not able to) (submit|send) your application',
+    'your application (couldn.?t|could not|wasn.?t|was not) (be )?(submitted|sent)', 'unable to submit your application',
+    'no (hemos podido|pudimos|se ha podido|se pudo) enviar (tu|su) (solicitud|candidatura)',
+    'wir konnten ihre bewerbung nicht', 'ihre bewerbung konnte nicht (gesendet|eingereicht|übermittelt|versendet) werden',
+    'n[ãa]o (foi poss[ií]vel|conseguimos) enviar (a sua|sua|a tua|tua) candidatura',
+    'non (è stato possibile|siamo riusciti a) inviare la (tua |sua )?candidatura', 'impossibile inviare la (tua |sua )?candidatura',
+    'we konden je sollicitatie niet (verzenden|versturen|indienen)', 'je sollicitatie kon niet worden (verzonden|ingediend)',
+    'nie uda[łl]o si[ęe] wys[łl]a[ćc] (twojej |twoja )?aplikacji', 'başvurunuz gönderilemedi',
+  ].join('|'), 'i');
+  function isSubmitErrorText(text) { return SUBMIT_ERROR_RE.test(String(text || '').replace(/[’‘]/g, "'").replace(/\s+/g, ' ')); }
+  // Visible element carrying that message (toast, alert, inline error) in the page, the interop shadow root or the
+  // given modal → its text, else ''.
+  function findSubmitErrorToast(modal) {
+    try {
+      const roots = [document];
+      const sr = document.getElementById('interop-outlet')?.shadowRoot; if (sr) roots.push(sr);
+      if (modal && modal.querySelectorAll && !roots.includes(modal)) roots.push(modal);
+      const SEL = '[role="alert"], [role="alertdialog"], [role="status"], [aria-live], .artdeco-toast-item, .artdeco-inline-feedback, .artdeco-inline-feedback--error, [data-test-artdeco-toast-item-type], .artdeco-toasts_toasts li';
+      for (const r of roots) {
+        for (const el of r.querySelectorAll(SEL)) {
+          const t = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (t && t.length < 400 && isSubmitErrorText(t) && (el.offsetParent !== null || (el.getClientRects && el.getClientRects().length))) return t.slice(0, 200);
+        }
+      }
+      // Fallback: a leaf text node in the open form (no role / class on LinkedIn's newer layouts).
+      const scope = modal && modal.querySelectorAll ? modal : null;
+      if (scope) for (const el of scope.querySelectorAll('p, span, div, h2, h3')) {
+        if (el.children.length > 1) continue;
+        const t = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (t && t.length < 200 && isSubmitErrorText(t) && el.offsetParent !== null) return t;
+      }
+    } catch (_) {}
+    return '';
+  }
+
   function checkDailyLimit() {
     try {
       const limitPatterns = [
@@ -1037,6 +1119,18 @@
       .replace(/[“”]/g, '"')
       .replace(/\s+/g, ' ');
     const normalizedPatterns = patterns.map(norm);
+    // v2.5.104: textContent includes the text of nodes we already HID — a still-visible
+    // wrapper (dialog / overlay / shadow host) around LinkedIn's hidden warning matched
+    // every 2.5 s for the whole pause, set the pending flag and turned every resume into
+    // a fake new strike (live 2026-10-08 09:23 → 2/4/8 min while LinkedIn let the next
+    // Easy Apply open at 09:30:58). A hit only counts if the pattern is in RENDERED text
+    // (innerText skips display:none); checked on candidates only to keep the poll cheap.
+    const shownHas = (el, np) => {
+      try {
+        if (el.closest && el.closest('[data-eam-hidden="rate-limit"],[data-eam-rl-stale="1"]')) return false;
+        return norm(typeof el.innerText === 'string' ? el.innerText : (el.textContent || '')).includes(np);
+      } catch (_) { return true; }
+    };
     for (const el of scopes) {
       const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
       if (rect.width === 0 && rect.height === 0) continue;
@@ -1044,7 +1138,7 @@
       if (rect.width > vpW * 0.9 && rect.height > vpH * 0.7) continue;
       const text = norm(el.textContent || '');
       for (let i = 0; i < normalizedPatterns.length; i++) {
-        if (text.includes(normalizedPatterns[i])) return { pattern: patterns[i], element: el };
+        if (text.includes(normalizedPatterns[i]) && shownHas(el, normalizedPatterns[i])) return { pattern: patterns[i], element: el };
       }
     }
     // Selector-based scan missed — fall back to a text-based walk of
@@ -1063,7 +1157,7 @@
         if (rect.height === 0 || rect.height > vpH * 0.6) continue;
         const text = norm(el.textContent || '');
         for (let i = 0; i < normalizedPatterns.length; i++) {
-          if (text.includes(normalizedPatterns[i])) {
+          if (text.includes(normalizedPatterns[i]) && shownHas(el, normalizedPatterns[i])) {
             // Prefer a smaller (deeper) match to avoid hiding the whole body.
             if (!best || rect.width * rect.height < best.rect.width * best.rect.height) {
               best = { pattern: patterns[i], element: el, rect };
@@ -1089,6 +1183,7 @@
       try {
         // Poll only while the bot is actively running. Otherwise no need
         // to hide LinkedIn's own UI on a page where the user is idle.
+        _unstaleReused();
         if (!isRunning) return;
         if (checkRateLimit()) {
           // checkRateLimit already hid the popup + showed our banner.
@@ -1152,6 +1247,13 @@
       const hit = _scanRateLimitModalsOnly(rateLimitPatterns) || _structuralRateLimit();
       if (hit) {
         log(`Rate-limit safeguard triggered — replacing LinkedIn popup content. Pattern: "${hit.pattern}"`);
+        // v2.5.104: describe WHAT matched (live 2026-10-08: the same warning re-matched every 2.5 s
+        // for the whole pause — need the real node to tell a still-open dialog from hidden text).
+        try {
+          const e = hit.element, r = e.getBoundingClientRect(), cs = getComputedStyle(e);
+          const host = e.getRootNode && e.getRootNode() !== document ? 'shadow' : 'light';
+          log(`[RL-DIAG] ${e.tagName.toLowerCase()}#${e.id || ''}.${String(e.className || '').slice(0, 60)} role=${e.getAttribute('role') || ''} ${host} rect=${Math.round(r.width)}x${Math.round(r.height)}@${Math.round(r.left)},${Math.round(r.top)} disp=${cs.display} vis=${cs.visibility} hiddenAttr=${e.getAttribute('data-eam-hidden') || ''} appDialog=${!!(e.closest && e.closest('.jobs-easy-apply-modal, [data-test-modal-id="easy-apply-modal"]'))} shown=${(e.innerText || '').length}/${(e.textContent || '').length}`);
+        } catch (_) {}
         // v2.5.92: strip in the page (under Easy Apply, else top of the job
         // pane) — no corner banner, no rewritten LinkedIn window. When it
         // can't be placed, the popup + toolbar badge show the pause.
@@ -1291,6 +1393,7 @@
 
     // v2.5.96: per-run skip reasons
     noteSkip,
+    noteMissingSettings,
     noteSessionApplied,
     resetSkipSession,
     getSkipSession,
@@ -1309,6 +1412,7 @@
     checkDailyLimit,
     checkRateLimit,
     _restoreHiddenRateLimit,
+    _unstaleReused,
     _removeInlineChip,
     _dismissAndInlineChip,
     _placeInPage,
@@ -1316,6 +1420,8 @@
     _findDetailPane,
     _showEasyApplyFilterHint,
     _showBotNotice,
+    isSubmitErrorText,
+    findSubmitErrorToast,
     _clearBotNotice,
     _structuralRateLimit,
     _startRateLimitPoller,

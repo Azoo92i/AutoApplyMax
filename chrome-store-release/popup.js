@@ -19,12 +19,25 @@ let SUPABASE_ANON_KEY = SUPABASE_CONFIG_FALLBACK.anon_key;
 // Cache the resolved config in chrome.storage to avoid one network round-trip
 // on every popup open, refresh every 6 hours.
 const SUPABASE_CONFIG_TTL_MS = 6 * 60 * 60 * 1000;
+// v2.5.120 (security audit 2026-10-18 #12): the remote config may only point at OUR project — a tampered
+// supabase-config.json (or a poisoned cache) must never send the user's session to another backend.
+function _eamValidSupabaseCfg(cfg) {
+  try {
+    if (!cfg || typeof cfg.url !== 'string' || typeof cfg.anon_key !== 'string') return false;
+    if (!/^https:\/\/tgknaopmwbelterrhrnz\.supabase\.co\/?$/.test(cfg.url)) return false;
+    // Supabase's new publishable keys are opaque (no JWT) — still only usable against the URL above.
+    if (/^sb_publishable_[A-Za-z0-9_-]{10,200}$/.test(cfg.anon_key)) return true;
+    const b64 = cfg.anon_key.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const c = JSON.parse(atob(b64 + '==='.slice((b64.length + 3) % 4)));
+    return c.ref === 'tgknaopmwbelterrhrnz' && c.role === 'anon';
+  } catch (_) { return false; }
+}
 async function loadSupabaseConfig() {
   try {
     const cached = await chrome.storage.local.get(['supabase_config_cached', 'supabase_config_cached_at']);
     const age = Date.now() - (cached.supabase_config_cached_at || 0);
-    if (cached.supabase_config_cached && age < SUPABASE_CONFIG_TTL_MS) {
-      SUPABASE_URL = cached.supabase_config_cached.url;
+    if (cached.supabase_config_cached && age < SUPABASE_CONFIG_TTL_MS && _eamValidSupabaseCfg(cached.supabase_config_cached)) {
+      SUPABASE_URL = cached.supabase_config_cached.url.replace(/\/$/, '');
       SUPABASE_ANON_KEY = cached.supabase_config_cached.anon_key;
       return;
     }
@@ -33,8 +46,8 @@ async function loadSupabaseConfig() {
     const res = await fetch(SUPABASE_CONFIG_URL, { cache: 'no-store' });
     if (res.ok) {
       const cfg = await res.json();
-      if (cfg && cfg.url && cfg.anon_key) {
-        SUPABASE_URL = cfg.url;
+      if (_eamValidSupabaseCfg(cfg)) {
+        SUPABASE_URL = cfg.url.replace(/\/$/, '');
         SUPABASE_ANON_KEY = cfg.anon_key;
         try { await chrome.storage.local.set({ supabase_config_cached: cfg, supabase_config_cached_at: Date.now() }); } catch (e) {}
       }
@@ -555,7 +568,7 @@ async function loadConfig() {
   try {
     config = await chrome.storage.sync.get([
       'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'city', 'gender',
-      'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'autoNextPage', 'expectedSalary',
+      'yearsOfExperience', 'maxYearsRequired', 'blacklistKeywords', 'autoNextPage', 'skillYearsAsTotal', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode',
       'noticePeriod', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense'
     ]);
     local = await chrome.storage.local.get(['resumeFile', 'resumeFileName']);
@@ -566,7 +579,18 @@ async function loadConfig() {
   document.getElementById('firstName').value = config.firstName || '';
   document.getElementById('lastName').value = config.lastName || '';
   document.getElementById('email').value = config.email || '';
-  document.getElementById('phoneCountryCode').value = config.phoneCountryCode || '+1';
+  // v2.5.114 (live gate 2026-10-15): older versions stored the dial code without "+" ("33"). It matched no <option>,
+  // the select showed blank and the next auto-save wrote "" over it (country code lost for every legacy user).
+  {
+    const ccEl = document.getElementById('phoneCountryCode');
+    const rawCc = String(config.phoneCountryCode || '').trim();
+    const normCc = /^\+?\d{1,4}$/.test(rawCc) ? '+' + rawCc.replace(/^\+/, '') : rawCc;
+    ccEl.value = normCc || '+1';
+    if (normCc && ccEl.value !== normCc) {
+      // Unknown code: keep it selectable rather than blank (a save must never erase it).
+      const o = document.createElement('option'); o.value = normCc; o.textContent = normCc; ccEl.appendChild(o); ccEl.value = normCc;
+    }
+  }
   document.getElementById('phone').value = config.phone || '';
   document.getElementById('city').value = config.city || '';
   const genderEl = document.getElementById('gender');
@@ -574,11 +598,19 @@ async function loadConfig() {
   document.getElementById('yearsOfExperience').value = config.yearsOfExperience || '2';
   document.getElementById('maxYearsRequired').value = config.maxYearsRequired || '3';
   document.getElementById('expectedSalary').value = config.expectedSalary || '';
+  const curSalEl = document.getElementById('currentSalary');
+  if (curSalEl) curSalEl.value = config.currentSalary || '';
+  const dobEl = document.getElementById('dateOfBirth');
+  if (dobEl) dobEl.value = config.dateOfBirth || '';
+  const pcEl = document.getElementById('postalCode');
+  if (pcEl) pcEl.value = config.postalCode || '';
   document.getElementById('noticePeriod').value = config.noticePeriod || '';
   document.getElementById('blacklistKeywords').value = config.blacklistKeywords || '';
   // v2.5.92: on by default for new installs; a saved choice is always kept.
   document.getElementById('autoNextPage').checked = config.autoNextPage !== false;
   if (config.autoNextPage === undefined) { try { chrome.storage.sync.set({ autoNextPage: true }); } catch (_) {} }
+  // v2.5.113 (Théo 2026-10-15): skill years questions answered with the total years — default ON.
+  { const sy = document.getElementById('skillYearsAsTotal'); if (sy) sy.checked = config.skillYearsAsTotal !== false; }
   document.getElementById('visaSponsorship').value = config.visaSponsorship || 'no';
   document.getElementById('legallyAuthorized').value = config.legallyAuthorized || 'yes';
   document.getElementById('willingToRelocate').value = config.willingToRelocate || 'yes';
@@ -621,9 +653,13 @@ async function saveConfig() {
     yearsOfExperience: document.getElementById('yearsOfExperience').value,
     maxYearsRequired: document.getElementById('maxYearsRequired').value,
     expectedSalary: document.getElementById('expectedSalary').value,
+    currentSalary: document.getElementById('currentSalary')?.value || '',
+    dateOfBirth: document.getElementById('dateOfBirth')?.value || '',
+    postalCode: (document.getElementById('postalCode')?.value || '').trim(),
     noticePeriod: document.getElementById('noticePeriod').value,
     blacklistKeywords: document.getElementById('blacklistKeywords').value,
     autoNextPage: document.getElementById('autoNextPage').checked,
+    skillYearsAsTotal: document.getElementById('skillYearsAsTotal') ? document.getElementById('skillYearsAsTotal').checked : true,
     visaSponsorship: document.getElementById('visaSponsorship').value,
     legallyAuthorized: document.getElementById('legallyAuthorized').value,
     willingToRelocate: document.getElementById('willingToRelocate').value,
@@ -638,8 +674,9 @@ async function saveConfig() {
 function setupAutoSave() {
   const inputFields = [
     'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode',
-    'city', 'gender', 'yearsOfExperience', 'maxYearsRequired', 'expectedSalary', 'blacklistKeywords',
-    'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense'
+    'city', 'gender', 'yearsOfExperience', 'maxYearsRequired', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode', 'blacklistKeywords',
+    'visaSponsorship', 'legallyAuthorized', 'willingToRelocate', 'driversLicense',
+    'noticePeriod' // 2026-10-15: was missing — typing a notice period was only saved when another field changed
   ];
   inputFields.forEach(fieldId => {
     const field = document.getElementById(fieldId);
@@ -654,6 +691,8 @@ function setupAutoSave() {
   if (checkbox) {
     checkbox.addEventListener('change', () => { saveConfig(); });
   }
+  const syCb = document.getElementById('skillYearsAsTotal');
+  if (syCb) syCb.addEventListener('change', () => { saveConfig(); });
 }
 
 // ─── Start automation (MULTI-SITE) ─────────────────────────────────────
@@ -729,6 +768,26 @@ document.getElementById('stop-btn').addEventListener('click', async () => {
   }
 });
 
+// ─── v2.5.100: free plan — open questions left after Autofill ─────────
+const AUTOFILL_UPSELL_URL = 'https://www.autoapplymax.com/dashboard?promo=WELCOMEBACK20&src=ext_autofill_free#upgrade';
+function showAutofillPremiumHint(count, open) {
+  try {
+    document.getElementById('autofill-premium-hint')?.remove();
+    const q = open === 1 ? '1 open question' : open + ' open questions';
+    const box = buildAlert({
+      id: 'autofill-premium-hint',
+      tone: 'info',
+      title: (count > 0 ? count + ' field' + (count === 1 ? '' : 's') + ' filled' : 'Form already filled') + ' · ' + q + ' left for you',
+      body: 'Premium answers them with AI. You still review and submit.',
+      link: { text: 'See Premium', url: AUTOFILL_UPSELL_URL },
+    });
+    box.querySelector('a')?.addEventListener('click', () => {
+      try { chrome.runtime.sendMessage({ type: 'track-autofill-upsell-click', where: 'popup' }); } catch (_) {}
+    });
+    document.getElementById('alert-slot')?.prepend(box);
+  } catch (_) {}
+}
+
 // ─── Autofill handler ────────────────────────────────────────────────
 document.getElementById('autofill-btn').addEventListener('click', async () => {
   const btn = document.getElementById('autofill-btn');
@@ -744,7 +803,7 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
     // Read config from storage — include every field the AI prompt consumes
     const config = await chrome.storage.sync.get([
       'firstName', 'lastName', 'email', 'phone', 'phoneCountryCode', 'city',
-      'yearsOfExperience', 'expectedSalary',
+      'yearsOfExperience', 'expectedSalary', 'currentSalary', 'dateOfBirth', 'postalCode',
       'gender', 'visaSponsorship', 'legallyAuthorized', 'willingToRelocate',
       'driversLicense', 'noticePeriod',
     ]);
@@ -764,7 +823,10 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
       const digitsOnly = rawPhone.replace(/[^\d]/g, '');
       const alreadyHasCC = rawPhone.startsWith('+') || rawPhone.startsWith('00') || digitsOnly.startsWith(rawCC);
       if (!alreadyHasCC) {
-        config.phone = '+' + rawCC + rawPhone.replace(/^0+/, '');
+        // v2.5.118: a spaced local number keeps a space after the code ("6 12 34 56 78" → "+33 6 12 34 56 78";
+        // live 2026-10-17 Lever / Ashby showed "+336 12 34 56 78").
+        const local = rawPhone.replace(/^0+/, '').trim();
+        config.phone = '+' + rawCC + (/[\s.-]/.test(local) ? ' ' : '') + local;
       } else if (!rawPhone.startsWith('+')) {
         // Phone starts with the country digits but no + prefix — add +
         config.phone = '+' + rawPhone.replace(/^00/, '');
@@ -778,6 +840,17 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
       if (CC[cc]) config.country = CC[cc];
     }
 
+    // v2.5.119: dashboard Smart Profile values for settings left empty here (expected salary, city) — same fallback
+    // as auto-apply (accountProfile, synced by the service worker). Empty on both sides stays empty (never invented).
+    try {
+      const { accountProfile } = await chrome.storage.local.get(['accountProfile']);
+      if (accountProfile) {
+        const es = String(accountProfile.expectedSalary || '').trim();
+        if (!String(config.expectedSalary || '').trim() && /^\d[\d\s,.]*$/.test(es)) config.expectedSalary = String(Math.round(parseFloat(es.replace(/[\s,]/g, ''))));
+        if (!String(config.city || '').trim() && accountProfile.city) config.city = String(accountProfile.city);
+      }
+    } catch (_) {}
+
     // Enrich with cvProfile data (Smart Profile from uploaded CV).
     try {
       const { cvProfile } = await chrome.storage.local.get(['cvProfile']);
@@ -785,7 +858,7 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
         if (cvProfile.linkedin) config.linkedinUrl = cvProfile.linkedin;
         if (cvProfile.website) config.portfolioUrl = cvProfile.website;
         if (cvProfile.experience && cvProfile.experience.length > 0) {
-          const latest = cvProfile.experience[0];
+          const latest = _latestCvRole(cvProfile.experience) || cvProfile.experience[0];
           if (latest.company) config.currentCompany = latest.company;
           if (latest.title) config.currentTitle = latest.title;
         }
@@ -821,6 +894,13 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
         files: ['core/utils.js', 'core/ai-form.js']
       });
     } catch (e) { /* may already be injected */ }
+    // v2.5.110: the auto-apply answer rules (years per skill, pay conversion) for the popup Autofill too.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        files: ['core/job-board-strings.js', 'core/form-filler.js']
+      });
+    } catch (e) { /* optional — autofill.js falls back to its own values */ }
 
     const injected = await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
@@ -846,27 +926,33 @@ document.getElementById('autofill-btn').addEventListener('click', async () => {
     const perFrame = await Promise.all(
       (frameIds.length ? frameIds : [0]).map(async fid => {
         try {
-          const r = await chrome.tabs.sendMessage(tab.id, { action: 'eam-autofill', config }, { frameId: fid });
-          return r?.filled || 0;
-        } catch (_) { return 0; }
+          return (await chrome.tabs.sendMessage(tab.id, { action: 'eam-autofill', config }, { frameId: fid })) || {};
+        } catch (_) { return {}; }
       })
     );
-    count = perFrame.reduce((a, b) => a + b, 0);
-    // v2.5.90: keep the result readable (the disabled style faded it out).
-    btn.disabled = false; btn.style.opacity = '1';
-    if (count > 0) {
-      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> ${count} field${count > 1 ? 's' : ''} filled!`;
-      btn.style.background = '#059669'; btn.style.color = '#fff'; btn.style.borderColor = '#059669';
+    count = perFrame.reduce((a, r) => a + (r.filled || 0), 0);
+    // v2.5.100: open questions left empty because AI answers are Premium (a frame reports
+    // them only when the AI was refused for the plan → never shown to Premium users).
+    const openLeft = perFrame.reduce((a, r) => a + (r.premiumHint ? (r.openLeft || 0) : 0), 0);
+    // v2.5.100: result state through a class with solid colours (white on #047857 / #475569).
+    btn.disabled = false;
+    btn.classList.remove('af-result-ok', 'af-result-none');
+    const alreadyFilled = perFrame.reduce((a, r) => a + (r.alreadyFilled || 0), 0);
+    btn.classList.add((count > 0 || alreadyFilled > 0) ? 'af-result-ok' : 'af-result-none');
+    if (count === 0 && alreadyFilled > 0) {
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> Already filled`;
+    } else if (count > 0) {
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> ${count} field${count > 1 ? 's' : ''} filled`;
     } else {
       btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/></svg> No fields found`;
-      btn.style.background = '#64748b'; btn.style.color = '#fff'; btn.style.borderColor = '#64748b';
     }
+    if (openLeft > 0) showAutofillPremiumHint(count, openLeft);
 
     setTimeout(() => {
       btn.innerHTML = originalHTML;
-      btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = '';
+      btn.classList.remove('af-result-ok', 'af-result-none');
       btn.disabled = false;
-    }, 3000);
+    }, 4000);
 
   } catch (error) {
     console.error('Autofill error:', error);
@@ -888,7 +974,10 @@ function updateStatusDisplay(text, running) {
   const statusEl = document.getElementById('status');
   if (_pauseActive && running) return; // "Paused · resumes in ~N min" wins while paused
   if (currentSiteInfo) {
-    statusEl.textContent = running ? `Running · ${currentSiteInfo.name}` : `${text} · ${currentSiteInfo.name}`;
+    // v2.5.117: the site name made the pill overflow next to the streak badge ("Running · L", live 2026-10-16) —
+    // the site is already named under the Start button; it stays in the tooltip.
+    statusEl.textContent = running ? 'Running' : text;
+    statusEl.title = (running ? 'Running' : text) + ' · ' + currentSiteInfo.name;
   } else {
     statusEl.textContent = text;
   }
@@ -947,6 +1036,16 @@ function renderSkipBreakdown(sess) {
   });
   box.title = C.tip;
   box.hidden = false;
+  // v2.5.112: jobs skipped only because a setting is empty → say which one.
+  const miss = sess.missing || {};
+  const MISS_COPY = { expectedSalary: 'your expected salary', currentSalary: 'your current salary / CTC', postalCode: 'your postal code', dateOfBirth: 'your date of birth', gender: 'your gender' };
+  const parts = Object.keys(MISS_COPY).filter(k => miss[k] > 0).map(k => miss[k] + ' asked ' + MISS_COPY[k]);
+  if (parts.length) {
+    const hint = document.createElement('span');
+    hint.className = 'run-skips-missing';
+    hint.textContent = ' — ' + parts.join(', ') + ': add it in Preferences to apply to these jobs.';
+    txt.appendChild(hint);
+  }
 }
 
 // Listen for updates from content script
@@ -1182,7 +1281,7 @@ async function loadAppliedJobs() {
             <br><span class="job-time">${formatTimeAgo(job.date)}</span>
           </div>
         </div>
-        <a href="${job.link}" target="_blank" class="job-link">
+        <a href="${escapeHtml(/^https?:\/\//i.test(String(job.link || '')) ? job.link : '#').replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer" class="job-link">
           View on ${siteInfo.name}
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1299,7 +1398,7 @@ async function checkAuthState() {
     }
 
     const fetchProfile = (token) => fetch(
-      `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=plan,ai_credits_used,ai_credits_total,credits_reset_date,email,first_name,last_name,phone,city,country,years_of_experience`,
+      `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${userId}&select=plan,ai_credits_used,ai_credits_total,credits_reset_date,email,first_name,last_name,phone,city,country,years_of_experience,expected_salary`,
       { headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY } }
     );
 
@@ -1380,7 +1479,7 @@ async function checkAuthState() {
 async function prefillFromAccount(profile, session) {
   try {
     if (!profile) return 0;
-    const saved = await chrome.storage.sync.get(['firstName', 'lastName', 'email', 'phone', 'city', 'yearsOfExperience']);
+    const saved = await chrome.storage.sync.get(['firstName', 'lastName', 'email', 'phone', 'city', 'yearsOfExperience', 'expectedSalary']);
     const digits = String(profile.phone || '').replace(/\D/g, '');
     const map = {
       firstName: profile.first_name,
@@ -1389,6 +1488,9 @@ async function prefillFromAccount(profile, session) {
       phone: digits.length >= 7 && digits.length <= 15 ? digits : '',
       city: profile.city,
       yearsOfExperience: profile.years_of_experience != null && profile.years_of_experience !== '' ? String(profile.years_of_experience) : '',
+      // v2.5.112 (telemetry 2026-10-13): the dashboard Smart Profile "expected salary" never reached the extension →
+      // every salary question skipped although the user had set it there. Digits only (the field is numeric).
+      expectedSalary: /^\s*\d[\d\s,.]*$/.test(String(profile.expected_salary || '')) ? String(Math.round(parseFloat(String(profile.expected_salary).replace(/[\s,]/g, '')))) : '',
     };
     let filled = 0;
     for (const [id, val] of Object.entries(map)) {
@@ -1408,7 +1510,7 @@ window.prefillFromAccountFromSession = async function () {
     const { eam_session } = await chrome.storage.local.get(['eam_session']);
     const uid = eam_session && (eam_session.user_id || eam_session.user?.id);
     if (!uid || !eam_session.access_token) return 0;
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${uid}&select=email,first_name,last_name,phone,city,years_of_experience`,
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${uid}&select=email,first_name,last_name,phone,city,years_of_experience,expected_salary`,
       { headers: { 'Authorization': `Bearer ${eam_session.access_token}`, 'apikey': SUPABASE_ANON_KEY } });
     if (!r.ok) return 0;
     const rows = await r.json();
@@ -1519,7 +1621,7 @@ async function buildLinkedInSearchUrl() {
     const { cvProfile } = await chrome.storage.local.get(['cvProfile']);
     const { city } = await chrome.storage.sync.get(['city']);
     const role = (cvProfile && (cvProfile.targetRole || cvProfile.target_role || cvProfile.title ||
-      (Array.isArray(cvProfile.experience) && cvProfile.experience[0] && cvProfile.experience[0].title))) || '';
+      (Array.isArray(cvProfile.experience) && (_latestCvRole(cvProfile.experience) || {}).title))) || '';
     if (role && String(role).length <= 60) u.searchParams.set('keywords', String(role).trim());
     if (city && String(city).length <= 60) u.searchParams.set('location', String(city).trim());
   } catch (_) {}
@@ -1587,4 +1689,20 @@ function setupDashboardLinks() {
       }
     });
   });
+}
+
+// v2.5.115: most recent CV role (ongoing first, then the latest year in its dates) — CVs listed oldest-first used to
+// give their first (oldest) entry as the current title. Same rule as FormFiller.latestCvRole, simplified.
+function _latestCvRole(exp) {
+  const list = (Array.isArray(exp) ? exp : []).filter(e => e && (e.title || e.company));
+  if (!list.length) return null;
+  const NOW = /present|current|now\b|today|aujourd|actuel|en cours|ongoing|actualidad|heute/i;
+  const score = (e) => {
+    const end = String(e.endDate || e.end || e.to || '');
+    const dur = String(e.duration || e.dates || e.period || '').split(/\s*\|\s*/)[0];
+    const ongoing = NOW.test(end) || (!end && NOW.test(dur.split(/\s*(?:–|—|-|to|à|au|until)\s+/i).pop() || ''));
+    const years = (end + ' ' + dur).match(/\b(19|20)\d{2}\b/g) || [];
+    return (ongoing ? 1e6 : 0) + (years.length ? Math.max(...years.map(Number)) : 0);
+  };
+  return list.map((e, i) => ({ e, i, s: score(e) })).sort((a, b) => (b.s - a.s) || (a.i - b.i))[0].e;
 }

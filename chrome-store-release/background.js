@@ -8,13 +8,28 @@ const SUPABASE_CONFIG_URL = 'https://www.autoapplymax.com/supabase-config.json';
 const SUPABASE_CONFIG_TTL_MS = 6 * 60 * 60 * 1000;
 let SUPABASE_URL = 'https://tgknaopmwbelterrhrnz.supabase.co';
 let SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRna25hb3Btd2JlbHRlcnJocm56Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NzYzMTcsImV4cCI6MjA5NDI1MjMxN30.2-V5Z6-ZIKOkC6RJEjdEEAVKjGYbSOdX_FSd3yPdE6Q';
+// 2026-10-15: application details ↔ account sync (messages syncApplyPrefs / applyPrefsEdited).
+try { importScripts('apply-prefs-sync.js'); } catch (e) { console.warn('[EAM] apply-prefs-sync not loaded', e && e.message); }
 
+// v2.5.120 (security audit 2026-10-18 #12): the remote config may only point at OUR project — a tampered
+// supabase-config.json (or a poisoned cache) must never send the user's session to another backend.
+function _eamValidSupabaseCfg(cfg) {
+  try {
+    if (!cfg || typeof cfg.url !== 'string' || typeof cfg.anon_key !== 'string') return false;
+    if (!/^https:\/\/tgknaopmwbelterrhrnz\.supabase\.co\/?$/.test(cfg.url)) return false;
+    // Supabase's new publishable keys are opaque (no JWT) — still only usable against the URL above.
+    if (/^sb_publishable_[A-Za-z0-9_-]{10,200}$/.test(cfg.anon_key)) return true;
+    const b64 = cfg.anon_key.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const c = JSON.parse(atob(b64 + '==='.slice((b64.length + 3) % 4)));
+    return c.ref === 'tgknaopmwbelterrhrnz' && c.role === 'anon';
+  } catch (_) { return false; }
+}
 async function loadSupabaseConfig() {
   try {
     const cached = await chrome.storage.local.get(['supabase_config_cached', 'supabase_config_cached_at']);
     const age = Date.now() - (cached.supabase_config_cached_at || 0);
-    if (cached.supabase_config_cached && age < SUPABASE_CONFIG_TTL_MS) {
-      SUPABASE_URL = cached.supabase_config_cached.url;
+    if (cached.supabase_config_cached && age < SUPABASE_CONFIG_TTL_MS && _eamValidSupabaseCfg(cached.supabase_config_cached)) {
+      SUPABASE_URL = cached.supabase_config_cached.url.replace(/\/$/, '');
       SUPABASE_ANON_KEY = cached.supabase_config_cached.anon_key;
       return;
     }
@@ -23,8 +38,8 @@ async function loadSupabaseConfig() {
     const res = await fetch(SUPABASE_CONFIG_URL, { cache: 'no-store' });
     if (res.ok) {
       const cfg = await res.json();
-      if (cfg && cfg.url && cfg.anon_key) {
-        SUPABASE_URL = cfg.url;
+      if (_eamValidSupabaseCfg(cfg)) {
+        SUPABASE_URL = cfg.url.replace(/\/$/, '');
         SUPABASE_ANON_KEY = cfg.anon_key;
         try { await chrome.storage.local.set({ supabase_config_cached: cfg, supabase_config_cached_at: Date.now() }); } catch (e) {}
       }
@@ -163,6 +178,95 @@ async function handleAIFormAnswer(prompt) {
     return { error: e.message || 'network_error' };
   }
 }
+
+// Same rule as content-marker.js: compare user_profiles.cv_data_updated_at with our copy's stamp, re-download on change.
+async function syncCvProfileFromServer() {
+  const local = await chrome.storage.local.get(['eam_session', 'cvProfile', 'cvProfileServerStamp']);
+  let tok = local.eam_session && local.eam_session.access_token;
+  if (!tok) return { ok: false, reason: 'signed_out' };
+  const H = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + tok };
+  const base = `${SUPABASE_URL}/rest/v1/user_profiles`;
+  // v2.5.112: + expected_salary / country / city (dashboard Smart Profile) — fallbacks for empty extension settings.
+  // v2.5.113: + years_of_experience (the extension's own years setting is never filled by onboarding → 0 everywhere).
+  const SEL = '?select=cv_data_updated_at,expected_salary,country,city,years_of_experience,phone&limit=1'; // v2.5.119: + phone
+  let s = await fetch(base + SEL, { headers: H });
+  if (s.status === 401) { // expired JWT (1 h) → refresh once
+    const fresh = await refreshSupabaseToken();
+    if (!fresh || !fresh.access_token) return { ok: false, reason: 'auth' };
+    H.Authorization = 'Bearer ' + fresh.access_token;
+    s = await fetch(base + SEL, { headers: H });
+  }
+  if (!s.ok) return { ok: false, reason: 'http_' + s.status };
+  const row0 = (await s.json())?.[0] || {};
+  const stamp = row0.cv_data_updated_at || null;
+  try { await chrome.storage.local.set({ accountProfile: { expectedSalary: row0.expected_salary || '', country: row0.country || '', city: row0.city || '', phone: row0.phone || '', yearsOfExperience: row0.years_of_experience != null ? String(row0.years_of_experience) : '', at: Date.now() } }); } catch (_) {}
+  // v2.5.113: a copy taken at signup is an EMPTY object (new accounts start with cv_data = {}) → always re-fetched.
+  const hasCv = (c) => !!(c && typeof c === 'object' && ((Array.isArray(c.experience) && c.experience.length) || (Array.isArray(c.skills) && c.skills.length) || (Array.isArray(c.education) && c.education.length) || c.rawText || c.summary));
+  if (!stamp || (hasCv(local.cvProfile) && local.cvProfileServerStamp === stamp)) return { ok: true, changed: false };
+  const r = await fetch(base + '?select=cv_data,cv_data_updated_at&limit=1', { headers: H });
+  if (!r.ok) return { ok: false, reason: 'http_' + r.status };
+  const cv = (await r.json())?.[0]?.cv_data;
+  if (!cv || typeof cv !== 'object' || !Object.keys(cv).length) return { ok: true, changed: false };
+  await chrome.storage.local.set({ cvProfile: cv, cvProfileSyncedAt: Date.now(), cvProfileServerStamp: stamp });
+  return { ok: true, changed: true };
+}
+
+// v2.5.119: plan of the signed-in user → chrome.storage.local.plan (same key the popup writes). Read by the AI Draft
+// button, ai-form (free → no AI call) and the in-page daily-limit Premium line. Signed out → nothing cached.
+let _planFetch = null;
+async function refreshPlanCache() {
+  if (_planFetch) return _planFetch;
+  _planFetch = (async () => {
+    const { eam_session } = await chrome.storage.local.get(['eam_session']);
+    let tok = eam_session && eam_session.access_token;
+    const uid = eam_session && (eam_session.user_id || (eam_session.user && eam_session.user.id));
+    if (!tok || !uid) return { ok: false, reason: 'signed_out' };
+    const url = `${SUPABASE_URL}/rest/v1/user_profiles?id=eq.${encodeURIComponent(uid)}&select=plan&limit=1`;
+    let r = await fetch(url, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + tok } });
+    if (r.status === 401) {
+      const fresh = await refreshSupabaseToken();
+      if (!fresh || !fresh.access_token) return { ok: false, reason: 'auth' };
+      r = await fetch(url, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + fresh.access_token } });
+    }
+    if (!r.ok) return { ok: false, reason: 'http_' + r.status };
+    const plan = String(((await r.json()) || [])[0]?.plan || 'free').toLowerCase();
+    // The session may have changed (sign-out / another account) while we fetched — never cache a stale plan.
+    const now = await chrome.storage.local.get(['eam_session']);
+    const uid2 = now.eam_session && (now.eam_session.user_id || (now.eam_session.user && now.eam_session.user.id));
+    if (uid2 !== uid) return { ok: false, reason: 'session_changed' };
+    await chrome.storage.local.set({ plan, planCachedAt: Date.now() });
+    return { ok: true, plan };
+  })().catch(e => ({ ok: false, reason: String((e && e.message) || e) })).finally(() => { setTimeout(() => { _planFetch = null; }, 0); });
+  return _planFetch;
+}
+
+// v2.5.119 (coverage audit 2026-10-17, shared computers): after sign-out the extension kept the previous user's CV,
+// Premium plan and dashboard profile (and its AI answer cache) → the next person got that CV in their answers and
+// Premium-only AI. Cleared on sign-out AND when a different account signs in. The popup "Your info" settings stay
+// (typed in this browser, not account data).
+const ACCOUNT_BOUND_KEYS = ['cvProfile', 'cvProfileSyncedAt', 'cvProfileServerStamp', 'cvText', 'plan', 'planCachedAt', 'isPremium',
+  'accountProfile', 'eam_ai_cache', 'eam_ai_premium_notice', 'aam_pending_jd'];
+const _sessUid = (s) => (s && (s.user_id || (s.user && s.user.id))) || null;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.eam_session) return;
+  const oldUid = _sessUid(changes.eam_session.oldValue);
+  const newUid = _sessUid(changes.eam_session.newValue);
+  const signedOut = !changes.eam_session.newValue || !changes.eam_session.newValue.access_token;
+  const switched = !!(oldUid && newUid && oldUid !== newUid);
+  if (signedOut || switched) {
+    chrome.storage.local.remove(ACCOUNT_BOUND_KEYS).then(() => {
+      console.log(`[EAM] ${signedOut ? 'Signed out' : 'Another account signed in'} — previous account data cleared (CV, plan, profile, AI cache)`);
+      if (!signedOut) { refreshPlanCache(); syncCvProfileFromServer().catch(() => {}); }
+    }).catch(() => {});
+    return;
+  }
+  // A session appeared / was refreshed: make sure the plan is cached (new sign-in) — token refreshes keep the uid.
+  if (newUid && newUid !== oldUid) refreshPlanCache();
+});
+try {
+  chrome.runtime.onStartup?.addListener?.(() => { refreshPlanCache(); });
+  chrome.runtime.onInstalled.addListener(() => { refreshPlanCache(); });
+} catch (_) {}
 
 async function refreshSupabaseToken() {
   try {
@@ -532,6 +636,7 @@ const EAM_DIAG_BUFFER_MAX = 15;
 const EAM_DIAG_FLUSH_URL = () => `${SUPABASE_URL}/functions/v1/ext-diag-ingest`;
 let _diagBuffer = [];
 let _diagFlushing = false;
+let _diagFlushAgain = false;
 
 // v2.5.92: submit_ok is aggregated — one row per flush with meta.count
 // instead of one row per application (telemetry volume; DB is near its cap).
@@ -542,7 +647,8 @@ async function flushDiagBuffer() {
     _diagBuffer.push({ site: 'linkedin', event_type: 'submit_ok', url_path: null, meta: { count: _submitOkCount } });
     _submitOkCount = 0;
   }
-  if (_diagFlushing || _diagBuffer.length === 0) return;
+  if (_diagFlushing) { _diagFlushAgain = true; return; }
+  if (_diagBuffer.length === 0) return;
   _diagFlushing = true;
   const batch = _diagBuffer.splice(0, 100);
   try {
@@ -550,14 +656,21 @@ async function flushDiagBuffer() {
     if (!eam_session?.access_token) { _diagBuffer.unshift(...batch); return; }
     let extVersion = null;
     try { extVersion = chrome.runtime.getManifest().version; } catch (e) {}
-    const res = await fetch(EAM_DIAG_FLUSH_URL(), {
+    const post = (tok) => fetch(EAM_DIAG_FLUSH_URL(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${eam_session.access_token}`,
+        'Authorization': `Bearer ${tok}`,
       },
       body: JSON.stringify({ ext_version: extVersion, events: batch }),
     });
+    let res = await post(eam_session.access_token);
+    // v2.5.117: an expired access token (1 h) dropped the whole batch — incl. the run's session_end — on long
+    // runs between two keep-alive refreshes. Refresh once and resend.
+    if (res.status === 401) {
+      const fresh = await refreshSupabaseToken().catch(() => null);
+      if (fresh && fresh.access_token) res = await post(fresh.access_token);
+    }
     if (!res.ok && res.status !== 400) {
       // Requeue on transient failure; drop on 401/403/429 to prevent loops.
       if (res.status >= 500) _diagBuffer.unshift(...batch);
@@ -566,6 +679,9 @@ async function flushDiagBuffer() {
     if (_diagBuffer.length < 200) _diagBuffer.unshift(...batch);
   } finally {
     _diagFlushing = false;
+    // v2.5.117: a session_end / daily_limit_reached queued while a flush was in flight waited for the next
+    // 60 s alarm — and was lost when the idle worker was killed first. Flush it right after.
+    if (_diagFlushAgain) { _diagFlushAgain = false; if (_diagBuffer.length) setTimeout(flushDiagBuffer, 0); }
   }
 }
 
@@ -631,6 +747,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     enqueueDiag(message.event);
     return; // fire-and-forget
   }
+  // v2.5.117: the LinkedIn page holding a running engine was unloaded (pagehide) — tab closed, reloaded or
+  // navigated away. The engine dies with the page, so its run never ended (telemetry 2026-10-16: 29 % of runs
+  // without a session_end). Tell closed from reloaded once the tab is gone or not, then close the run cleanly.
+  if (message.type === 'eam-run-unload' && message.event) {
+    const tabId = sender && sender.tab && sender.tab.id;
+    const ev = message.event;
+    setTimeout(async () => {
+      let exists = false;
+      try { exists = tabId != null && !!(await chrome.tabs.get(tabId)); } catch (_) { exists = false; }
+      ev.meta = Object.assign({}, ev.meta || {}, { reason: exists ? 'Page reloaded or navigated away' : 'Tab closed' });
+      enqueueDiag(ev);
+      try {
+        const c = await chrome.storage.local.get(['engineOwnerTabId']);
+        await chrome.storage.local.set({ isRunning: false });
+        await chrome.storage.local.remove(['eam_pause_state'].concat(c.engineOwnerTabId === tabId ? ['engineOwnerTabId', 'engineOwnerClaimedAt'] : []));
+      } catch (_) {}
+    }, 700);
+    return; // fire-and-forget
+  }
   // Token refresh proxy — called by popup when its access_token returns 401.
   // Without this the popup falls back to logged-out state every hour
   // (default Supabase JWT TTL), forcing the user to re-login repeatedly.
@@ -638,10 +773,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     refreshSupabaseToken().then(session => sendResponse(session || null));
     return true; // keep channel open
   }
+  // v2.5.110: the CV copy used by auto-apply only re-synced on a dashboard visit — a user who never goes back
+  // kept a stale copy (live 2026-10-13: a September summary that was a job description). Checked at Start.
+  if (message.type === 'syncCvProfile') {
+    syncCvProfileFromServer().then(r => sendResponse(r)).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  // v2.5.119: the plan cache (chrome.storage.local.plan) was written only when the popup opened — a Premium user who
+  // never opened it had no AI Draft button on Greenhouse / Lever (coverage audit 2026-10-17). Content scripts ask here.
+  if (message.type === 'refreshPlan') {
+    refreshPlanCache().then(r => sendResponse(r)).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   // Autofill tracking beacon — fire-and-forget. Fires for EVERY popup
   // Autofill click so we get admin observability even on pattern-matched-
   // only sessions where no AI call happens. Insert into tool_usage
   // (name='autofill') via authenticated REST call from the service worker.
+  // v2.5.100: click on the free-plan "See Premium" hint after Autofill (popup or page).
+  if (message.type === 'track-autofill-upsell-click') {
+    (async () => {
+      try {
+        const { eam_session } = await chrome.storage.local.get('eam_session');
+        if (!eam_session?.access_token) return;
+        let userId = eam_session.user?.id || eam_session.user_id || null;
+        if (!userId) { try { userId = JSON.parse(atob(eam_session.access_token.split('.')[1]))?.sub || null; } catch (_) {} }
+        if (!userId) return;
+        await fetch(`${SUPABASE_URL}/rest/v1/tool_usage`, {
+          method: 'POST',
+          headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${eam_session.access_token}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ tool_name: 'autofill_upsell_click', user_id: userId, metadata: { where: message.where || '', hostname: message.hostname || (sender && sender.tab && sender.tab.url ? new URL(sender.tab.url).hostname : '') } }),
+        });
+      } catch (_) { /* fire-and-forget */ }
+    })();
+    return;
+  }
   if (message.type === 'track-autofill') {
     (async () => {
       try {
@@ -662,7 +827,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const body = {
           tool_name: 'autofill',
           user_id: userId,
-          metadata: { filled: message.filled || 0, hostname: message.hostname || '', path: message.path || '' },
+          metadata: { filled: message.filled || 0, hostname: message.hostname || '', path: message.path || '',
+            // v2.5.100: free-plan hint shown (open questions left for the user) + résumé attached
+            open_left: message.openLeft || 0, upsell_shown: !!message.premiumHint, resume: !!message.resume },
         };
         await fetch(`${SUPABASE_URL}/rest/v1/tool_usage`, {
           method: 'POST',
